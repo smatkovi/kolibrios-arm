@@ -34,7 +34,7 @@ KSRC := start.S lib.c mm.c mmu.c sched.c syscall.c gfx.c wm.c input.c fs.c loade
 	platform/realview.c platform/n950.c fonts/font8x16.c fonts/font6x10.c rd.S
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
-APPS := taskbar menu example clock
+APPS := taskbar menu example clock board cpu
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
 KEX := $(foreach a,$(APPS),$(A)/$(a).kex)

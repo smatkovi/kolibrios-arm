@@ -27,8 +27,9 @@ KolibriOS's interface to programs, as documented in its `sysfuncs.txt`:
 ## Status
 
 Runs in QEMU (realview-pb-a8): the panel (`@taskbar`) with a window list
-and the clock, the start menu (`menu`), an example program and an analog
-clock, in windows that move with the mouse; keyboard input.
+and the clock, the start menu (`menu`), the debug board, a process
+manager, an example program and an analog clock, in windows that move
+with the mouse; keyboard input.
 
 | Part | State |
 | --- | --- |
@@ -58,6 +59,8 @@ can be recompiled.
 | `menu` | the start menu: the programs on the ramdisk |
 | `example` | KolibriOS's example program: text, buttons, keys |
 | `clock` | an analog clock, drawn with lines |
+| `board` | the debug board: what the kernel and programs write (function 63) |
+| `cpu` | the process manager: the threads, their memory and state; ends one |
 
 `apps/autorun` lists what the kernel starts.
 

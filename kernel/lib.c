@@ -84,8 +84,28 @@ char *strncpy0(char *d, const char *s, size_t n)
 
 const struct platform *plat;
 
+/* the debug board: what the kernel and programs (function 63.1) write,
+ * for function 63.2 to read */
+#define DBG_SIZE 4096
+static char dbg[DBG_SIZE];
+static u32 dbg_head, dbg_tail;
+
+void dbg_put(char c)
+{
+	dbg[dbg_head % DBG_SIZE] = c;
+	dbg_head++;
+	if (dbg_head - dbg_tail > DBG_SIZE) dbg_tail = dbg_head - DBG_SIZE;
+}
+
+int dbg_get(void)
+{
+	if (dbg_tail == dbg_head) return -1;
+	return (u8)dbg[dbg_tail++ % DBG_SIZE];
+}
+
 void kputc(char c)
 {
+	dbg_put(c);
 	if (!plat || !plat->putc) return;
 	if (c == '\n') plat->putc('\r');
 	plat->putc(c);

@@ -51,6 +51,7 @@ int load_program(const char *path, const char *params, struct task **out)
 	t->tf.cpsr = PSR_USR | PSR_F;              /* ARM state, interrupts on */
 	t->heap_start = t->heap_brk = ALIGN_UP(h->img_end, 4096);
 	t->heap_end = (t->tf.usr_sp > 65536 ? t->tf.usr_sp - 65536 : t->tf.usr_sp) & ~15u;
+	t->events = 1u << (EV_REDRAW - 1);         /* the first event, as in KolibriOS */
 	t->state = T_READY;
 	kprintf("started %s: pid %u, slot %d, %u KiB\n", t->name, t->pid, t->slot, size >> 10);
 	if (out) *out = t;

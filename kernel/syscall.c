@@ -430,7 +430,11 @@ void syscall(struct task *t)
 		}
 	case 63:
 		if (EBX == 1) kputc(ECX & 0xff);
-		else if (EBX == 2) { EAX = 0; EBX = 0; }
+		else if (EBX == 2) {
+			int c = dbg_get();
+			EAX = c < 0 ? 0 : c;
+			EBX = c >= 0;
+		}
 		return;
 	case 66:
 		EAX = 0;                           /* keyboard mode: ASCII only */
