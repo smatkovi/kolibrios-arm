@@ -12,6 +12,18 @@
 	.section .text.boot, "ax"
 	.global _start
 _start:
+	/* a zImage's head, so that kexec (ubiboot's) takes the image: eight
+	 * instructions, then the magic, the load address and the end */
+	.rept	7
+	mov	r0, r0
+	.endr
+	mov	r0, r0
+	b	boot
+	.word	0x016f2818
+	.word	_start
+	.word	__image_end
+	.word	0x04030201
+boot:
 	/* from QEMU's -kernel, NOLO or kexec: r0 = 0, r1 = machine, r2 = tags/DTB */
 	cpsid	if
 	cps	#0x13

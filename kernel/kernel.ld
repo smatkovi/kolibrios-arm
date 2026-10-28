@@ -11,6 +11,7 @@ SECTIONS
 	}
 	.rodata : { *(.rodata .rodata.*) }
 	.data : { *(.data .data.*) }
+	__image_end = .;
 	.bss (NOLOAD) : ALIGN(16384) {
 		__bss_start = .;
 		*(.bss .bss.*) *(COMMON)

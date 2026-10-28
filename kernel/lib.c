@@ -103,8 +103,11 @@ int dbg_get(void)
 	return (u8)dbg[dbg_tail++ % DBG_SIZE];
 }
 
+static void (*capture)(char c);
+
 void kputc(char c)
 {
+	if (capture) { capture(c); return; }
 	dbg_put(c);
 	if (!plat || !plat->putc) return;
 	if (c == '\n') plat->putc('\r');
@@ -165,6 +168,11 @@ int kprintf(const char *fmt, ...)
 	return 0;
 }
 
+/* the panic's text, also for the screen */
+static char pbuf[160];
+static int plen;
+static void pbuf_putc(char c) { if (plen + 1 < (int)sizeof(pbuf)) pbuf[plen++] = c; }
+
 void panic(const char *fmt, ...)
 {
 	va_list ap;
@@ -174,5 +182,14 @@ void panic(const char *fmt, ...)
 	vkprintf(fmt, ap);
 	va_end(ap);
 	kputs("\n");
+	/* the same on the screen, if there is one yet */
+	extern void panic_screen(const char *msg);
+	va_start(ap, fmt);
+	capture = pbuf_putc;
+	vkprintf(fmt, ap);
+	capture = 0;
+	va_end(ap);
+	pbuf[plen] = 0;
+	panic_screen(pbuf);
 	for (;;) asm volatile("wfi");
 }

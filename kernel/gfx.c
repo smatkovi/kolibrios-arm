@@ -237,6 +237,19 @@ int gfx_text(int x, int y, const char *s, int len, u32 c, int font, int scale,
 	return width;
 }
 
+/* a kernel panic: its message in a red box at the top, flushed at once */
+void panic_screen(const char *msg)
+{
+	if (!scr.fb || !scr.owner) return;
+	gfx_rect(0, 0, scr.w, 40, 0xa01010, -1);
+	gfx_text(8, 4, "KolibriOS for ARM: kernel panic", -1, 0xffffff, 1, 1, false, 0, -1, false);
+	gfx_text(8, 24, msg, -1, 0xffffff, 0, 1, false, 0, -1, false);
+	gfx_dirty(0, 40);
+	if (plat->display_flush)
+		for (int i = 0; i < 1000 && !plat->display_flush(0, 40); i++)
+			ticks += 3;                   /* past the flush's frame limit */
+}
+
 void gfx_flush(void)
 {
 	if (scr.dirty_y0 >= scr.dirty_y1) return;

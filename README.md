@@ -85,9 +85,11 @@ NOLO (or Linux, when started with kexec from ubiboot) has set up the
 DSI panel (Himalaya, command mode, 480x864, used in landscape), and the
 kernel copies its own landscape buffer, turned, into the graphics
 layer's buffer and has the display controller send a frame. The image
-is meant to be started without writing the flash, from the PC with
-NOLO's `flasher -k build/n950/kernel.bin -l -b`, or from ubiboot with
-kexec as a third entry beside MeeGo and Leste. Still to do there: the
+is meant to be started without writing the flash, from the PC through
+NOLO (`0xFFFF -m build/n950/kernel.bin -l -b`), or from ubiboot with
+kexec as a third entry beside MeeGo and Leste (it has a zImage head for
+that). A kernel panic shows on the screen too. `docs/n950.md` has the
+steps. Still to do there: the
 touch screen and the keyboard (I2C), the real-time clock, and whatever
 the display needs beyond what is written.
 
