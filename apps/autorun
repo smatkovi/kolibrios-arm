@@ -1,0 +1,4 @@
+# the programs KolibriOS for ARM starts (a path per line, then parameters)
+/sys/@taskbar
+/sys/example
+/sys/clock

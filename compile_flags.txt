@@ -1,0 +1,6 @@
+--target=armv7a-none-eabi
+-mcpu=cortex-a8
+-ffreestanding
+-Ikernel/include
+-Ilib
+-std=gnu11
