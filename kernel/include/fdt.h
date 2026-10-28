@@ -18,6 +18,9 @@ bool fdt_overlaps_reserved(const void *fdt, u64 start, u64 size);
 int fdt_next_child(const void *fdt, int parent, int prev);
 const char *fdt_node_name(const void *fdt, int node);
 u32 fdt_totalsize(const void *fdt);
+bool fdt_is_compatible(const void *fdt, int node, const char *compat);
+int fdt_child_compatible(const void *fdt, int parent, const char *compat);
+int fdt_find_phandle(const void *fdt, u32 phandle);
 /* /memory without the reserved memory (and the device tree), cut at the
  * alignment: the number of banks */
 int fdt_usable_ram(const void *fdt, struct mem_bank *out, int max, u64 align);

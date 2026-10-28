@@ -47,8 +47,9 @@ void mm_init(addr_t kernel_end)
 	/* the kernel and its heap, from ram_base on */
 	heap_ptr = ALIGN_UP(kernel_end, (addr_t)MB);
 	heap_end = heap_ptr + HEAP_MB * MB;
-	if (block_of(plat->ram_base) < 0 || block_of(heap_end - 1) < 0)
-		panic("the kernel (%p-%p) is not in the RAM", plat->ram_base, heap_end);
+	int k0 = block_of(plat->ram_base), k1 = block_of(heap_end - 1);
+	if (k0 < 0 || k1 < 0 || (addr_t)(k1 - k0) != (heap_end - 1 - plat->ram_base) / MB)
+		panic("the kernel (%p-%p) is not in one bank of RAM", plat->ram_base, heap_end);
 	mm_reserve(plat->ram_base, heap_end - plat->ram_base);
 }
 

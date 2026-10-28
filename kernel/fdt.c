@@ -50,6 +50,8 @@ static bool list_has(const char *list, int len, const char *s)
 	return false;
 }
 
+int fdt_next_child(const void *fdt, int parent, int prev);
+
 /* walk the tree: cb(node offset, name, depth, parent cells) for each node;
  * a non-zero return ends the walk with it */
 typedef int (*walk_fn)(const void *fdt, int node, const char *name, int depth,
@@ -153,6 +155,32 @@ int fdt_find_name(const void *fdt, const char *name, int *acells, int *scells)
 	struct find f = { NULL, name, -1, acells, scells };
 	int r = walk(fdt, find_cb, &f);
 	return r > 0 ? r : -1;
+}
+
+bool fdt_is_compatible(const void *fdt, int node, const char *compat)
+{
+	int len;
+	const char *c = fdt_prop(fdt, node, "compatible", &len);
+	return c && list_has(c, len, compat);
+}
+
+static int phandle_cb(const void *fdt, int node, const char *name, int depth, int ac, int sc, const void *arg)
+{
+	return node > 0 && fdt_u32(fdt, node, "phandle", 0) == *(const u32 *)arg ? node : 0;
+}
+
+int fdt_find_phandle(const void *fdt, u32 phandle)
+{
+	int r = walk(fdt, phandle_cb, &phandle);
+	return r > 0 ? r : -1;
+}
+
+/* a child with this compatible string, or -1 */
+int fdt_child_compatible(const void *fdt, int parent, const char *compat)
+{
+	for (int c = fdt_next_child(fdt, parent, -1); c >= 0; c = fdt_next_child(fdt, parent, c))
+		if (fdt_is_compatible(fdt, c, compat)) return c;
+	return -1;
 }
 
 int fdt_root_compatible(const void *fdt, const char *compat)

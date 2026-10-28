@@ -65,7 +65,7 @@ try:
             os.unlink(ppm)
         elif kind == 'mem':
             addr, size, name = arg.split(',')
-            cmd(f'pmemsave {addr} {size} {os.path.join(out, name)}')
+            cmd(f'pmemsave {addr} {size} "{os.path.join(out, name)}"')
             time.sleep(0.5)
         elif kind == 'key':
             cmd('sendkey ' + arg)
