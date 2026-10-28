@@ -22,11 +22,11 @@ int load_program(const char *path, const char *params, struct task **out)
 		kprintf("%s: not an ARM KolibriOS program\n", path);
 		return -31;                        /* not an executable */
 	}
-	u32 size = ALIGN_UP(MAX(MAX(h->mem, h->img_end), f->size), 1u << 20);
+	u32 size = ALIGN_UP(MAX(MAX(h->mem, h->img_end), f->size), USER_ALIGN_MB << 20);
 	if (h->entry >= size || h->stack > size) return -31;
 	struct task *t = task_alloc();
 	if (!t) return -30;                        /* no slot */
-	u32 pa = mm_alloc_mb(size >> 20);
+	addr_t pa = mm_alloc_mb_aligned(size >> 20, USER_ALIGN_MB);
 	if (!pa) return -30;                       /* no memory */
 	memset((void *)pa, 0, size);
 	memcpy((void *)pa, f->data, f->size);

@@ -2,14 +2,9 @@
 #include "gui.h"
 
 extern u8 __kernel_end[];
-extern u32 boot_args[3];
+extern addr_t boot_args[3];
 void input_init(void);
 
-#ifdef PLATFORM_N950
-#define PLATFORM platform_n950
-#else
-#define PLATFORM platform_realview
-#endif
 
 /* the programs the kernel starts: the ramdisk's "autorun" (one path per
  * line), or the panel alone */
@@ -42,11 +37,11 @@ static void autorun(void)
 
 void kmain(void)
 {
-	plat = &PLATFORM;
+	plat = arch_platform();
 	if (plat->early_init) plat->early_init();
 	kprintf("\nKolibriOS for ARM %d.%d on %s\n", KOS_VERSION_MAJOR, KOS_VERSION_MINOR, plat->name);
-	kprintf("boot arguments %p %p %p, kernel ends at %p\n", boot_args[0], boot_args[1], boot_args[2], (u32)__kernel_end);
-	mm_init(plat->ram_base, plat->ram_size, (u32)__kernel_end);
+	kprintf("boot arguments %p %p %p, kernel ends at %p\n", boot_args[0], boot_args[1], boot_args[2], (addr_t)__kernel_end);
+	mm_init(plat->ram_base, plat->ram_size, (addr_t)__kernel_end);
 	mmu_init();
 	kprintf("MMU on, %u KiB free\n", mm_free_kb());
 	if (plat->display_init(&scr.fb, &scr.w, &scr.h, &scr.stride) < 0)
@@ -62,6 +57,6 @@ void kmain(void)
 	gfx_flush();
 	kprintf("running\n");
 	/* to the first task (or the idle loop) through the trap return */
-	asm volatile("svc #0");
+	arch_start();
 	panic("back in kmain");
 }

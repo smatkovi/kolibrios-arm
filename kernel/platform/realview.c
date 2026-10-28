@@ -25,7 +25,7 @@
 
 /* the devices' addresses: physical until the MMU is on, then the
  * kernel's mapping of them (above 1 GiB) */
-static u32 io(u32 pa)
+static addr_t io(addr_t pa)
 {
 	u32 sctlr;
 	asm volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
@@ -34,7 +34,7 @@ static u32 io(u32 pa)
 
 static void rv_putc(char c)
 {
-	u32 u = io(UART0);
+	addr_t u = io(UART0);
 	while (rd32(u + 0x18) & (1 << 5))   /* TXFF */
 		;
 	wr32(u, (u8)c);
@@ -46,13 +46,13 @@ static void rv_early_init(void)
 
 static void gic_enable(int id)
 {
-	u32 d = io(GICD);
+	addr_t d = io(GICD);
 	wr8(d + 0x400 + id, 0xa0);           /* priority */
 	wr8(d + 0x800 + id, 1);              /* to CPU 0 */
 	wr32(d + 0x100 + 4 * (id / 32), 1u << (id % 32));
 }
 
-static void kmi_send(u32 base, u8 b)
+static void kmi_send(addr_t base, u8 b)
 {
 	for (int i = 0; i < 100000 && !(rd32(base + 0x04) & (1 << 6)); i++)
 		;
@@ -61,12 +61,12 @@ static void kmi_send(u32 base, u8 b)
 
 static void rv_init(void)
 {
-	u32 d = io(GICD), c = io(GICC);
+	addr_t d = io(GICD), c = io(GICC);
 	wr32(d + 0x000, 1);
 	wr32(c + 0x004, 0xf0);               /* priority mask */
 	wr32(c + 0x000, 1);
 	/* the 100 Hz tick: timer 0 of the first SP804, 1 MHz */
-	u32 t = io(TIMER0);
+	addr_t t = io(TIMER0);
 	wr32(t + 0x08, 0);
 	wr32(t + 0x00, 10000);
 	wr32(t + 0x08, 0x80 | 0x40 | 0x20 | 0x02);
@@ -96,7 +96,7 @@ static void mouse_byte(u8 b)
 
 static void rv_irq(void)
 {
-	u32 c = io(GICC);
+	addr_t c = io(GICC);
 	for (;;) {
 		u32 iar = rd32(c + 0x0c);
 		u32 id = iar & 0x3ff;
@@ -128,10 +128,10 @@ static void rv_irq(void)
 static int rv_display_init(u32 **fb, int *w, int *h, int *stride)
 {
 	u32 mb = ALIGN_UP(FB_W * FB_H * 4, 1u << 20) >> 20;
-	u32 pa = mm_alloc_mb(mb);
+	addr_t pa = mm_alloc_mb(mb);
 	if (!pa) return -1;
 	mmu_set_uncached(pa, mb << 20);
-	u32 l = io(CLCD);
+	addr_t l = io(CLCD);
 	/* the PL111 has its control register at 0x18, the PL110 at 0x1c */
 	bool pl111 = (rd32(l + 0xfe0) & 0xff) == 0x11;
 	wr32(l + 0x00, ((FB_W / 16 - 1) << 2));
@@ -162,7 +162,7 @@ static const struct mem_region rv_io[] = {
 	{ GIC_VA, GIC_PA, 1u << 20, MAP_DEVICE },
 };
 
-const struct platform platform_realview = {
+struct platform platform_realview = {
 	.name = "realview-pb-a8 (QEMU)",
 	.ram_base = 0x70000000,
 	.ram_size = 256u << 20,

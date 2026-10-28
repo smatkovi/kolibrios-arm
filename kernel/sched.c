@@ -165,20 +165,16 @@ static const char *trap_name(int kind)
 	}
 }
 
-void trap_entry(struct trapframe *tf, int kind)
+struct task *trap_dispatch(struct trapframe *tf, int kind, bool from_user, addr_t far, u32 fsr)
 {
-	bool from_user = (tf->cpsr & 0x1f) == PSR_USR;
 	struct task *t = current;
 	if (from_user) {
 		if (!t) panic("user trap without a task");
 		t->tf = *tf;
 	} else if (kind == TRAP_SVC) {
-		/* kmain's "svc #0": the first switch to a task */
+		/* kmain's start: the first switch to a task */
 	} else if (kind != TRAP_IRQ && kind != TRAP_FIQ) {
-		u32 far, fsr;
-		asm volatile("mrc p15, 0, %0, c6, c0, 0" : "=r"(far));
-		asm volatile("mrc p15, 0, %0, c5, c0, 0" : "=r"(fsr));
-		panic("%s in the kernel at %p (far %p fsr %x)", trap_name(kind), tf->pc, far, fsr);
+		panic("%s in the kernel at %p (address %p, status %x)", trap_name(kind), (addr_t)tf->pc, far, fsr);
 	}
 	switch (kind) {
 	case TRAP_IRQ:
@@ -188,21 +184,12 @@ void trap_entry(struct trapframe *tf, int kind)
 	case TRAP_SVC:
 		if (from_user) syscall(t);
 		break;
-	default: {
-		u32 far = 0;
-		if (kind == TRAP_DABT) asm volatile("mrc p15, 0, %0, c6, c0, 0" : "=r"(far));
-		else if (kind == TRAP_PABT) asm volatile("mrc p15, 0, %0, c6, c0, 2" : "=r"(far));
+	default:
 		kprintf("%s (pid %u): %s at pc %p, address %p: ended\n",
-			t->name, t->pid, trap_name(kind), tf->pc, far);
+			t->name, t->pid, trap_name(kind), (addr_t)tf->pc, far);
 		task_exit(t);
 		break;
 	}
-	}
 	schedule();
-	if (current) {
-		*tf = current->tf;
-	} else {
-		tf->pc = (u32)idle_loop;
-		tf->cpsr = PSR_SVC | PSR_F;   /* interrupts on while idle */
-	}
+	return current;
 }

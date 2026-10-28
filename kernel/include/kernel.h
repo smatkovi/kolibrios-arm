@@ -17,6 +17,10 @@ typedef _Bool bool;
 #define false 0
 #endif
 #define NULL ((void *)0)
+/* a physical or kernel address: 32 bits on ARMv7, 64 on AArch64 */
+typedef unsigned long addr_t;
+
+#include "arch.h"
 
 #define KOS_VERSION_MAJOR 0
 #define KOS_VERSION_MINOR 1
@@ -26,10 +30,10 @@ typedef _Bool bool;
 #define ALIGN_UP(x, a) (((x) + (a) - 1) & ~((a) - 1))
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
-static inline u32 rd32(u32 a) { return *(volatile u32 *)a; }
-static inline void wr32(u32 a, u32 v) { *(volatile u32 *)a = v; }
-static inline u8 rd8(u32 a) { return *(volatile u8 *)a; }
-static inline void wr8(u32 a, u8 v) { *(volatile u8 *)a = v; }
+static inline u32 rd32(addr_t a) { return *(volatile u32 *)a; }
+static inline void wr32(addr_t a, u32 v) { *(volatile u32 *)a = v; }
+static inline u8 rd8(addr_t a) { return *(volatile u8 *)a; }
+static inline void wr8(addr_t a, u8 v) { *(volatile u8 *)a = v; }
 
 /* lib.c */
 void *memset(void *d, int c, size_t n);
@@ -64,7 +68,8 @@ enum { TRAP_UNDEF = 1, TRAP_SVC, TRAP_PABT, TRAP_DABT, TRAP_IRQ, TRAP_FIQ };
 
 /* the platform (kernel/platform/<name>.c) */
 struct mem_region {
-	u32 va, pa, size;
+	addr_t va, pa;
+	u32 size;
 	u32 attr; /* MAP_* */
 };
 #define MAP_NORMAL 1   /* cacheable RAM */
@@ -73,7 +78,8 @@ struct mem_region {
 
 struct platform {
 	const char *name;
-	u32 ram_base, ram_size;
+	addr_t ram_base;
+	u32 ram_size;
 	/* I/O regions to map (va != pa allowed: devices below 1 GiB move up) */
 	const struct mem_region *io;
 	int nio;
@@ -89,24 +95,26 @@ struct platform {
 	bool cached_data;             /* D-cache on */
 };
 extern const struct platform *plat;
-extern const struct platform platform_realview, platform_n950;
+extern struct platform platform_realview, platform_n950, platform_virt, platform_pro1x;
 
-/* mmu.c */
+/* the MMU (arch/<arch>/mmu.c): a page table for each program, its memory
+ * from VA 0; the kernel's mappings in all of them */
 void mmu_init(void);
-u32 *mmu_new_user_table(void);
-void mmu_map_user(u32 *l1, u32 va, u32 pa, u32 size);
-void mmu_switch(u32 *l1);
-void mmu_free_user_table(u32 *l1);
-u32 mmu_io_va(u32 pa);
-void mmu_set_uncached(u32 pa, u32 size);
-void cache_sync_code(u32 va, u32 len);
+void *mmu_new_user_table(void);
+void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size);
+void mmu_switch(void *root);
+void mmu_free_user_table(void *root);
+addr_t mmu_io_va(addr_t pa);
+void mmu_set_uncached(addr_t pa, u32 size);
+void cache_sync_code(addr_t va, u32 len);
 
 /* mm.c: physical memory in 1 MiB blocks (task memory, frame buffers)
  * and a kernel heap for small objects */
-void mm_init(u32 base, u32 size, u32 kernel_end);
-u32 mm_alloc_mb(u32 mb);       /* physical address or 0 */
-void mm_free_mb(u32 pa, u32 mb);
-void mm_reserve(u32 pa, u32 size); /* in use already (a boot loader's frame buffer) */
+void mm_init(addr_t base, u32 size, addr_t kernel_end);
+addr_t mm_alloc_mb(u32 mb);        /* physical address or 0 */
+addr_t mm_alloc_mb_aligned(u32 mb, u32 align_mb);
+void mm_free_mb(addr_t pa, u32 mb);
+void mm_reserve(addr_t pa, u32 size); /* in use already (a boot loader's frame buffer) */
 u32 mm_free_kb(void);
 u32 mm_total_kb(void);
 void *kmalloc(u32 size);       /* never freed: tables, buffers */
@@ -123,8 +131,10 @@ void input_key(u8 set1, bool released); /* a key, XT (set 1) scan code */
 void input_mouse_rel(int dx, int dy, int buttons, int wheel);
 void input_mouse_abs(int x, int y, int buttons); /* touch screens */
 
-/* sched.c */
-void trap_entry(struct trapframe *tf, int kind);
+/* sched.c: an exception, the arch's entry made the trap frame (the
+ * AArch32 view); returns the task to go on with, or NULL: the idle loop */
+struct task;
+struct task *trap_dispatch(struct trapframe *tf, int kind, bool from_user, addr_t far, u32 fsr);
 void idle_loop(void);
 
 #endif

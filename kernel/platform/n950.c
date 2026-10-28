@@ -108,10 +108,10 @@ static void n9_irq(void)
 #define CON_STP 0x0002
 #define CON_STT 0x0001
 
-static u16 i2c_r(u32 b, u32 o) { return *(volatile u16 *)(b + o); }
-static void i2c_w(u32 b, u32 o, u16 v) { *(volatile u16 *)(b + o) = v; }
+static u16 i2c_r(addr_t b, u32 o) { return *(volatile u16 *)(b + o); }
+static void i2c_w(addr_t b, u32 o, u16 v) { *(volatile u16 *)(b + o) = v; }
 
-static int i2c_wait(u32 b, u16 bits)
+static int i2c_wait(addr_t b, u16 bits)
 {
 	for (int i = 0; i < 20000; i++) {
 		u16 st = i2c_r(b, I2C_STAT);
@@ -126,7 +126,7 @@ static int i2c_wait(u32 b, u16 bits)
 }
 
 /* write wlen bytes, then (repeated start) read rlen: 0 or < 0 */
-static int i2c_xfer(u32 b, u8 addr, const u8 *w, int wlen, u8 *r, int rlen)
+static int i2c_xfer(addr_t b, u8 addr, const u8 *w, int wlen, u8 *r, int rlen)
 {
 	for (int i = 0; i < 20000 && (i2c_r(b, I2C_STAT) & ST_BB); i++)
 		;
@@ -321,7 +321,7 @@ static const struct mem_region n9_io[] = {
 	{ 0x49000000u, 0x49000000u, 1u << 20, MAP_DEVICE },   /* L4 peripherals */
 };
 
-const struct platform platform_n950 = {
+struct platform platform_n950 = {
 	.name = "Nokia N950 (OMAP3630)",
 	.ram_base = 0x80000000u,
 	.ram_size = 256u << 20,       /* of 1 GiB: enough, and clear of what NOLO keeps */

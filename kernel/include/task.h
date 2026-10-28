@@ -53,8 +53,8 @@ struct task {
 	u32 pid;
 	char name[12];    /* the file name, as function 9 reports it */
 	struct trapframe tf;
-	u32 *l1;          /* user page table (TTBR0) */
-	u32 mem_pa;       /* the address space: VA 0.. mem_size at mem_pa */
+	void *l1;         /* the page table (TTBR0) */
+	addr_t mem_pa;    /* the address space: VA 0.. mem_size at mem_pa */
 	u32 mem_size;
 	u32 img_end;
 	u32 wake_tick;    /* T_SLEEP, T_WAIT_TIMEOUT */

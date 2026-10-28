@@ -6,7 +6,7 @@ void *memset(void *d, int c, size_t n)
 {
 	u8 *p = d;
 	u32 w = (u8)c * 0x01010101u;
-	while (n && ((u32)p & 3)) { *p++ = c; n--; }
+	while (n && ((addr_t)p & 3)) { *p++ = c; n--; }
 	while (n >= 16) {
 		((u32 *)p)[0] = w; ((u32 *)p)[1] = w;
 		((u32 *)p)[2] = w; ((u32 *)p)[3] = w;
@@ -20,7 +20,7 @@ void *memcpy(void *d, const void *s, size_t n)
 {
 	u8 *dp = d;
 	const u8 *sp = s;
-	if ((((u32)dp | (u32)sp) & 3) == 0) {
+	if ((((addr_t)dp | (addr_t)sp) & 3) == 0) {
 		while (n >= 16) {
 			((u32 *)dp)[0] = ((const u32 *)sp)[0];
 			((u32 *)dp)[1] = ((const u32 *)sp)[1];
@@ -119,9 +119,9 @@ void kputs(const char *s)
 	while (*s) kputc(*s++);
 }
 
-static void put_num(u32 v, int base, int width, char pad, bool neg)
+static void put_num(unsigned long v, int base, int width, char pad, bool neg)
 {
-	char buf[12];
+	char buf[24];
 	int i = 0;
 	do {
 		int d = v % base;
@@ -150,7 +150,7 @@ static void vkprintf(const char *fmt, va_list ap)
 		}
 		case 'u': put_num(va_arg(ap, u32), 10, width, pad, false); break;
 		case 'x': put_num(va_arg(ap, u32), 16, width, pad, false); break;
-		case 'p': kputs("0x"); put_num(va_arg(ap, u32), 16, 8, '0', false); break;
+		case 'p': kputs("0x"); put_num(va_arg(ap, addr_t), 16, sizeof(addr_t) * 2, '0', false); break;
 		case 's': { const char *s = va_arg(ap, const char *); kputs(s ? s : "(null)"); break; }
 		case 'c': kputc(va_arg(ap, int)); break;
 		case '%': kputc('%'); break;

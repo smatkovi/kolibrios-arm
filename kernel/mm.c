@@ -7,11 +7,12 @@
 #define HEAP_MB 8
 #define MAX_BLOCKS 1024       /* 1 GiB */
 
-static u32 ram_base, nblocks;
+static addr_t ram_base;
+static u32 nblocks;
 static u8 used[MAX_BLOCKS];
-static u32 heap_ptr, heap_end;
+static addr_t heap_ptr, heap_end;
 
-void mm_init(u32 base, u32 size, u32 kernel_end)
+void mm_init(addr_t base, u32 size, addr_t kernel_end)
 {
 	ram_base = base;
 	nblocks = MIN(size / MB, MAX_BLOCKS);
@@ -24,7 +25,7 @@ void mm_init(u32 base, u32 size, u32 kernel_end)
 
 void *kmalloc_aligned(u32 size, u32 align)
 {
-	u32 p = ALIGN_UP(heap_ptr, align);
+	addr_t p = ALIGN_UP(heap_ptr, (addr_t)align);
 	if (p + size > heap_end)
 		panic("kernel heap full (%u bytes wanted)", size);
 	heap_ptr = p + size;
@@ -37,32 +38,38 @@ void *kmalloc(u32 size)
 	return kmalloc_aligned(size, 8);
 }
 
-u32 mm_alloc_mb(u32 mb)
+addr_t mm_alloc_mb_aligned(u32 mb, u32 align_mb)
 {
+	/* blocks counted from ram_base; the address aligned to align_mb MiB */
 	for (u32 i = 0; i + mb <= nblocks; i++) {
+		if (((ram_base >> 20) + i) % align_mb) continue;
 		u32 j;
 		for (j = 0; j < mb && !used[i + j]; j++)
 			;
 		if (j == mb) {
 			for (j = 0; j < mb; j++) used[i + j] = 1;
-			return ram_base + i * MB;
+			return ram_base + (addr_t)i * MB;
 		}
-		i += j;
 	}
 	return 0;
 }
 
-void mm_free_mb(u32 pa, u32 mb)
+addr_t mm_alloc_mb(u32 mb)
+{
+	return mm_alloc_mb_aligned(mb, 1);
+}
+
+void mm_free_mb(addr_t pa, u32 mb)
 {
 	u32 i = (pa - ram_base) / MB;
 	for (u32 j = 0; j < mb && i + j < nblocks; j++)
 		used[i + j] = 0;
 }
 
-void mm_reserve(u32 pa, u32 size)
+void mm_reserve(addr_t pa, u32 size)
 {
 	if (pa < ram_base) return;
-	for (u32 a = pa & ~(MB - 1); a < pa + size; a += MB) {
+	for (addr_t a = pa & ~(addr_t)(MB - 1); a < pa + size; a += MB) {
 		u32 i = (a - ram_base) / MB;
 		if (i < nblocks) used[i] = 1;
 	}

@@ -88,7 +88,7 @@ void mmu_init(void)
 	asm volatile("mcr p15, 0, %0, c1, c0, 0\nisb" :: "r"(sctlr));
 }
 
-u32 mmu_io_va(u32 pa)
+addr_t mmu_io_va(addr_t pa)
 {
 	for (int i = 0; i < plat->nio; i++) {
 		const struct mem_region *r = &plat->io[i];
@@ -99,33 +99,34 @@ u32 mmu_io_va(u32 pa)
 }
 
 /* a RAM range not cached (frame buffers the display reads) */
-void mmu_set_uncached(u32 pa, u32 size)
+void mmu_set_uncached(addr_t pa, u32 size)
 {
 	for (u32 o = 0; o < size; o += 1u << 20)
 		kl1[(pa + o) >> 20] = ((pa + o) & 0xfff00000) | SECTION | AP_KERNEL | A_UNCACHED;
 	tlb_flush();
 }
 
-u32 *mmu_new_user_table(void)
+void *mmu_new_user_table(void)
 {
 	u32 *t = nfree ? free_tables[--nfree] : kmalloc_aligned(4096, 4096);
 	memset(t, 0, 4096);
 	return t;
 }
 
-void mmu_free_user_table(u32 *l1)
+void mmu_free_user_table(void *l1)
 {
 	if (nfree < (int)ARRAY_SIZE(free_tables))
 		free_tables[nfree++] = l1;
 }
 
-void mmu_map_user(u32 *l1, u32 va, u32 pa, u32 size)
+void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
 {
+	u32 *l1 = root;
 	for (u32 o = 0; o < size; o += 1u << 20)
 		l1[(va + o) >> 20] = ((pa + o) & 0xfff00000) | SECTION | AP_USER | attr_of(MAP_NORMAL);
 }
 
-void mmu_switch(u32 *l1)
+void mmu_switch(void *l1)
 {
 	asm volatile("dsb\nmcr p15, 0, %0, c2, c0, 0" :: "r"((u32)(l1 ? l1 : null_l1)));
 	tlb_flush();
@@ -133,7 +134,7 @@ void mmu_switch(u32 *l1)
 
 /* after code was written (the loader): to the point of unification and
  * out of the instruction cache */
-void cache_sync_code(u32 va, u32 len)
+void cache_sync_code(addr_t va, u32 len)
 {
 	if (plat->cached_data)
 		for (u32 a = va & ~31u; a < va + len; a += 32)
