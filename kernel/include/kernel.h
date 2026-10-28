@@ -74,12 +74,24 @@ struct mem_region {
 };
 #define MAP_NORMAL 1   /* cacheable RAM */
 #define MAP_DEVICE 2
-#define MAP_UNCACHED 3 /* normal memory, not cached (frame buffers) */
+#define MAP_UNCACHED 3 /* not cached (frame buffers); on AArch64 Device-GRE:
+			* never read speculatively (firmware's memory) */
+
+/* usable RAM, in banks (2 MiB aligned on AArch64) */
+#define MAX_BANKS 16
+struct mem_bank {
+	addr_t base;
+	u64 size;
+};
 
 struct platform {
 	const char *name;
+	/* the kernel's RAM: the kernel and its heap from ram_base on; the
+	 * programs' memory from the banks, or from this alone (nbank 0) */
 	addr_t ram_base;
 	u32 ram_size;
+	struct mem_bank bank[MAX_BANKS];
+	int nbank;
 	/* I/O regions to map (va != pa allowed: devices below 1 GiB move up) */
 	const struct mem_region *io;
 	int nio;
@@ -92,6 +104,8 @@ struct platform {
 	int (*display_init)(u32 **fb, int *width, int *height, int *stride);
 	bool (*display_flush)(int y0, int y1); /* false: not now, again later */
 	u32 (*rtc_time)(void);        /* Unix time, or 0 */
+	void (*tick)(void);           /* every 1/100 s, interrupts off */
+	void (*panic_hook)(void);     /* after the panic's text is on the screen */
 	bool cached_data;             /* D-cache on */
 };
 extern const struct platform *plat;
@@ -109,8 +123,9 @@ void mmu_set_uncached(addr_t pa, u32 size);
 void cache_sync_code(addr_t va, u32 len);
 
 /* mm.c: physical memory in 1 MiB blocks (task memory, frame buffers)
- * and a kernel heap for small objects */
-void mm_init(addr_t base, u32 size, addr_t kernel_end);
+ * and a kernel heap for small objects, HEAP_MB behind the kernel */
+#define HEAP_MB 8
+void mm_init(addr_t kernel_end);
 addr_t mm_alloc_mb(u32 mb);        /* physical address or 0 */
 addr_t mm_alloc_mb_aligned(u32 mb, u32 align_mb);
 void mm_free_mb(addr_t pa, u32 mb);

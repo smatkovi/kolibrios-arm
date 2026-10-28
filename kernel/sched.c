@@ -133,6 +133,7 @@ void sched_yield(void)
 void timer_tick(void)
 {
 	ticks++;
+	if (plat->tick) plat->tick();
 	if (++slice >= SLICE_TICKS) {
 		slice = 0;
 		need_resched = true;

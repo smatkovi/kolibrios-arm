@@ -53,7 +53,7 @@ int load_program(const char *path, const char *params, struct task **out)
 	t->heap_end = (t->tf.usr_sp > 65536 ? t->tf.usr_sp - 65536 : t->tf.usr_sp) & ~15u;
 	t->events = 1u << (EV_REDRAW - 1);         /* the first event, as in KolibriOS */
 	t->state = T_READY;
-	kprintf("started %s: pid %u, slot %d, %u KiB\n", t->name, t->pid, t->slot, size >> 10);
+	kprintf("started %s: pid %u, slot %d, %u KiB at %p\n", t->name, t->pid, t->slot, size >> 10, pa);
 	if (out) *out = t;
 	return t->pid;
 }

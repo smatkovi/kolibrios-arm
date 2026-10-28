@@ -3,8 +3,8 @@
  *
  * One table tree for each program, from TTBR0: its first GiB (L1 entry 0,
  * a level 2 table of its own) is the program's (EL0, from VA 0), the
- * rest the kernel's, shared by all: the RAM the kernel uses, mapped 1:1
- * (it lies above 1 GiB on both platforms), and the devices, whose
+ * rest the kernel's, shared by all: the RAM, mapped 1:1 (it lies above
+ * 1 GiB on both platforms; the platform's banks), and the devices, whose
  * addresses lie below 1 GiB, moved up to DEV_ALIAS. Only what is used is
  * mapped (on the Pro1X, firmware's memory must not even be speculated). */
 #include "kernel.h"
@@ -15,9 +15,10 @@
 
 #define D_TABLE 3ul
 #define D_BLOCK 1ul
-#define ATTR_DEV (0ul << 2)
-#define ATTR_NORMAL (1ul << 2)
-#define ATTR_NC (2ul << 2)
+#define ATTR_DEV (0ul << 2)             /* MAIR: Device-nGnRnE */
+#define ATTR_NORMAL (1ul << 2)          /* write-back */
+#define ATTR_NC (2ul << 2)              /* normal, not cached */
+#define ATTR_DEV_GRE (3ul << 2)         /* Device-GRE: gathering, no speculation */
 #define AP_EL1 (0ul << 6)
 #define AP_EL0 (1ul << 6)
 #define SH_INNER (3ul << 8)
@@ -68,25 +69,31 @@ static void dcache_inval(addr_t a, u64 n)
 void mmu_init(void)
 {
 	kroot = new_table();
-	/* the kernel's RAM, in 2 MiB blocks */
-	addr_t ram = plat->ram_base & ~(BLOCK - 1);
-	map(kroot, ram, ram, ALIGN_UP(plat->ram_base + plat->ram_size - ram, BLOCK), normal());
+	/* the RAM, in 2 MiB blocks: the banks (all of them 2 MiB aligned),
+	 * or the kernel's window alone */
+	if (plat->nbank) {
+		for (int i = 0; i < plat->nbank; i++)
+			map(kroot, plat->bank[i].base, plat->bank[i].base, plat->bank[i].size, normal());
+	} else {
+		addr_t ram = plat->ram_base & ~(BLOCK - 1);
+		map(kroot, ram, ram, ALIGN_UP(plat->ram_base + plat->ram_size - ram, BLOCK), normal());
+	}
 	for (int i = 0; i < plat->nio; i++) {
 		const struct mem_region *r = &plat->io[i];
 		u64 attr = r->attr == MAP_DEVICE ? (ATTR_DEV | AP_EL1 | PXN | UXN) :
-			   r->attr == MAP_UNCACHED ? (ATTR_NC | SH_INNER | AP_EL1 | UXN) : normal();
+			   r->attr == MAP_UNCACHED ? (ATTR_DEV_GRE | AP_EL1 | PXN | UXN) : normal();
 		addr_t pa = r->pa & ~(BLOCK - 1);
 		addr_t va = r->attr == MAP_DEVICE ? mmu_io_va(pa) : pa;
 		map(kroot, va, pa, ALIGN_UP(r->pa + r->size - pa, BLOCK), attr);
 	}
 	u64 parange = SYSREG_R(id_aa64mmfr0_el1) & 7;
-	SYSREG_W(mair_el1, 0x0000000000044ff00ul);      /* 0 device, 1 normal WB, 2 normal NC */
+	SYSREG_W(mair_el1, 0x0c44ff00ul);    /* 0 device, 1 normal WB, 2 normal NC, 3 device GRE */
 	SYSREG_W(tcr_el1, 25ul | (1ul << 8) | (1ul << 10) | (3ul << 12) | (1ul << 23) | (parange << 32));
 	SYSREG_W(ttbr0_el1, (u64)kroot);
 	asm volatile("isb");
 	tlb_flush();
 	extern u8 __kernel_end[];
-	dcache_inval(plat->ram_base, (addr_t)__kernel_end - plat->ram_base + (16u << 20));
+	dcache_inval(plat->ram_base, (addr_t)__kernel_end - plat->ram_base + ((HEAP_MB + 1u) << 20));
 	asm volatile("ic iallu\ndsb nsh\nisb");
 	u64 sctlr = SYSREG_R(sctlr_el1);
 	sctlr |= 1ul << 0 | 1ul << 2 | 1ul << 12;       /* M, C, I */

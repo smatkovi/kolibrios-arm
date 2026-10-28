@@ -31,6 +31,8 @@ SECTIONS
 	}
 	. = ALIGN(4096);
 	__kernel_end = .;
-	__image_size = __kernel_end - _start;
+	/* with the heap mm.c puts behind the kernel (HEAP_MB), so that
+	 * whoever loads the image (kexec) keeps that free as well */
+	__image_size = __kernel_end - _start + (8 << 20);
 	/DISCARD/ : { *(.comment) *(.note*) *(.interp) *(.eh_frame*) }
 }

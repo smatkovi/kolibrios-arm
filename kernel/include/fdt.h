@@ -14,5 +14,12 @@ u32 fdt_u32(const void *fdt, int node, const char *name, u32 def);
 u64 fdt_cells(const void *p, int cells);
 bool fdt_reg(const void *fdt, int node, int acells, int scells, int index, u64 *addr, u64 *size);
 bool fdt_overlaps_reserved(const void *fdt, u64 start, u64 size);
+/* children: the first (prev -1) or the one after prev, -1 at the end */
+int fdt_next_child(const void *fdt, int parent, int prev);
+const char *fdt_node_name(const void *fdt, int node);
+u32 fdt_totalsize(const void *fdt);
+/* /memory without the reserved memory (and the device tree), cut at the
+ * alignment: the number of banks */
+int fdt_usable_ram(const void *fdt, struct mem_bank *out, int max, u64 align);
 
 #endif

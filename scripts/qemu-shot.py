@@ -5,8 +5,11 @@ screenshots through QEMU's monitor (for tests):
     qemu-shot.py KERNEL OUTDIR STEP...
 
 STEP: wait:SECONDS | shot:NAME | key:QEMUKEY (e.g. key:a, key:ret) |
-      mouse:DX,DY | click | drag:DX,DY (left button held)
+      mouse:DX,DY | click | drag:DX,DY (left button held) |
+      mem:ADDR,SIZE,NAME (guest physical memory to OUTDIR/NAME)
 The serial output goes to OUTDIR/serial.log, screenshots to OUTDIR/NAME.png.
+QEMU_MACHINE=virt runs the AArch64 kernel on QEMU's virt, QEMU_MEM sets
+its memory (512M), QEMU_DTB a device tree of its own (a Pro1X test).
 """
 import os
 import socket
@@ -22,7 +25,9 @@ if os.path.exists(sock):
 # QEMU_MACHINE=virt: the AArch64 kernel on QEMU's virt (GICv3, ramfb)
 if os.environ.get('QEMU_MACHINE') == 'virt':
     machine = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', 'cortex-a53',
-               '-m', '512', '-device', 'ramfb']
+               '-m', os.environ.get('QEMU_MEM', '512M'), '-device', 'ramfb']
+    if os.environ.get('QEMU_DTB'):
+        machine += ['-dtb', os.environ['QEMU_DTB']]
 else:
     machine = ['qemu-system-arm', '-M', 'realview-pb-a8', '-m', '256']
 q = subprocess.Popen(machine + ['-rtc', 'base=localtime',
@@ -58,6 +63,10 @@ try:
             time.sleep(0.3)
             subprocess.run(['magick', ppm, os.path.join(out, arg + '.png')], check=False)
             os.unlink(ppm)
+        elif kind == 'mem':
+            addr, size, name = arg.split(',')
+            cmd(f'pmemsave {addr} {size} {os.path.join(out, name)}')
+            time.sleep(0.5)
         elif kind == 'key':
             cmd('sendkey ' + arg)
         elif kind == 'mouse':

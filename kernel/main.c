@@ -41,9 +41,9 @@ void kmain(void)
 	if (plat->early_init) plat->early_init();
 	kprintf("\nKolibriOS for ARM %d.%d on %s\n", KOS_VERSION_MAJOR, KOS_VERSION_MINOR, plat->name);
 	kprintf("boot arguments %p %p %p, kernel ends at %p\n", boot_args[0], boot_args[1], boot_args[2], (addr_t)__kernel_end);
-	mm_init(plat->ram_base, plat->ram_size, (addr_t)__kernel_end);
+	mm_init((addr_t)__kernel_end);
 	mmu_init();
-	kprintf("MMU on, %u KiB free\n", mm_free_kb());
+	kprintf("MMU on, %u MiB of %u MiB free\n", mm_free_kb() >> 10, mm_total_kb() >> 10);
 	if (plat->display_init(&scr.fb, &scr.w, &scr.h, &scr.stride) < 0)
 		panic("no display");
 	kprintf("display %dx%d\n", scr.w, scr.h);

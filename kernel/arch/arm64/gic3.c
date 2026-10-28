@@ -4,7 +4,10 @@
 #include "kernel.h"
 
 #define GICD_CTLR 0x0000
+#define GICD_TYPER 0x0004
 #define GICD_ISENABLER 0x0100
+#define GICD_ICENABLER 0x0180
+#define GICD_ICPENDR 0x0280
 #define GICD_IPRIORITYR 0x0400
 #define GICD_IROUTER 0x6000
 #define GICR_TYPER 0x0008
@@ -12,6 +15,8 @@
 #define SGI 0x10000
 #define GICR_IGROUPR0 0x0080
 #define GICR_ISENABLER0 0x0100
+#define GICR_ICENABLER0 0x0180
+#define GICR_ICPENDR0 0x0280
 #define GICR_IPRIORITYR 0x0400
 #define TIMER_PPI 27
 
@@ -39,6 +44,15 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 	wr32(gicr + GICR_WAKER, rd32(gicr + GICR_WAKER) & ~2u);
 	for (int i = 0; i < 100000 && (rd32(gicr + GICR_WAKER) & 4); i++)
 		;
+	/* nothing of what the previous system (Linux, before kexec) had on:
+	 * the shared interrupts off, the private ones but the timer */
+	u32 nlines = ((rd32(gicd + GICD_TYPER) & 0x1f) + 1) * 32;
+	for (u32 i = 32; i < nlines && i < 1020; i += 32) {
+		wr32(gicd + GICD_ICENABLER + i / 8, 0xffffffffu);
+		wr32(gicd + GICD_ICPENDR + i / 8, 0xffffffffu);
+	}
+	wr32(gicr + SGI + GICR_ICENABLER0, ~(1u << TIMER_PPI));
+	wr32(gicr + SGI + GICR_ICPENDR0, ~(1u << TIMER_PPI));
 	wr32(gicr + SGI + GICR_IGROUPR0, 0xffffffffu);
 	wr8(gicr + SGI + GICR_IPRIORITYR + TIMER_PPI, 0xa0);
 	wr32(gicr + SGI + GICR_ISENABLER0, 1u << TIMER_PPI);
@@ -46,6 +60,7 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 	asm volatile("isb");
 	SYSREG_W(S3_0_C4_C6_0, 0xf0);                             /* ICC_PMR_EL1 */
 	SYSREG_W(S3_0_C12_C12_3, 0);                              /* ICC_BPR1_EL1 */
+	SYSREG_W(S3_0_C12_C12_4, SYSREG_R(S3_0_C12_C12_4) & ~2ul); /* ICC_CTLR_EL1: EOI deactivates */
 	SYSREG_W(S3_0_C12_C12_7, 1);                              /* ICC_IGRPEN1_EL1 */
 	asm volatile("isb");
 	/* the tick */

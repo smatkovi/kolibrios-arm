@@ -183,50 +183,158 @@ u32 fdt_u32(const void *fdt, int node, const char *name, u32 def)
 	return p && len >= 4 ? be32(p) : def;
 }
 
-/* the reserved memory a region must not overlap: /reserved-memory's
- * children (any) and the header's memory reservation block */
-bool fdt_overlaps_reserved(const void *fdt, u64 start, u64 size)
+/* the offset behind a node's name and properties */
+static int node_body(const u8 *base, int node)
+{
+	const char *nn = (const char *)base + node + 4;
+	int n = 0;
+	while (nn[n]) n++;
+	int off = ALIGN_UP(node + 4 + n + 1, 4);
+	for (;;) {
+		u32 tok = be32(base + off);
+		if (tok == TOK_PROP) off = ALIGN_UP(off + 12 + be32(base + off + 4), 4);
+		else if (tok == TOK_NOP) off += 4;
+		else return off;
+	}
+}
+
+/* the end of a node (behind its TOK_END) */
+static int node_end(const u8 *base, int node)
+{
+	int off = node_body(base, node), depth = 0;
+	for (;;) {
+		u32 tok = be32(base + off);
+		if (tok == TOK_BEGIN) {
+			depth++;
+			off = node_body(base, off);
+		} else if (tok == TOK_END) {
+			off += 4;
+			if (depth-- == 0) return off;
+		} else if (tok == TOK_PROP) {
+			off = ALIGN_UP(off + 12 + be32(base + off + 4), 4);
+		} else if (tok == TOK_NOP) {
+			off += 4;
+		} else {
+			return -1;
+		}
+	}
+}
+
+int fdt_next_child(const void *fdt, int parent, int prev)
+{
+	if (!fdt_ok(fdt) || parent < 0) return -1;
+	const u8 *base = structs(fdt);
+	int off = prev < 0 ? node_body(base, parent) : node_end(base, prev);
+	while (off >= 0 && be32(base + off) == TOK_NOP) off += 4;
+	return off >= 0 && be32(base + off) == TOK_BEGIN ? off : -1;
+}
+
+const char *fdt_node_name(const void *fdt, int node)
+{
+	return (const char *)structs(fdt) + node + 4;
+}
+
+u32 fdt_totalsize(const void *fdt)
+{
+	return be32((const u8 *)fdt + 4);
+}
+
+/* a node's name without the unit address */
+static bool name_is(const char *name, const char *want)
+{
+	while (*want && *name == *want) name++, want++;
+	return !*want && (!*name || *name == '@');
+}
+
+/* for each reserved region: the header's reservation block, the children
+ * of /reserved-memory with a reg, the device tree itself */
+static void for_each_reserved(const void *fdt, void (*cb)(u64 a, u64 s, void *arg), void *arg)
 {
 	const u8 *rsv = (const u8 *)fdt + be32((const u8 *)fdt + 16);
 	for (;; rsv += 16) {
 		u64 a = fdt_cells(rsv, 2), s = fdt_cells(rsv + 8, 2);
 		if (!a && !s) break;
-		if (a < start + size && start < a + s) return true;
+		cb(a, s, arg);
 	}
-	int ac, sc;
-	int rm = fdt_find_name(fdt, "reserved-memory", &ac, &sc);
-	if (rm < 0) return false;
-	/* its children use its own cells */
-	int cac = fdt_u32(fdt, rm, "#address-cells", 2), csc = fdt_u32(fdt, rm, "#size-cells", 2);
-	const u8 *base = structs(fdt);
-	int off = rm + 4, depth = 0;
-	const char *nn = (const char *)base + off;
-	int n = 0;
-	while (nn[n]) n++;
-	off = ALIGN_UP(off + n + 1, 4);
-	for (;;) {
-		u32 tok = be32(base + off);
-		if (tok == TOK_PROP) { off = ALIGN_UP(off + 12 + be32(base + off + 4), 4); continue; }
-		if (tok == TOK_NOP) { off += 4; continue; }
-		if (tok == TOK_BEGIN) {
-			if (depth == 0) {
-				u64 a, s;
-				if (fdt_reg(fdt, off, cac, csc, 0, &a, &s) && a < start + size && start < a + s)
-					return true;
+	for (int c = fdt_next_child(fdt, 0, -1); c >= 0; c = fdt_next_child(fdt, 0, c)) {
+		if (!name_is(fdt_node_name(fdt, c), "reserved-memory")) continue;
+		int cac = fdt_u32(fdt, c, "#address-cells", 2), csc = fdt_u32(fdt, c, "#size-cells", 2);
+		for (int r = fdt_next_child(fdt, c, -1); r >= 0; r = fdt_next_child(fdt, c, r)) {
+			u64 a, s;
+			for (int i = 0; fdt_reg(fdt, r, cac, csc, i, &a, &s); i++)
+				cb(a, s, arg);
+		}
+	}
+	cb((addr_t)fdt, fdt_totalsize(fdt), arg);
+}
+
+struct overlap { u64 start, size; bool hit; };
+
+static void overlap_cb(u64 a, u64 s, void *arg)
+{
+	struct overlap *o = arg;
+	if (a < o->start + o->size && o->start < a + s) o->hit = true;
+}
+
+bool fdt_overlaps_reserved(const void *fdt, u64 start, u64 size)
+{
+	struct overlap o = { start, size, false };
+	for_each_reserved(fdt, overlap_cb, &o);
+	return o.hit;
+}
+
+struct usable { struct mem_bank *b; int n, max; u64 align; };
+
+/* a reserved region (widened to the alignment) cut out of the banks */
+static void cut_cb(u64 a, u64 s, void *arg)
+{
+	struct usable *u = arg;
+	u64 lo = a & ~(u->align - 1), hi = ALIGN_UP(a + s, u->align);
+	for (int i = 0; i < u->n; i++) {
+		u64 b0 = u->b[i].base, b1 = b0 + u->b[i].size;
+		if (hi <= b0 || lo >= b1) continue;
+		if (lo > b0 && hi < b1 && u->n < u->max) {     /* split */
+			u->b[u->n].base = hi;
+			u->b[u->n].size = b1 - hi;
+			u->n++;
+			u->b[i].size = lo - b0;
+		} else if (lo > b0) {
+			u->b[i].size = lo - b0;
+		} else if (hi < b1) {
+			u->b[i].base = hi;
+			u->b[i].size = b1 - hi;
+		} else {
+			u->b[i].size = 0;
+		}
+	}
+}
+
+int fdt_usable_ram(const void *fdt, struct mem_bank *out, int max, u64 align)
+{
+	struct usable u = { out, 0, max, align };
+	int ac = fdt_u32(fdt, 0, "#address-cells", 2), sc = fdt_u32(fdt, 0, "#size-cells", 1);
+	for (int c = fdt_next_child(fdt, 0, -1); c >= 0; c = fdt_next_child(fdt, 0, c)) {
+		if (!name_is(fdt_node_name(fdt, c), "memory")) continue;
+		u64 a, s;
+		for (int i = 0; u.n < max && fdt_reg(fdt, c, ac, sc, i, &a, &s); i++) {
+			u64 lo = ALIGN_UP(a, align), hi = (a + s) & ~(align - 1);
+			if (hi > lo) {
+				out[u.n].base = lo;
+				out[u.n].size = hi - lo;
+				u.n++;
 			}
-			depth++;
-			const char *cn = (const char *)base + off + 4;
-			int m = 0;
-			while (cn[m]) m++;
-			off = ALIGN_UP(off + 4 + m + 1, 4);
-			continue;
 		}
-		if (tok == TOK_END) {
-			if (depth == 0) return false;
-			depth--;
-			off += 4;
-			continue;
-		}
-		return false;
 	}
+	for_each_reserved(fdt, cut_cb, &u);
+	/* the empty ones out, in address order */
+	int n = 0;
+	for (int i = 0; i < u.n; i++)
+		if (out[i].size) out[n++] = out[i];
+	for (int i = 1; i < n; i++)
+		for (int j = i; j > 0 && out[j].base < out[j - 1].base; j--) {
+			struct mem_bank t = out[j];
+			out[j] = out[j - 1];
+			out[j - 1] = t;
+		}
+	return n;
 }

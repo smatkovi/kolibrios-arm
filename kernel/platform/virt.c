@@ -136,21 +136,24 @@ struct platform platform_virt = {
 extern u8 __kernel_end[];
 extern addr_t boot_args[3];
 
-/* RAM: from the kernel's 2 MiB block on, 256 MiB, within /memory */
+/* the RAM: /memory without the device tree (QEMU puts it at the start),
+ * the kernel from its 2 MiB block on */
 bool virt_probe(const void *fdt)
 {
 	addr_t base = boot_args[1] & ~((2ul << 20) - 1);
-	u64 mem_end = base + (512ul << 20);
 	int ac, sc;
-	int m = fdt_find_name(fdt, "memory", &ac, &sc);
-	u64 a, s;
-	if (m >= 0 && fdt_reg(fdt, m, ac, sc, 0, &a, &s)) mem_end = a + s;
+	int n = fdt_ok(fdt) ? fdt_usable_ram(fdt, platform_virt.bank, MAX_BANKS, 2ul << 20) : 0;
+	if (!n) {
+		platform_virt.bank[0].base = base;
+		platform_virt.bank[0].size = 256ul << 20;
+		n = 1;
+	}
+	platform_virt.nbank = n;
 	int g = fdt_find_compatible(fdt, "arm,gic-v3", -1, &ac, &sc);
 	if (g >= 0) {
 		fdt_reg(fdt, g, ac, sc, 0, &gicd, NULL);
 		fdt_reg(fdt, g, ac, sc, 1, &gicr, NULL);
 	}
 	platform_virt.ram_base = base;
-	platform_virt.ram_size = MIN(256ul << 20, mem_end - base);
 	return true;
 }

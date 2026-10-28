@@ -191,5 +191,6 @@ void panic(const char *fmt, ...)
 	va_end(ap);
 	pbuf[plen] = 0;
 	panic_screen(pbuf);
+	if (plat && plat->panic_hook) plat->panic_hook();
 	for (;;) asm volatile("wfi");
 }
