@@ -11,8 +11,11 @@
  *     into a landscape buffer of its own and copies it, turned, into
  *     the graphics layer's buffer, then has DISPC send one frame (stall
  *     mode: LCDENABLE starts a transfer, as for command mode panels)
- * Not yet: the touch screen (Atmel maXTouch on I2C2, 0x4b) and the
- * keyboard (the TWL4030's keypad on I2C1), the RTC (TWL4030). */
+ *   - the keyboard: the TWL4030's keypad matrix (I2C1, 0x4a), polled; the
+ *     key map is omap3-n950.dts's (tools/n950-keymap.py)
+ *   - the touch screen: Atmel maXTouch (I2C2, 0x4b), T9 messages through
+ *     T5, polled; the first finger is the mouse with its left button
+ * Not yet: the RTC (TWL4030), the battery. */
 #include "kernel.h"
 
 #define UART3 0x49020000u
@@ -40,6 +43,10 @@
 #define SCR_W (PANEL_H - 2 * HIDDEN)
 #define SCR_H PANEL_W
 
+static void keypad_poll(void);
+static void touch_init(void);
+static void touch_poll(void);
+
 static void n9_putc(char c)
 {
 	for (int i = 0; i < 100000 && !(rd32(UART3 + 0x14) & 0x20); i++)
@@ -64,6 +71,7 @@ static void n9_init(void)
 	wr32(GPT1 + 0x18, 7);                         /* TISR: clear */
 	wr32(GPT1 + 0x1c, 2);                         /* TIER: overflow */
 	wr32(GPT1 + 0x24, 3);                         /* TCLR: start, reload */
+	touch_init();
 }
 
 static void n9_irq(void)
@@ -72,8 +80,176 @@ static void n9_irq(void)
 	if (irq == IRQ_GPT1) {
 		wr32(GPT1 + 0x18, 2);
 		timer_tick();
+		/* the keyboard and the touch screen, polled at 50 Hz */
+		if (ticks & 1) keypad_poll();
+		else touch_poll();
 	}
 	wr32(INTC + 0x48, 1);                         /* CONTROL: NEWIRQAGR */
+}
+
+/* --- I2C (OMAP3 I2C1-3, polled; the boot loader's clock setup kept) --- */
+
+#define I2C1 0x48070000u
+#define I2C2 0x48072000u
+#define I2C_STAT 0x08
+#define I2C_CNT 0x18
+#define I2C_DATA 0x1c
+#define I2C_CON 0x24
+#define I2C_SA 0x2c
+#define ST_NACK 0x0002
+#define ST_AL 0x0001
+#define ST_ARDY 0x0004
+#define ST_RRDY 0x0008
+#define ST_XRDY 0x0010
+#define ST_BB 0x1000
+#define CON_EN 0x8000
+#define CON_MST 0x0400
+#define CON_TRX 0x0200
+#define CON_STP 0x0002
+#define CON_STT 0x0001
+
+static u16 i2c_r(u32 b, u32 o) { return *(volatile u16 *)(b + o); }
+static void i2c_w(u32 b, u32 o, u16 v) { *(volatile u16 *)(b + o) = v; }
+
+static int i2c_wait(u32 b, u16 bits)
+{
+	for (int i = 0; i < 20000; i++) {
+		u16 st = i2c_r(b, I2C_STAT);
+		if (st & (ST_NACK | ST_AL)) {
+			i2c_w(b, I2C_CON, i2c_r(b, I2C_CON) | CON_STP);
+			i2c_w(b, I2C_STAT, st);
+			return -1;
+		}
+		if (st & bits) return st;
+	}
+	return -2;
+}
+
+/* write wlen bytes, then (repeated start) read rlen: 0 or < 0 */
+static int i2c_xfer(u32 b, u8 addr, const u8 *w, int wlen, u8 *r, int rlen)
+{
+	for (int i = 0; i < 20000 && (i2c_r(b, I2C_STAT) & ST_BB); i++)
+		;
+	i2c_w(b, I2C_STAT, 0xffff);
+	i2c_w(b, I2C_SA, addr);
+	if (wlen) {
+		i2c_w(b, I2C_CNT, wlen);
+		i2c_w(b, I2C_CON, CON_EN | CON_MST | CON_TRX | CON_STT | (rlen ? 0 : CON_STP));
+		for (int i = 0; i < wlen; i++) {
+			if (i2c_wait(b, ST_XRDY) < 0) return -1;
+			i2c_w(b, I2C_DATA, w[i]);  /* 16-bit accesses, as Linux makes them */
+			i2c_w(b, I2C_STAT, ST_XRDY);
+		}
+		if (i2c_wait(b, ST_ARDY) < 0) return -1;
+		i2c_w(b, I2C_STAT, ST_ARDY);
+	}
+	if (rlen) {
+		i2c_w(b, I2C_CNT, rlen);
+		i2c_w(b, I2C_CON, CON_EN | CON_MST | CON_STT | CON_STP);
+		for (int i = 0; i < rlen; i++) {
+			if (i2c_wait(b, ST_RRDY) < 0) return -1;
+			r[i] = i2c_r(b, I2C_DATA) & 0xff;
+			i2c_w(b, I2C_STAT, ST_RRDY);
+		}
+		if (i2c_wait(b, ST_ARDY) < 0) return -1;
+		i2c_w(b, I2C_STAT, ST_ARDY);
+	}
+	return 0;
+}
+
+/* --- the keyboard: the TWL4030's keypad (I2C1, 0x4a, registers from 0xd2) --- */
+
+#include "n950_keymap.h"
+#define TWL_KEYPAD 0x4a
+#define KEYP_FULL_CODE (0xd2 + 0x09)   /* 8 bytes: a row's columns each */
+static u8 keys_down[8];
+static bool keypad_ok = true;
+
+static void keypad_poll(void)
+{
+	u8 reg = KEYP_FULL_CODE, now[8];
+	if (!keypad_ok) return;
+	if (i2c_xfer(I2C1, TWL_KEYPAD, &reg, 1, now, 8) < 0) {
+		kprintf("n950: keypad does not answer\n");
+		keypad_ok = false;
+		return;
+	}
+	for (int r = 0; r < 8; r++) {
+		if (now[r] == 0xff) continue;             /* ghosting: ignored */
+		u8 ch = now[r] ^ keys_down[r];
+		for (int c = 0; c < 8 && ch; c++)
+			if (ch & (1 << c)) {
+				u8 sc = n950_keymap[r][c];
+				if (sc) input_key(sc, !(now[r] & (1 << c)));
+			}
+		keys_down[r] = now[r];
+	}
+}
+
+/* --- the touch screen: Atmel maXTouch (I2C2, 0x4b) ---------------------
+ * Its registers are objects listed in a table after the 7-byte information
+ * block at address 0; touches come as T9 messages from T5's address. */
+
+#define MXT 0x4b
+static u16 t5_addr, t9_range_x = 1023, t9_range_y = 1023;
+static u8 t5_size, t9_first_id, t9_last_id;
+static bool touch_ok;
+
+static int mxt_read(u16 reg, u8 *buf, int n)
+{
+	u8 a[2] = { reg & 0xff, reg >> 8 };
+	return i2c_xfer(I2C2, MXT, a, 2, buf, n);
+}
+
+static void touch_init(void)
+{
+	u8 info[7], obj[6];
+	if (mxt_read(0, info, 7) < 0) {
+		kprintf("n950: maXTouch does not answer\n");
+		return;
+	}
+	kprintf("n950: maXTouch family %x variant %x version %x, %u objects\n",
+		info[0], info[1], info[2], info[6]);
+	u8 id = 1;
+	u16 t9_addr = 0;
+	for (int i = 0; i < info[6]; i++) {
+		if (mxt_read(7 + i * 6, obj, 6) < 0) return;
+		u8 type = obj[0], inst = obj[4] + 1, nrep = obj[5];
+		u16 addr = obj[1] | obj[2] << 8;
+		if (type == 5) { t5_addr = addr; t5_size = obj[3] + 1; }
+		if (type == 9) { t9_addr = addr; t9_first_id = id; t9_last_id = id + nrep * inst - 1; }
+		id += nrep * inst;
+	}
+	if (!t5_addr || !t9_addr) {
+		kprintf("n950: maXTouch without T5/T9\n");
+		return;
+	}
+	u8 range[4];
+	if (mxt_read(t9_addr + 18, range, 4) == 0) {
+		t9_range_x = range[0] | range[1] << 8;
+		t9_range_y = range[2] | range[3] << 8;
+	}
+	kprintf("n950: touch T9 reports %u-%u, range %ux%u\n", t9_first_id, t9_last_id, t9_range_x, t9_range_y);
+	touch_ok = true;
+}
+
+/* the panel is portrait: its x along the short side; landscape x is its y
+ * (directions to check on the device) */
+static void touch_poll(void)
+{
+	u8 m[16];
+	if (!touch_ok) return;
+	for (int n = 0; n < 8; n++) {
+		if (mxt_read(t5_addr, m, MIN(t5_size, sizeof(m))) < 0 || m[0] == 0xff) return;
+		if (m[0] != t9_first_id) continue;      /* the first finger only */
+		u32 x = (m[2] << 4) | (m[4] >> 4), y = (m[3] << 4) | (m[4] & 0xf);
+		if (t9_range_x < 1024) x >>= 2;
+		if (t9_range_y < 1024) y >>= 2;
+		int sx = y * (SCR_W - 1) / (t9_range_y ? t9_range_y : 1);
+		int sy = (SCR_H - 1) - x * (SCR_H - 1) / (t9_range_x ? t9_range_x : 1);
+		bool down = (m[1] & 0x80) && !(m[1] & 0x20);   /* DETECT, not RELEASE */
+		input_mouse_abs(sx, sy, down ? 1 : 0);
+	}
 }
 
 static u32 *shadow, *lcd;

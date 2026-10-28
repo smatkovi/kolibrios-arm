@@ -41,7 +41,8 @@ with the mouse; keyboard input.
 | function 68 heap | allocates, does not free yet |
 | threads (function 51), IPC (60), shared memory, drivers, files that write | not yet |
 | N950: UART3, interrupts, timer, the display as the boot loader left it | written, **not tried on the device** |
-| N950: touch screen (maXTouch), keyboard (TWL4030), clock | not yet |
+| N950: I2C, keyboard (TWL4030 keypad), touch screen (maXTouch) | written, **not tried on the device** |
+| N950: clock (TWL4030), battery | not yet |
 
 The system functions done are in `kernel/syscall.c`; the others return
 -1 and say so on the debug output.
@@ -89,9 +90,10 @@ is meant to be started without writing the flash, from the PC through
 NOLO (`0xFFFF -m build/n950/kernel.bin -l -b`), or from ubiboot with
 kexec as a third entry beside MeeGo and Leste (it has a zImage head for
 that). A kernel panic shows on the screen too. `docs/n950.md` has the
-steps. Still to do there: the
-touch screen and the keyboard (I2C), the real-time clock, and whatever
-the display needs beyond what is written.
+steps. The keyboard (the TWL4030's
+keypad matrix, with omap3-n950.dts's key map) and the touch screen
+(maXTouch) are polled over I2C. Still to do there: the real-time clock,
+and whatever the display needs beyond what is written.
 
 ## Licence
 
