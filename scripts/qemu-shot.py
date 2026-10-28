@@ -19,7 +19,13 @@ os.makedirs(out, exist_ok=True)
 sock = os.path.join(out, 'monitor.sock')
 if os.path.exists(sock):
     os.unlink(sock)
-q = subprocess.Popen(['qemu-system-arm', '-M', 'realview-pb-a8', '-m', '256', '-rtc', 'base=localtime',
+# QEMU_MACHINE=virt: the AArch64 kernel on QEMU's virt (GICv3, ramfb)
+if os.environ.get('QEMU_MACHINE') == 'virt':
+    machine = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', 'cortex-a53',
+               '-m', '512', '-device', 'ramfb']
+else:
+    machine = ['qemu-system-arm', '-M', 'realview-pb-a8', '-m', '256']
+q = subprocess.Popen(machine + ['-rtc', 'base=localtime',
                       '-display', 'none', '-serial', 'file:' + os.path.join(out, 'serial.log'),
                       '-monitor', 'unix:' + sock + ',server,nowait', '-kernel', kernel])
 for _ in range(50):

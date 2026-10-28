@@ -18,10 +18,10 @@ static const u8 set2_to_set1[128] = {
 	0x52, 0x53, 0x50, 0x4c, 0x4d, 0x48, 0x01, 0x45, 0x57, 0x4e, 0x51, 0x4a, 0x37, 0x49, 0x46, 0x54,
 };
 
-/* US layout, set 1 codes 0x00-0x39 */
-static const char key_lower[0x3a] =
+/* US layout, set 1 codes 0x00-0x39 (and the terminating zero) */
+static const char key_lower[0x3b] =
 	"\0\x1b" "1234567890-=\b\tqwertyuiop[]\r\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
-static const char key_upper[0x3a] =
+static const char key_upper[0x3b] =
 	"\0\x1b" "!@#$%^&*()_+\b\tQWERTYUIOP{}\r\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
 
 static bool shift_l, shift_r, ctrl, alt, caps;

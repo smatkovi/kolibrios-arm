@@ -32,7 +32,7 @@ ifeq ($(PLATFORM),arm64)
 # position independent for kexec; its programs stay ARMv7 (AArch32 at EL0)
 ARCH := arm64
 KCC := clang --target=aarch64-none-elf -mcpu=cortex-a53
-KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgeneral-regs-only \
+KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgeneral-regs-only -mstrict-align \
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
 	fdt.c platform/virt.c platform/pro1x.c

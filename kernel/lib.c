@@ -176,7 +176,7 @@ static void pbuf_putc(char c) { if (plen + 1 < (int)sizeof(pbuf)) pbuf[plen++] =
 void panic(const char *fmt, ...)
 {
 	va_list ap;
-	asm volatile("cpsid if");
+	ARCH_IRQ_OFF();
 	kputs("\nKERNEL PANIC: ");
 	va_start(ap, fmt);
 	vkprintf(fmt, ap);

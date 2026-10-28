@@ -8,5 +8,6 @@
 struct platform;
 const struct platform *arch_platform(void);
 void arch_start(void) __attribute__((noreturn));
+#define ARCH_IRQ_OFF() asm volatile("cpsid if")
 
 #endif
