@@ -33,6 +33,20 @@ The command line:
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.
 
+First runs in steps, so that one failure does not hide another (an
+access to a block whose clocks are off hangs the bus without a trace,
+and the watchdog's reset ends the run):
+
+1. `kolibri.noinput kolibri.lifetime=45`: the display, the RAM, the
+   console, the watchdog. The console's `VIG0`/`DMA0` lines show what the
+   display scanned out before; a black screen with a complete console
+   is the display takeover, not the kernel.
+2. `kolibri.lifetime=60`: the keyboard and the touch screen as well.
+
+Linux's own shutdown on the way (kexec) already puts the SMMU in front of
+the display into bypass, so the panel may show garbage for a moment
+before the pipes are pointed at the framebuffer.
+
 ## What it left
 
 The phone has no serial port KolibriOS can drive and no network there.

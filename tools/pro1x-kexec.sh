@@ -25,11 +25,15 @@ args=${2:-}
 command -v kexec > /dev/null || { echo "pro1x-kexec: no kexec (kexec-tools)" >&2; exit 1; }
 [ -f "$kernel" ] || { echo "pro1x-kexec: no $kernel" >&2; exit 1; }
 
-# kexec_file: the device tree this kernel booted with goes along
+busybox devmem 0x0f017008 32 > /dev/null ||
+    { echo "pro1x-kexec: no busybox devmem (for the watchdog)" >&2; exit 1; }
+
+# kexec_file: the device tree this kernel booted with goes along; any
+# failure from here on unloads it again
 kexec -s -l "$kernel" --command-line="$args"
+trap 'kexec -u' EXIT
 if [ -n "$check" ]; then
 	echo "pro1x-kexec: $kernel loaded, unloaded again"
-	kexec -u
 	exit 0
 fi
 
@@ -43,7 +47,6 @@ if [ "$(cat $disp 2> /dev/null)" != active ]; then
 fi
 if [ "$(cat $disp 2> /dev/null)" != active ]; then
 	echo "pro1x-kexec: the display is off ($disp), not started" >&2
-	kexec -u
 	exit 1
 fi
 
@@ -67,4 +70,6 @@ busybox devmem 0x0f017008 32 1
 # kernel.sysrq says)
 echo s > /proc/sysrq-trigger
 echo u > /proc/sysrq-trigger
+sleep 3                        # both are queued work: let them finish
+trap - EXIT
 kexec -e
