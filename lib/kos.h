@@ -130,6 +130,31 @@ static inline void kos_debug_char(char c) { kos_call(63, 1, (u8)c, 0, 0, 0); }
 static inline void kos_move_window(int x, int y, int w, int h) { kos_call(67, x, y, w, h, 0); }
 static inline void *kos_malloc(u32 n) { return (void *)kos_call(68, 12, n, 0, 0, 0); }
 static inline void kos_set_caption(const char *s) { kos_call(71, 1, (u32)s, 0, 0, 0); }
+/* function 7: an image of 3 bytes (B, G, R) a pixel; 36: the screen's */
+static inline void kos_put_image(const void *img, int w, int h, int x, int y)
+{
+	kos_call(7, (u32)img, (u32)w << 16 | h, (u32)x << 16 | (u16)y, 0, 0);
+}
+static inline void kos_read_screen(void *buf, int x, int y, int w, int h)
+{
+	kos_call(36, (u32)buf, (u32)w << 16 | h, (u32)x << 16 | (u16)y, 0, 0);
+}
+/* function 18.22: minimise (0) or restore (2) the window of a slot */
+static inline void kos_minimize_slot(int slot) { kos_call(18, 22, 0, slot, 0, 0); }
+static inline void kos_restore_slot(int slot) { kos_call(18, 22, 2, slot, 0, 0); }
+/* function 18.25: the own window's layer (ZPOS_*) */
+#define KOS_ZPOS_ALWAYS_BACK (-1)
+#define KOS_ZPOS_NORMAL 0
+#define KOS_ZPOS_ALWAYS_TOP 1
+static inline void kos_set_zpos(int zpos) { kos_call(18, 25, 2, -1, zpos, 0); }
+/* function 48: the work area (inclusive), the skin by its file name */
+static inline void kos_set_work_area(int x0, int x1, int y0, int y1)
+{
+	kos_call(48, 6, (u32)x0 << 16 | x1, (u32)y0 << 16 | y1, 0, 0);
+}
+static inline int kos_set_skin(const char *path) { return kos_call(48, 8, (u32)path, 0, 0, 0); }
+/* function 72.1: a button press (its identifier) for the active window */
+static inline int kos_send_button(u32 id) { return kos_call(72, 1, 3, id, 0, 0); }
 
 /* function 70: files */
 struct kos_fileinfo {

@@ -1,0 +1,4 @@
+# the programs KolibriOS for ARM starts in its classic look (make LOOK=classic)
+/sys/@taskbar
+/sys/example
+/sys/clock

@@ -1,4 +1,3 @@
-# the programs KolibriOS for ARM starts (a path per line, then parameters)
-/sys/@taskbar
-/sys/example
-/sys/clock
+# the programs KolibriOS for ARM starts (a path per line, then parameters):
+# the Hildon shell (make LOOK=classic: autorun.classic, KolibriOS's panel)
+/sys/@hildon

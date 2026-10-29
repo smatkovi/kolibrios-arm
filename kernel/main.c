@@ -6,11 +6,38 @@ extern addr_t boot_args[3];
 void input_init(void);
 
 
+#ifdef __aarch64__
+#include "fdt.h"
+#endif
+
+/* the look the command line asks for (kolibri.look=classic or hildon, on
+ * the AArch64 kernel, which has a device tree): the ramdisk's
+ * autorun.classic or autorun.hildon instead of autorun. Read before the
+ * MMU is on: the kernel does not map the device tree. */
+static const char *autorun_path = "/sys/autorun";
+
+static void look_arg(void)
+{
+#ifdef __aarch64__
+	const void *fdt = (const void *)boot_args[0];
+	if (!fdt_ok(fdt)) return;
+	int ac, sc, len = 0;
+	int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
+	const char *a = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
+	for (int i = 0; a && i + 13 <= len; i++) {
+		if ((i && a[i - 1] != ' ') || strncmp(a + i, "kolibri.look=", 13)) continue;
+		if (i + 20 <= len && !strncmp(a + i + 13, "classic", 7)) autorun_path = "/sys/autorun.classic";
+		if (i + 19 <= len && !strncmp(a + i + 13, "hildon", 6)) autorun_path = "/sys/autorun.hildon";
+	}
+#endif
+}
+
 /* the programs the kernel starts: the ramdisk's "autorun" (one path per
  * line), or the panel alone */
 static void autorun(void)
 {
-	const struct rd_file *f = fs_find("/sys/autorun");
+	const struct rd_file *f = fs_find(autorun_path);
+	if (f && strcmp(autorun_path, "/sys/autorun")) kprintf("autorun: %s\n", autorun_path);
 	if (!f) {
 		load_program("/sys/@taskbar", NULL, NULL);
 		return;
@@ -38,6 +65,7 @@ static void autorun(void)
 void kmain(void)
 {
 	plat = arch_platform();
+	look_arg();
 	if (plat->early_init) plat->early_init();
 	kprintf("\nKolibriOS for ARM %d.%d on %s\n", KOS_VERSION_MAJOR, KOS_VERSION_MINOR, plat->name);
 	kprintf("boot arguments %p %p %p, kernel ends at %p\n", boot_args[0], boot_args[1], boot_args[2], (addr_t)__kernel_end);

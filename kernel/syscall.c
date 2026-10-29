@@ -91,6 +91,22 @@ static void draw_number(struct task *t, u32 *r)
 		 font == 0 ? 0 : 1, ((c >> 24) & 7) + 1, c & 0x40000000u, EDI, t->slot, false);
 }
 
+/* function 36: a part of the screen into a buffer, 3 bytes (B, G, R) a
+ * pixel; screen coordinates */
+static void read_screen(struct task *t, u32 *r)
+{
+	int w = ECX >> 16, h = ECX & 0xffff, x = EDX >> 16, y = EDX & 0xffff;
+	u8 *buf = uptr(t, EBX, (u32)w * h * 3);
+	if (!buf) return;
+	for (int j = 0; j < h; j++)
+		for (int i = 0; i < w; i++) {
+			u8 *p = buf + (j * w + i) * 3;
+			int xx = x + i, yy = y + j;
+			u32 c = xx < scr.w && yy < scr.h ? scr.fb[yy * scr.stride + xx] : 0;
+			p[0] = c; p[1] = c >> 8; p[2] = c >> 16;
+		}
+}
+
 static void put_image(struct task *t, u32 *r)
 {
 	int w = ECX >> 16, h = ECX & 0xffff;
@@ -161,10 +177,11 @@ static void thread_info(struct task *t, u32 *r)
 	*(u16 *)(b + 50) = o->state == T_WAIT_EVENT || o->state == T_WAIT_TIMEOUT ? 5 :
 			   o->state == T_SLEEP ? 1 : 0;
 	bool skinned = w->style == 3 || w->style == 4;
-	*(u32 *)(b + 54) = skinned ? FRAME_W : 0;
-	*(u32 *)(b + 58) = skinned ? SKIN_H : 0;
-	*(u32 *)(b + 62) = skinned ? w->w - 2 * FRAME_W - 1 : w->w - 1;
-	*(u32 *)(b + 66) = skinned ? w->h - SKIN_H - FRAME_W - 1 : w->h - 1;
+	int fw = skinned ? wm_frame_w(w) : 0, sh = skinned ? wm_skin_h(w) : 0;
+	*(u32 *)(b + 54) = fw;
+	*(u32 *)(b + 58) = sh;
+	*(u32 *)(b + 62) = w->w - 2 * fw - 1;
+	*(u32 *)(b + 66) = w->h - sh - fw - 1;
 	b[70] = w->minimized ? 2 : 0;
 	memcpy(b + 71, &o->event_mask, 4);
 }
@@ -324,6 +341,9 @@ void syscall(struct task *t)
 	case 7:
 		put_image(t, r);
 		return;
+	case 36:
+		read_screen(t, r);
+		return;
 	case 8:
 		define_button(t, r);
 		return;
@@ -377,6 +397,32 @@ void syscall(struct task *t)
 				if (tasks[i].state != T_FREE && tasks[i].pid == ECX) { EAX = i; return; }
 			EAX = 0;
 			return;
+		case 22: {                         /* minimise (0, 1) or restore (2, 3) a window */
+			struct task *o = NULL;
+			if (ECX == 0 || ECX == 2) {
+				if (EDX && EDX < MAX_TASKS) o = &tasks[EDX];
+			} else {
+				for (int i = 1; i < MAX_TASKS; i++)
+					if (tasks[i].state != T_FREE && tasks[i].pid == EDX) o = &tasks[i];
+			}
+			if (!o || o->state == T_FREE || !o->win.defined) { EAX = -1; return; }
+			if (ECX < 2) wm_minimize(o);
+			else wm_restore(o);
+			EAX = 0;
+			return;
+		}
+		case 25: {                         /* the window's layer: get (1), set (2) */
+			struct task *o = NULL;
+			if ((s32)EDX == -1) o = t;
+			else
+				for (int i = 1; i < MAX_TASKS; i++)
+					if (tasks[i].state != T_FREE && tasks[i].pid == EDX) o = &tasks[i];
+			if (!o) { EAX = -1; return; }
+			if (ECX == 1) { EAX = o->win.zpos; return; }
+			if (ECX == 2) { wm_set_zpos(o, (s32)ESI); EAX = 0; return; }
+			EAX = -1;
+			return;
+		}
 		default: EAX = -1; return;
 		}
 	case 23:
@@ -424,8 +470,20 @@ void syscall(struct task *t)
 			if (c) memcpy(c, std, MIN(EDX, 40));
 			return;
 		}
-		case 4: EAX = SKIN_H; return;
+		case 4: EAX = wm_look == LOOK_HILDON ? 0 : SKIN_H; return;
+		case 5: EAX = (u32)work_x0 << 16 | work_x1; EBX = (u32)work_y0 << 16 | work_y1; return;
+		case 6: wm_set_work_area(ECX >> 16, ECX & 0xffff, EDX >> 16, EDX & 0xffff); return;
 		case 7: EAX = (5 << 16) | 5; EBX = (4 << 16) | 4; return;
+		case 8: {                          /* the skin, by its file name: built in */
+			const char *path = ustr(t, ECX), *n = path;
+			if (!path) { EAX = 1; return; }
+			for (const char *p = path; *p; p++)
+				if (*p == '/') n = p + 1;
+			if (!strcmp(n, "hildon.skn")) EAX = wm_set_look(LOOK_HILDON);
+			else if (!strcmp(n, "default.skn")) EAX = wm_set_look(LOOK_CLASSIC);
+			else EAX = 1;
+			return;
+		}
 		default: EAX = 0; return;
 		}
 	case 63:
@@ -447,6 +505,9 @@ void syscall(struct task *t)
 		return;
 	case 70:
 		file_system(t, r);
+		return;
+	case 72:                               /* a message to the active window */
+		EAX = EBX == 1 ? wm_message(ECX, EDX) : -1;
 		return;
 	case 71:
 		if (EBX == 1) {

@@ -5,11 +5,24 @@
  * changes owner, the kernel paints the desktop there and sends the
  * windows it uncovers a redraw event; programs then redraw themselves
  * (functions 12.1, 0, the primitives, 12.2). The kernel draws the frame
- * and the title of skinned windows when function 0 is called. */
+ * and the title of skinned windows when function 0 is called.
+ *
+ * The stack has three layers (function 18.25): the windows always at the
+ * back, the normal ones, those always on top (a panel). The active window
+ * (the keys go to it) is the one last activated, else the top normal
+ * one; a click does not activate a window always on top (a panel's taps
+ * are its buttons), its program activates it itself when it wants keys.
+ *
+ * In Hildon's look (function 48.8) the windows but the plain ones have
+ * no frame or title and fill the work area (function 48.6), which the
+ * shell's panel leaves free; they do not move. */
 #include "gui.h"
 
 static int stack[MAX_TASKS];          /* slots, bottom to top */
 static int nstack;
+static int active_slot;               /* 0: the top normal window */
+int wm_look = LOOK_CLASSIC;
+int work_x0, work_y0, work_x1, work_y1;
 int mouse_x, mouse_y, mouse_buttons;
 static int mouse_events;              /* function 37.3's event bits */
 
@@ -25,6 +38,30 @@ static u32 press_buttons;
 static bool visible(struct task *t)
 {
 	return t->state != T_FREE && t->win.defined && !t->win.minimized;
+}
+
+/* in Hildon's look: maximised in the work area, without frame */
+static bool managed(const struct window *w)
+{
+	return wm_look == LOOK_HILDON && w->style != 1;
+}
+
+int wm_skin_h(const struct window *w)
+{
+	return w && managed(w) ? 0 : SKIN_H;
+}
+
+int wm_frame_w(const struct window *w)
+{
+	return w && managed(w) ? 0 : FRAME_W;
+}
+
+static void fit_work_area(struct window *w)
+{
+	w->x = work_x0;
+	w->y = work_y0;
+	w->w = work_x1 - work_x0 + 1;
+	w->h = work_y1 - work_y0 + 1;
 }
 
 static bool intersects(struct window *w, int x, int y, int ww, int hh)
@@ -53,9 +90,16 @@ void wm_redraw_background(int x, int y, int w, int h)
 {
 	int y0 = MAX(y, 0), y1 = MIN(y + h, scr.h);
 	for (int yy = y0; yy < y1; yy++) {
-		/* KolibriOS's blue, darker towards the bottom */
-		int f = 255 - yy * 110 / scr.h;
-		u32 c = ((0x30 * f >> 8) << 16) | ((0x68 * f >> 8) << 8) | (0xa8 * f >> 8);
+		u32 c;
+		if (wm_look == LOOK_HILDON) {
+			/* Hildon's dark home, a little blue at the top */
+			int f = 255 - yy * 170 / scr.h;
+			c = ((0x1c * f >> 8) << 16) | ((0x2a * f >> 8) << 8) | (0x3c * f >> 8);
+		} else {
+			/* KolibriOS's blue, darker towards the bottom */
+			int f = 255 - yy * 110 / scr.h;
+			c = ((0x30 * f >> 8) << 16) | ((0x68 * f >> 8) << 8) | (0xa8 * f >> 8);
+		}
 		gfx_rect(x, yy, w, 1, c, 0);
 	}
 }
@@ -82,18 +126,25 @@ static void stack_remove(int slot)
 	nstack = j;
 }
 
+/* on top of its layer */
 static void stack_push(int slot)
 {
 	stack_remove(slot);
-	stack[nstack++] = slot;
+	int z = tasks[slot].win.zpos, i = nstack;
+	while (i > 0 && tasks[stack[i - 1]].win.zpos > z) i--;
+	for (int j = nstack; j > i; j--) stack[j] = stack[j - 1];
+	stack[i] = slot;
+	nstack++;
 }
 
 struct task *wm_active(void)
 {
-	for (int i = nstack - 1; i >= 0; i--) {
-		struct task *t = &tasks[stack[i]];
-		if (visible(t)) return t;
-	}
+	if (active_slot && visible(&tasks[active_slot])) return &tasks[active_slot];
+	for (int pass = 0; pass < 2; pass++)
+		for (int i = nstack - 1; i >= 0; i--) {
+			struct task *t = &tasks[stack[i]];
+			if (visible(t) && (pass || t->win.zpos <= ZPOS_NORMAL)) return t;
+		}
 	return NULL;
 }
 
@@ -110,6 +161,10 @@ int wm_slot_at_pos(int pos) { return pos >= 1 && pos <= nstack ? stack[pos - 1] 
 void wm_init(void)
 {
 	nstack = 0;
+	work_x0 = 0;
+	work_y0 = 0;
+	work_x1 = scr.w - 1;
+	work_y1 = scr.h - 1;
 	memset(scr.owner, 0, scr.w * scr.h);
 	wm_redraw_background(0, 0, scr.w, scr.h);
 	mouse_x = scr.w / 2;
@@ -124,8 +179,8 @@ void wm_origin(struct task *t, int *ox, int *oy)
 	*oy = w->y;
 	if (w->flags & 2) {          /* B: relative to the work area */
 		if (w->style == 3 || w->style == 4) {
-			*ox += FRAME_W;
-			*oy += SKIN_H;
+			*ox += wm_frame_w(w);
+			*oy += wm_skin_h(w);
 		}
 	}
 }
@@ -160,6 +215,13 @@ void wm_draw_frame(struct task *t)
 	int s = t->slot;
 	if (!visible(t)) return;
 	if (w->style == 1) return;
+	if (managed(w)) {            /* Hildon: the work area only */
+		if (!(w->flags & 4)) {
+			if (w->flags & 8) gfx_hgradient(w->x, w->y, w->w, w->h, w->work_color, s);
+			else gfx_rect(w->x, w->y, w->w, w->h, w->work_color, s);
+		}
+		return;
+	}
 	bool active = wm_active() == t;
 	if (w->style == 3 || w->style == 4 || w->style == 0 || w->style == 2) {
 		u32 tc = active ? COL_ACTIVE : COL_INACTIVE;
@@ -194,6 +256,7 @@ static void define_skin_buttons(struct task *t)
 {
 	struct window *w = &t->win;
 	if (w->style != 3 && w->style != 4) return;
+	if (managed(w)) return;      /* the shell's panel has them */
 	for (int i = 0; i < w->nbtn; i++)
 		if (w->btn[i].id == 1 || w->btn[i].id == 0xffff) return;
 	int bx = w->x + w->w - 22, by = w->y + 3;
@@ -216,10 +279,16 @@ void wm_define_window(struct task *t, u32 ebx, u32 ecx, u32 edx, u32 esi, const 
 		w->movable = ((esi >> 24) & 0xf) != 1;
 		w->style = style;
 		w->flags = (edx >> 28) & 0xf;
+		w->zpos = ZPOS_NORMAL;
+		if (managed(w)) {
+			fit_work_area(w);
+			w->movable = false;
+		}
 		if (title) strncpy0(w->title, title, sizeof(w->title));
 		w->defined = true;
 		struct task *old = wm_active();
 		stack_push(t->slot);
+		active_slot = t->slot;
 		owner_region(w->x, w->y, w->w, w->h);
 		if (old && old != t) { wm_draw_frame(old); task_post_event(old, EV_REDRAW); }
 	}
@@ -238,6 +307,7 @@ void wm_activate(struct task *t)
 	struct task *old = wm_active();
 	t->win.minimized = false;
 	stack_push(t->slot);
+	active_slot = t->slot;
 	owner_region(t->win.x, t->win.y, t->win.w, t->win.h);
 	wm_draw_frame(t);
 	task_post_event(t, EV_REDRAW);
@@ -252,6 +322,7 @@ void wm_minimize(struct task *t)
 	struct window *w = &t->win;
 	if (!w->defined || w->minimized) return;
 	w->minimized = true;
+	if (active_slot == t->slot) active_slot = 0;
 	expose(w->x, w->y, w->w, w->h);
 	struct task *a = wm_active();
 	if (a) { wm_draw_frame(a); task_post_event(a, EV_REDRAW); }
@@ -261,6 +332,7 @@ void wm_move(struct task *t, int x, int y, int ww, int hh)
 {
 	struct window *w = &t->win;
 	if (!w->defined) return;
+	if (managed(w)) return;      /* maximised in the work area */
 	int ox = w->x, oy = w->y, ow = w->w, oh = w->h;
 	if (x != -1) w->x = x;
 	if (y != -1) w->y = y;
@@ -294,6 +366,8 @@ void wm_remove(struct task *t)
 	struct task *a = wm_active();
 	stack_remove(t->slot);
 	w->defined = false;
+	w->zpos = ZPOS_NORMAL;
+	if (active_slot == t->slot) active_slot = 0;
 	if (press_slot == t->slot) press_slot = 0;
 	if (drag_slot == t->slot) drag_slot = 0;
 	if (was) expose(w->x, w->y, w->w, w->h);
@@ -367,7 +441,7 @@ void wm_mouse(int x, int y, int buttons, int changed)
 
 	if ((changed & 1) && (buttons & 1)) {           /* left button down */
 		if (t) {
-			if (wm_active() != t) wm_activate(t);
+			if (wm_active() != t && t->win.zpos != ZPOS_ALWAYS_TOP) wm_activate(t);
 			int bi = button_at(t, mouse_x, mouse_y);
 			struct window *w = &t->win;
 			if (bi >= 0) {
@@ -418,4 +492,78 @@ void wm_key(u32 value)
 	a->keys[a->key_head] = value;
 	a->key_head = n;
 	task_post_event(a, EV_KEY);
+}
+
+/* the whole screen again: the owners, the desktop, every window */
+static void relayout(void)
+{
+	for (int i = 0; i < nstack; i++) {
+		struct window *w = &tasks[stack[i]].win;
+		if (managed(w)) {
+			fit_work_area(w);
+			w->movable = false;
+			w->nbtn = 0;     /* defined again at the redraw */
+		}
+	}
+	expose(0, 0, scr.w, scr.h);
+}
+
+int wm_set_look(int look)
+{
+	if (look != LOOK_CLASSIC && look != LOOK_HILDON) return -1;
+	if (look != wm_look) {
+		wm_look = look;
+		relayout();
+	}
+	return 0;
+}
+
+void wm_set_work_area(int x0, int x1, int y0, int y1)
+{
+	x0 = MAX(x0, 0); y0 = MAX(y0, 0);
+	x1 = MIN(x1, scr.w - 1); y1 = MIN(y1, scr.h - 1);
+	if (x0 >= x1 || y0 >= y1) return;
+	if (x0 == work_x0 && x1 == work_x1 && y0 == work_y0 && y1 == work_y1) return;
+	work_x0 = x0; work_x1 = x1; work_y0 = y0; work_y1 = y1;
+	if (wm_look == LOOK_HILDON) relayout();
+}
+
+void wm_set_zpos(struct task *t, int zpos)
+{
+	struct window *w = &t->win;
+	if (zpos < ZPOS_ALWAYS_BACK || zpos > ZPOS_ALWAYS_TOP || !w->defined) return;
+	w->zpos = zpos;
+	stack_push(t->slot);
+	expose(w->x, w->y, w->w, w->h);
+}
+
+void wm_restore(struct task *t)
+{
+	struct window *w = &t->win;
+	if (!w->defined || !w->minimized) return;
+	w->minimized = false;
+	owner_region(w->x, w->y, w->w, w->h);
+	wm_draw_frame(t);
+	task_post_event(t, EV_REDRAW);
+}
+
+/* function 72.1: a key (2, the code as function 2 has it in ah) or a
+ * button (3, its identifier) for the active window */
+int wm_message(int kind, u32 code)
+{
+	struct task *a = wm_active();
+	if (!a) return 1;
+	if (kind == 2) {
+		int n = (a->key_head + 1) % KEYBUF;
+		if (n == a->key_tail) return 1;
+		a->keys[a->key_head] = (code & 0xff) << 8;
+		a->key_head = n;
+		task_post_event(a, EV_KEY);
+		return 0;
+	}
+	if (kind == 3) {
+		button_event(a, code & 0xffffff, 1);
+		return 0;
+	}
+	return -1;
 }

@@ -29,6 +29,7 @@ The command line:
 | --- | --- |
 | `kolibri.lifetime=N` | stop feeding the watchdog after N s, with a screenshot first: the phone resets about 32 s later, into the boot menu (an unattended test) |
 | `kolibri.noinput` | leave the keyboard and the touch screen alone |
+| `kolibri.look=classic` | KolibriOS's own panel and movable windows instead of the Hildon shell (`kolibri.look=hildon`, the default) |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.

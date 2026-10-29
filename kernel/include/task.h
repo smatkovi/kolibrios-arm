@@ -41,6 +41,7 @@ struct window {
 	u32 work_color;
 	u32 title_color;
 	bool movable;
+	int zpos;         /* function 18.25: ZPOS_* */
 	char title[64];
 	struct button btn[MAX_BUTTONS];
 	int nbtn;

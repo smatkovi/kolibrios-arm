@@ -6,6 +6,8 @@
 #                              for NOLO's or kexec's 0x80008000)
 #   make PLATFORM=arm64        the AArch64 kernel: QEMU's virt and the Pro1X
 #                              (build/arm64/kernel.bin, an arm64 Image for kexec)
+#   make LOOK=classic          KolibriOS's own panel and menu instead of the
+#                              Hildon shell
 #
 # Needs the Arm GNU toolchain (arm-none-eabi-gcc, its libgcc: the Cortex-A8
 # divides in software) and python3; QEMU's qemu-system-arm to run it.
@@ -53,9 +55,17 @@ KLINK = $(CC32) $(LDFLAGS) -T kernel/arch/armv7/kernel.ld -Wl,--defsym,KERNEL_BA
 endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
-APPS := taskbar menu example clock board cpu
+APPS := taskbar menu example clock board cpu hildon hstatus
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
+RDNAME_hildon := @hildon
+RDNAME_hstatus := @hstatus
+# memory beyond the default 1 MiB (the shell keeps the task switcher's pictures)
+MEM_hildon := 0x400000
+# the look the kernel starts with: hildon (the Hildon shell) or classic
+# (KolibriOS's panel and menu): apps/autorun or apps/autorun.classic
+LOOK ?= hildon
+AUTORUN := $(if $(filter classic,$(LOOK)),apps/autorun.classic,apps/autorun)
 KEX := $(foreach a,$(APPS),$(A)/$(a).kex)
 
 all: $(B)/kernel.elf $(B)/kernel.bin
@@ -82,13 +92,21 @@ $(A)/lib/%.o: lib/%.S | dirs
 $(A)/%.o: apps/%/*.c lib/kos.h | dirs
 	$(CC32) $(ACFLAGS) -c apps/$*/$*.c -o $@
 $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
-	$(CC32) $(LDFLAGS) -T lib/app.ld $(A)/lib/crt0.o $< $(A)/lib/klib.o $(LIBGCC) -o $@
+	$(CC32) $(LDFLAGS) $(if $(MEM_$*),-Wl$(comma)--defsym$(comma)MEMORY_SIZE=$(MEM_$*)) \
+		-T lib/app.ld $(A)/lib/crt0.o $< $(A)/lib/klib.o $(LIBGCC) -o $@
 $(A)/%.kex: $(A)/%.elf
 	$(OBJCOPY) -O binary $< $@
 
-$(A)/ramdisk.img: $(KEX) apps/autorun tools/mkrd.py
-	python3 tools/mkrd.py $@ autorun=apps/autorun \
+comma := ,
+$(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile
+	python3 tools/mkrd.py $@ autorun=$(AUTORUN) \
+		autorun.classic=apps/autorun.classic autorun.hildon=apps/autorun \
 		$(foreach a,$(APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex)
+
+# the look in a file, written when it changes: the ramdisk follows it
+$(A)/look: FORCE | dirs
+	@[ "$$(cat $@ 2> /dev/null)" = "$(LOOK)" ] || echo "$(LOOK)" > $@
+FORCE:
 
 dirs:
 	@mkdir -p $(B)/platform $(B)/fonts $(B)/arch/$(ARCH) $(A)/lib
@@ -100,5 +118,5 @@ run: all
 clean:
 	rm -rf build
 
-.PHONY: all run clean dirs
+.PHONY: all run clean dirs FORCE
 .SECONDARY:

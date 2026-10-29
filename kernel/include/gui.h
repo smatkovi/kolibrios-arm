@@ -15,6 +15,17 @@ extern struct screen scr;
 #define SKIN_H 22         /* the skinned windows' title height (function 48.4) */
 #define FRAME_W 5         /* outer 1 + frame 3 + inner 1 */
 
+/* The look (function 48.8, by the skin's file name): KolibriOS's skin, or
+ * Hildon's (Maemo 5): the windows without frame or title, maximised in
+ * the work area (function 48.6), one in front; the shell (apps/hildon)
+ * draws the title, the buttons and the status area in its panel. */
+enum { LOOK_CLASSIC, LOOK_HILDON };
+extern int wm_look;
+/* the work area (48.5, 48.6), inclusive */
+extern int work_x0, work_y0, work_x1, work_y1;
+/* window stack layers (function 18.25), KolibriOS's numbers */
+enum { ZPOS_ALWAYS_BACK = -1, ZPOS_NORMAL = 0, ZPOS_ALWAYS_TOP = 1 };
+
 /* gfx.c: primitives on the screen, only where slot owns the pixel
  * (slot -1: everywhere, for the mouse pointer and the boot screen) */
 void gfx_init(void);
@@ -36,6 +47,13 @@ void cursor_show(void);
 
 /* wm.c */
 void wm_init(void);
+int wm_skin_h(const struct window *w);    /* its title height, its frame width */
+int wm_frame_w(const struct window *w);
+int wm_set_look(int look);
+void wm_set_work_area(int x0, int x1, int y0, int y1);
+void wm_set_zpos(struct task *t, int zpos);
+void wm_restore(struct task *t);          /* function 18.22: unminimised, not activated */
+int wm_message(int kind, u32 code);       /* function 72.1: to the active window */
 void wm_define_window(struct task *t, u32 ebx, u32 ecx, u32 edx, u32 esi, const char *title);
 void wm_draw_frame(struct task *t);
 void wm_remove(struct task *t);           /* the task ends */

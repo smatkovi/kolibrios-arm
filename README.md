@@ -30,18 +30,62 @@ KolibriOS's interface to programs, as documented in its `sysfuncs.txt`:
   codes of function 2 (ASCII and set 1 scan code), buttons (function 8,
   17) and the skinned window's close and minimize buttons work as there.
 
+## The look
+
+The system starts in a look after Maemo 5's Hildon desktop (the Nokia
+N900), made for the phones' touch screens: `@hildon`, a shell, keeps a
+panel at the top of the screen, and the window manager shows one
+application at a time, maximised below it, without frame or title.
+
+- With an application in front, the panel has the task switcher button
+  on the left, the application's title, the status area (the clock, the
+  battery) and the close button on the right. The close button gives the
+  application its close button's press (function 72.1); one that does not
+  end within 2 s is ended.
+- The task switcher shows the open applications as tiles with the last
+  picture of each (a quarter of the screen, read with function 36 when it
+  left the front), each with a cross that closes it; a tap on a tile
+  brings that application to the front, a tap beside them goes home.
+- The home view is the desktop with a clock and the date; its button
+  opens the launcher, the programs of the ramdisk as a grid of icons.
+- The status area opens `@hstatus`, the status menu: the date and time,
+  the battery (not measured yet), the memory, the time running.
+
+Everything is a finger wide; in the grids the arrow keys, Enter and
+Escape work too. The icons and colours are drawn by the shell itself
+(simple shapes, Hildon's dark theme); no Nokia graphics or fonts are in
+here.
+
+The window manager's side, in KolibriOS's own system functions: the skin
+(48.8: `hildon.skn` for Hildon's look, `default.skn` for KolibriOS's;
+both are built into the kernel), the work area (48.5, 48.6) that the
+maximised windows fill, the window layers (18.25: the panel is always on
+top; a click does not activate such a window, so the keys stay with the
+application), minimising and restoring another window (18.22), a message
+to the active window (72.1) and reading the screen (36).
+
+KolibriOS's classic look, its panel `@taskbar` and the start menu `menu`
+with movable windows, is still there: `make LOOK=classic` makes it the
+default, and the AArch64 kernel takes `kolibri.look=classic` (or
+`hildon`) on its command line (the ramdisk has `autorun.classic` and
+`autorun.hildon` beside `autorun`).
+
 ## Status
 
-Runs in QEMU (realview-pb-a8): the panel (`@taskbar`) with a window list
-and the clock, the start menu (`menu`), the debug board, a process
-manager, an example program and an analog clock, in windows that move
-with the mouse; keyboard input.
+Runs in QEMU (realview-pb-a8): the Hildon shell (`@hildon`: the panel,
+the home view, the launcher, the task switcher, the status menu), or the
+classic panel (`@taskbar`) with a window list and the clock and the start
+menu (`menu`); the debug board, a process manager, an example program
+and an analog clock; keyboard input. The Hildon shell also runs on the
+AArch64 kernel in QEMU with the Pro1X's device tree (1080x540, without
+input there).
 
 | Part | State |
 | --- | --- |
 | boot, MMU (1 MiB sections, a page table per program), exceptions | runs (QEMU) |
 | scheduler: preemptive, 100 Hz, the tasks' waits (functions 5, 10, 23) | runs (QEMU) |
 | windows, skins, buttons, drawing, text (6x10 and 8x16 fonts), lines, images | runs (QEMU) |
+| Hildon's look: skin 48.8, work area 48.5/48.6, layers 18.25, 18.22, 72.1, reading the screen 36 | runs (QEMU) |
 | keyboard (PS/2 set 2 → set 1), mouse | runs (QEMU) |
 | ramdisk `/sys` (= `/rd/1`): function 70 read, folder, information, start | runs (QEMU) |
 | function 68 heap | allocates, does not free yet |
@@ -66,10 +110,12 @@ can be recompiled.
 
 | Program | What it is |
 | --- | --- |
-| `@taskbar` | the panel: menu button, a button per window, the clock |
+| `@hildon` | the Hildon shell: the panel, home, the launcher, the task switcher (`hildon launcher` or `hildon switcher` opens that view at the start, for tests) |
+| `@hstatus` | the Hildon shell's status menu |
+| `@taskbar` | the classic panel: menu button, a button per window, the clock |
 | `menu` | the start menu: the programs on the ramdisk |
 | `example` | KolibriOS's example program: text, buttons, keys |
-| `clock` | an analog clock, drawn with lines |
+| `clock` | an analog clock, drawn with lines, as large as its window |
 | `board` | the debug board: what the kernel and programs write (function 63) |
 | `cpu` | the process manager: the threads, their memory and state; ends one |
 
@@ -83,6 +129,7 @@ Needs the Arm GNU toolchain (`arm-none-eabi-gcc`), python3, and QEMU
 ```sh
 make            # build/realview/kernel.elf, the programs and the ramdisk
 make run        # in QEMU
+make LOOK=classic    # KolibriOS's own panel and menu instead of the Hildon shell
 make PLATFORM=n950   # build/n950/kernel.bin, a raw image for 0x80008000
 make PLATFORM=arm64  # build/arm64/kernel.bin, an arm64 Image (QEMU virt, the Pro1X)
 ```
