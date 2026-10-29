@@ -8,6 +8,7 @@
 #define GICD_ISENABLER 0x0100
 #define GICD_ICENABLER 0x0180
 #define GICD_ICPENDR 0x0280
+#define GICD_IGROUPR 0x0080
 #define GICD_IPRIORITYR 0x0400
 #define GICD_IROUTER 0x6000
 #define GICR_TYPER 0x0008
@@ -74,6 +75,8 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 void gic3_enable_spi(u32 id)
 {
 	wr8(gicd + GICD_IPRIORITYR + id, 0xa0);
+	/* group 1 (QEMU's resets to 0; with TrustZone the write is ignored) */
+	wr32(gicd + GICD_IGROUPR + 4 * (id / 32), rd32(gicd + GICD_IGROUPR + 4 * (id / 32)) | 1u << (id % 32));
 	*(volatile u64 *)(gicd + GICD_IROUTER + 8 * id) = SYSREG_R(mpidr_el1) & 0xff00ffffff;
 	wr32(gicd + GICD_ISENABLER + 4 * (id / 32), 1u << (id % 32));
 }

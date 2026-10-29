@@ -39,8 +39,16 @@ KCC := clang --target=aarch64-none-elf -mcpu=cortex-a53
 KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgeneral-regs-only -mstrict-align \
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
-	fdt.c platform/virt.c platform/pro1x.c
-KLINK = ld.lld -pie --no-dynamic-linker -z notext -T kernel/arch/arm64/kernel.ld $(KOBJ) -o $@
+	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c
+# the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
+LWIP := third_party/lwip/src
+LWIPSRC := core/init.c core/def.c core/dns.c core/inet_chksum.c core/ip.c core/mem.c core/memp.c \
+	core/netif.c core/pbuf.c core/tcp.c core/tcp_in.c core/tcp_out.c core/timeouts.c core/udp.c \
+	core/ipv4/dhcp.c core/ipv4/etharp.c core/ipv4/icmp.c core/ipv4/ip4.c core/ipv4/ip4_addr.c \
+	core/ipv4/ip4_frag.c core/ipv4/acd.c netif/ethernet.c
+LWIPOBJ := $(addprefix $(B)/lwip/,$(LWIPSRC:.c=.o))
+KCFLAGS += -Ikernel/net -Ikernel/net/include -I$(LWIP)/include
+KLINK = ld.lld -pie --no-dynamic-linker -z notext -T kernel/arch/arm64/kernel.ld $(KOBJ) $(LWIPOBJ) -o $@
 else
 ARCH := armv7
 KCC := $(CC32)
@@ -78,10 +86,18 @@ $(B)/%.o: kernel/%.c kernel/include/*.h kernel/modem/*.h lib/kos_modem.h kernel/
 $(B)/%.o: kernel/%.S | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
 
+$(LWIP)/core/init.c:
+	tools/fetch-lwip.sh
+$(B)/net/%.o: kernel/net/%.c kernel/net/*.h kernel/net/arch/cc.h kernel/include/*.h $(LWIP)/core/init.c | dirs
+	$(KCC) $(KCFLAGS) -c $< -o $@
+$(B)/lwip/%.o: $(LWIP)/%.c kernel/net/lwipopts.h kernel/net/arch/cc.h | dirs
+	@mkdir -p $(dir $@)
+	$(KCC) $(KCFLAGS) -Wno-unused-but-set-variable -c $< -o $@
+
 $(B)/rd.o: kernel/rd.S $(A)/ramdisk.img | dirs
 	$(KCC) $(KCFLAGS) -DRAMDISK='"$(A)/ramdisk.img"' -c $< -o $@
 
-$(B)/kernel.elf: $(KOBJ) kernel/arch/$(ARCH)/kernel.ld
+$(B)/kernel.elf: $(KOBJ) $(LWIPOBJ) kernel/arch/$(ARCH)/kernel.ld
 	$(KLINK)
 
 $(B)/kernel.bin: $(B)/kernel.elf
@@ -112,14 +128,25 @@ $(A)/look: FORCE | dirs
 FORCE:
 
 dirs:
-	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/arch/$(ARCH) $(A)/lib
+	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/net $(B)/arch/$(ARCH) $(A)/lib
 
 QEMU := qemu-system-arm -M realview-pb-a8 -m 256 -rtc base=localtime -serial stdio
 run: all
 	$(QEMU) -kernel $(B)/kernel.elf
 
+# the AArch64 kernel in QEMU's virt with a network card (user networking:
+# DHCP, DNS, the host as 10.0.2.2) and the kernel's network self test,
+# answered by a small HTTP server on the host (NETTEST_PORT)
+QEMU64 := qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 1024 -device ramfb \
+	-global virtio-mmio.force-legacy=false -device virtio-net-device,netdev=n0 -netdev user,id=n0 \
+	-serial stdio
+NETTEST_PORT ?= 18765
+run-net: all
+	@echo "the host's test server: python3 -m http.server --bind 127.0.0.1 $(NETTEST_PORT)"
+	$(QEMU64) -kernel $(B)/kernel.bin -append "kolibri.nettest=$(NETTEST_PORT)"
+
 clean:
 	rm -rf build
 
-.PHONY: all run clean dirs FORCE
+.PHONY: all run run-net clean dirs FORCE
 .SECONDARY:

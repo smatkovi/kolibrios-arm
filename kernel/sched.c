@@ -6,6 +6,7 @@
  * that waits (functions 5, 10, 23) gets its return value written into
  * that frame when it wakes. Round robin, preempted by the 100 Hz tick. */
 #include "gui.h"
+#include "net.h"
 
 struct task tasks[MAX_TASKS];
 struct task *current;
@@ -135,6 +136,9 @@ void timer_tick(void)
 	ticks++;
 	if (plat->tick) plat->tick();
 	kmodem_tick();
+#ifdef __aarch64__
+	net_tick();
+#endif
 	if (++slice >= SLICE_TICKS) {
 		slice = 0;
 		need_resched = true;

@@ -150,7 +150,7 @@ persistence question as WhatsApp's.
 ## Status
 
 - [x] the design (this document, [pro1x-network.md](pro1x-network.md))
-- [ ] the network stack in QEMU (virtio-net, lwIP, DHCP, DNS)
+- [x] the network stack in QEMU (virtio-net, lwIP, DHCP, DNS: [pro1x-network.md](pro1x-network.md))
 - [ ] the Linux personality: a static Go hello world
 - [ ] sockets and epoll: `yappari-wa -stdio` reaching its QR code in QEMU
 - [ ] `yappari-wa -stdio` in yappari-leste

@@ -6,18 +6,29 @@
  *       -device ramfb -kernel build/arm64/kernel.bin
  *
  * PL011 for the debug output, GICv3 and the virtual timer, ramfb (set up
- * through fw_cfg) as the display, PL031 as the clock. No input. */
+ * through fw_cfg) as the display, PL031 as the clock, a virtio-net card
+ * on virtio-mmio as the network (make run-net). No input. */
 #include "kernel.h"
 #include "fdt.h"
+#include "net.h"
 
 #define UART 0x09000000ul
 #define RTC 0x09010000ul
 #define FWCFG 0x09020000ul
 #define GICD 0x08000000ul
 #define GICR 0x080a0000ul
+#define VIRTIO 0x0a000000ul             /* 32 virtio-mmio slots of 0x200 */
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
+void gic3_enable_spi(u32 id);
+bool virtio_net_probe(addr_t va);
+void virtio_net_irq(void);
+
+/* the virtio-mmio slots of the device tree (read before the MMU is on) */
+static struct { addr_t pa; u32 irq; } vslot[32];
+static int nvslot;
+static u32 net_irq;
 
 static addr_t io(addr_t pa)
 {
@@ -34,9 +45,20 @@ static void v_putc(char c)
 
 static u64 gicd = GICD, gicr = GICR;
 
+static void v_other_irq(u32 id)
+{
+	if (id == net_irq) virtio_net_irq();
+}
+
 static void v_init(void)
 {
-	gic3_init(gicd, gicr, NULL);
+	gic3_init(gicd, gicr, v_other_irq);
+	net_init();
+	for (int i = 0; i < nvslot && !net_irq; i++) {
+		if (!virtio_net_probe(mmu_io_va(vslot[i].pa))) continue;
+		net_irq = vslot[i].irq;
+		gic3_enable_spi(net_irq);
+	}
 }
 
 static void v_irq(void)
@@ -118,6 +140,7 @@ static u32 v_rtc_time(void)
 static const struct mem_region v_io[] = {
 	{ 0, UART, 0x30000, MAP_DEVICE },        /* UART, RTC, fw_cfg */
 	{ 0, GICD, 0x200000, MAP_DEVICE },       /* distributor and redistributors */
+	{ 0, VIRTIO, 0x4000, MAP_DEVICE },       /* virtio-mmio */
 };
 
 struct platform platform_virt = {
@@ -153,6 +176,18 @@ bool virt_probe(const void *fdt)
 	if (g >= 0) {
 		fdt_reg(fdt, g, ac, sc, 0, &gicd, NULL);
 		fdt_reg(fdt, g, ac, sc, 1, &gicr, NULL);
+	}
+	for (int v = fdt_find_compatible(fdt, "virtio,mmio", -1, &ac, &sc);
+	     v >= 0 && nvslot < (int)ARRAY_SIZE(vslot);
+	     v = fdt_find_compatible(fdt, "virtio,mmio", v, &ac, &sc)) {
+		u64 pa;
+		int len;
+		const u32 *irq = fdt_prop(fdt, v, "interrupts", &len);
+		if (!fdt_reg(fdt, v, ac, sc, 0, &pa, NULL) || pa < VIRTIO || pa >= VIRTIO + 0x4000 ||
+		    !irq || len < 12 || fdt_cells(irq, 1) != 0)
+			continue;
+		vslot[nvslot].pa = pa;
+		vslot[nvslot++].irq = 32 + (u32)fdt_cells(irq + 1, 1);    /* an SPI */
 	}
 	platform_virt.ram_base = base;
 	return true;

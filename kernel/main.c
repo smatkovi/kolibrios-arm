@@ -15,6 +15,7 @@ void input_init(void);
  * autorun.classic or autorun.hildon instead of autorun. Read before the
  * MMU is on: the kernel does not map the device tree. */
 static const char *autorun_path = "/sys/autorun";
+static char cmdline[512];               /* the kernel command line, kept */
 
 static void look_arg(void)
 {
@@ -24,12 +25,26 @@ static void look_arg(void)
 	int ac, sc, len = 0;
 	int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
 	const char *a = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
+	if (a) strncpy0(cmdline, a, MIN((u32)len + 1, sizeof(cmdline)));
 	for (int i = 0; a && i + 13 <= len; i++) {
 		if ((i && a[i - 1] != ' ') || strncmp(a + i, "kolibri.look=", 13)) continue;
 		if (i + 20 <= len && !strncmp(a + i + 13, "classic", 7)) autorun_path = "/sys/autorun.classic";
 		if (i + 19 <= len && !strncmp(a + i + 13, "hildon", 6)) autorun_path = "/sys/autorun.hildon";
 	}
 #endif
+}
+
+/* an argument of the kernel command line: its value after "=", "" for
+ * one without, NULL if it is not there */
+const char *boot_arg(const char *name)
+{
+	u32 n = strlen(name);
+	for (const char *p = cmdline; *p; p++) {
+		if ((p != cmdline && p[-1] != ' ') || strncmp(p, name, n)) continue;
+		if (p[n] == '=') return p + n + 1;
+		if (!p[n] || p[n] == ' ') return "";
+	}
+	return NULL;
 }
 
 /* the programs the kernel starts: the ramdisk's "autorun" (one path per

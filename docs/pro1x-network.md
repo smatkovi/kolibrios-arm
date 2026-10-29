@@ -88,10 +88,25 @@ choice; never in the repository).
 ## QEMU
 
 `make PLATFORM=arm64 run-net`: QEMU's `virt` with a `virtio-net-device`
-on virtio-mmio (the transport QEMU's `virt` board has; no PCI in this
-kernel) and user networking (`-netdev user`): QEMU's DHCP server gives
-10.0.2.15, its DNS is 10.0.2.3, the host is 10.0.2.2.
+on virtio-mmio, version 2 (`-global virtio-mmio.force-legacy=false`;
+the kernel has no PCI) and user networking (`-netdev user`): QEMU's DHCP
+server gives 10.0.2.15, its DNS is 10.0.2.3, the host is 10.0.2.2.
 
-The kernel's self test (`kolibri.nettest`) on the serial console: the
-DHCP lease, a DNS lookup, a TCP connection to the host
-(`make run-net` starts a small server there).
+`kernel/net/virtio_net.c` (the card: two queues of 64 buffers),
+`kernel/net/net.c` (lwIP's glue: the interface, DHCP, `sys_now`, the
+timeouts from the tick), `kernel/net/lwipopts.h`.
+
+The kernel's self test, `kolibri.nettest=<port>` on the command line
+(`run-net` passes it, `NETTEST_PORT`, 18765 by default), on the serial
+console: the lease, a DNS lookup, an HTTP request to the host's port,
+answered by `python3 -m http.server --bind 127.0.0.1 18765` there:
+
+```
+net: virtio-net, MAC 52:54:00:12:34:56, DHCP
+net: 10.0.2.15, mask 255.255.255.0, gateway 10.0.2.2, DNS 10.0.2.3
+nettest: example.com is 172.66.147.243
+nettest: TCP to 10.0.2.2:18765
+nettest: connected
+nettest: the host answered "HTTP/1.0 200 OK"
+nettest: done
+```
