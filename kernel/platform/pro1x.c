@@ -1417,7 +1417,7 @@ static void p_init(void)
 	prng_init();
 	if (wifi) wifi_power();
 	if (rpmsleep) soc_sleep_start();
-	else if (stats_pa) rpm_stats_line("left by Linux");
+	else if (stats_pa && !powertest) rpm_stats_line("left by Linux");   /* (the test's start line has it) */
 	standby_at = ticks + 1000;
 	modem_init();
 	if (noinput) {
