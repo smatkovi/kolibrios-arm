@@ -58,6 +58,15 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 	wr32(gicr + SGI + GICR_IGROUPR0, 0xffffffffu);
 	wr8(gicr + SGI + GICR_IPRIORITYR + ppi, 0xa0);
 	wr32(gicr + SGI + GICR_ISENABLER0, 1u << ppi);
+	gic3_cpu_init();
+	timer_start();
+}
+
+/* the CPU interface (system registers): at the start, and again after a
+ * power-down idle state (psci.c), which loses it, as Linux's
+ * gic_cpu_sys_reg_init does from its CPU PM notifier */
+void gic3_cpu_init(void)
+{
 	SYSREG_W(S3_0_C12_C12_5, SYSREG_R(S3_0_C12_C12_5) | 7);  /* ICC_SRE_EL1 */
 	asm volatile("isb");
 	SYSREG_W(S3_0_C4_C6_0, 0xf0);                             /* ICC_PMR_EL1 */
@@ -65,7 +74,6 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 	SYSREG_W(S3_0_C12_C12_4, SYSREG_R(S3_0_C12_C12_4) & ~2ul); /* ICC_CTLR_EL1: EOI deactivates */
 	SYSREG_W(S3_0_C12_C12_7, 1);                              /* ICC_IGRPEN1_EL1 */
 	asm volatile("isb");
-	timer_start();
 }
 
 /* a shared peripheral interrupt to this core, edge or level triggered */

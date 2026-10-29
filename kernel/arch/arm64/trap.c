@@ -4,6 +4,7 @@
 #include "task.h"
 #include "frame.h"
 #include "power.h"
+#include "powerdt.h"
 
 extern void arch_enter(struct frame64 *f) __attribute__((noreturn));
 extern char stack_top[];
@@ -99,7 +100,8 @@ const struct platform *arch_platform(void)
 		virt_probe(fdt);
 		p = &platform_virt;
 	}
-	timer_probe(fdt);
-	psci_probe(fdt);
+	power_dt_parse(fdt, SYSREG_R(mpidr_el1), &pdt);
+	timer_probe();
+	psci_probe();
 	return p;
 }

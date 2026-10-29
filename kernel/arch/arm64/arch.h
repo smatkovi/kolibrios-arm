@@ -16,6 +16,7 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
 void gic3_enable_spi(u32 id);
 void gic3_enable_spi_edge(u32 id, bool edge);
+void gic3_cpu_init(void);
 /* a device region for the MMU's tables, from a probe (MMU off) */
 void mmu_add_io(addr_t pa, u32 size);
 

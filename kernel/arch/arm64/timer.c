@@ -18,8 +18,8 @@
  * state the frame's physical timer is set to the same deadline
  * (psci.c). */
 #include "kernel.h"
-#include "fdt.h"
 #include "power.h"
+#include "powerdt.h"
 #include "net.h"
 
 struct power_stats pstats;
@@ -64,41 +64,16 @@ bool timer_tickless(void)
 	return !periodic_only;
 }
 
-/* an interrupt specifier: its INTID (PPI 16 + n, SPI 32 + n) */
-static u32 intid_of(const void *spec)
+void timer_probe(void)
 {
-	u32 type = (u32)fdt_cells(spec, 1), num = (u32)fdt_cells((const u8 *)spec + 4, 1);
-	return type == 1 ? 16 + num : 32 + num;
-}
-
-void timer_probe(const void *fdt)
-{
-	if (!fdt_ok(fdt)) return;
-	int ac, sc, len;
-	int g = fdt_find_compatible(fdt, "arm,gic-v3", -1, &ac, &sc);
-	int ic = g >= 0 ? (int)fdt_u32(fdt, g, "#interrupt-cells", 3) : 3;
-	if (ic < 2) return;
-	int t = fdt_find_compatible(fdt, "arm,armv8-timer", -1, &ac, &sc);
-	const u8 *p = t >= 0 ? fdt_prop(fdt, t, "interrupts", &len) : NULL;
-	if (p && len >= 3 * ic * 4 && fdt_cells(p + 2 * ic * 4, 1) == 1)
-		vtimer_id = intid_of(p + 2 * ic * 4);
-	int m = fdt_find_compatible(fdt, "arm,armv7-timer-mem", -1, &ac, &sc);
-	u64 a, s;
-	if (m < 0 || !fdt_reg(fdt, m, ac, sc, 0, &a, &s)) return;
-	int fac = fdt_u32(fdt, m, "#address-cells", 2), fsc = fdt_u32(fdt, m, "#size-cells", 1);
-	for (int c = fdt_next_child(fdt, m, -1); c >= 0; c = fdt_next_child(fdt, m, c)) {
-		const char *st = fdt_prop(fdt, c, "status", &len);
-		if (st && strcmp(st, "okay") && strcmp(st, "ok")) continue;
-		const u8 *ip = fdt_prop(fdt, c, "interrupts", &len);
-		u64 fa, fs;
-		if (!ip || len < ic * 4 || !fdt_reg(fdt, c, fac, fsc, 0, &fa, &fs)) continue;
-		ctl_pa = a;
-		frame_pa = fa;
-		frame_num = fdt_u32(fdt, c, "frame-number", 0);
-		frame_irq = intid_of(ip);       /* the first: the physical timer */
+	vtimer_id = pdt.vtimer_id;
+	ctl_pa = pdt.ctl_pa;
+	frame_pa = pdt.frame_pa;
+	frame_num = pdt.frame_num;
+	frame_irq = pdt.frame_irq;
+	if (ctl_pa && frame_pa) {
 		mmu_add_io(ctl_pa, 0x1000);
 		mmu_add_io(frame_pa, 0x1000);
-		break;
 	}
 }
 
@@ -185,6 +160,7 @@ void timer_start(void)
 	kprintf("timer: %u Hz, INTID %u, %s\n", (u32)freq, vtimer_id,
 		periodic_only ? "100 Hz always (kolibri.tick=periodic)" : "tickless idle");
 	bcast_init();
+	psci_init();
 	power_init();
 }
 

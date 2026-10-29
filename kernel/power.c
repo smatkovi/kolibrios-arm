@@ -3,10 +3,11 @@
  * line on the console with what happened in it,
  *
  *   power: 60 s: 61 wake-ups (1.0/s), timer 60, other 1, idle 99.9 %,
- *          wfi 61, core 0, cluster 0, refused 0
+ *          wfi 61, core 0, cluster 0, refused 0, resumed 0
  *
  * the wake-ups (the idle loop's), the interrupts by kind, the share of
- * the time in idle, the idle states entered (psci.c); the platform adds
+ * the time in idle, the idle states entered (psci.c) and how often the
+ * core came back through cpu_resume (a real power-down); the platform adds
  * its own (the battery, the SoC's sleep counts: plat_power_report). On
  * the Pro1X the watchdog then resets the phone (kolibri.lifetime), and
  * tools/pro1x-read.py shows the console after the next boot. */
@@ -48,10 +49,11 @@ static void line(const char *what, const struct power_stats *a, const struct pow
 	u64 idle = b->idle_count - a->idle_count;
 	u32 permille = elapsed ? (u32)(idle * 1000 / elapsed) : 0;
 	kprintf("power: %s%s%u s: %u wake-ups (%u.%u/s), timer %u, other %u, idle %u.%u %%, "
-		"wfi %u, core %u, cluster %u, refused %u\n",
+		"wfi %u, core %u, cluster %u, refused %u, resumed %u\n",
 		what, *what ? " " : "", (u32)((elapsed + timer_freq() / 2) / timer_freq()), w, r / 10, r % 10, b->irq_timer - a->irq_timer,
 		b->irq_other - a->irq_other, permille / 10, permille % 10, b->st_wfi - a->st_wfi,
-		b->st_core - a->st_core, b->st_cluster - a->st_cluster, b->st_fail - a->st_fail);
+		b->st_core - a->st_core, b->st_cluster - a->st_cluster, b->st_fail - a->st_fail,
+		b->resumed - a->resumed);
 	/* the deadlines that woke it, by who (the next tick: the 100 Hz
 	 * tick while something is about to happen) */
 	static const char *const name[WHY_N] = { "tick", "tasks", "platform", "modem", "screen",
@@ -87,6 +89,8 @@ void power_tick(void)
 {
 	if (!minutes || (s32)(ticks - next_report) < 0) return;
 	u64 now = timer_count();
+	extern u32 resumed;                     /* suspend.S */
+	pstats.resumed = resumed;
 	struct power_stats s = pstats;
 	line("", &last, &s, now - last_count);
 	if (plat_power_report) plat_power_report(1);

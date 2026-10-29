@@ -2,16 +2,19 @@
 """A device tree for QEMU's virt that takes the AArch64 kernel down the
 Pro1X's code paths (docs/pro1x.md, "In QEMU"):
 
-    tests/power/mkdtb.py OUT.dtb [--psci] [--bootargs "..."]
+    tests/power/mkdtb.py OUT.dtb [--psci] [--virt] [--bootargs "..."]
 
 QEMU's own tree (dumped by QEMU: GICv3, 8 GiB, a Cortex-A53) with the
 Pro1X's compatible string, /chosen's simple-framebuffer at 0x5c000000 and
 the splash memory reserved (the RAM console). --psci adds the SM6115's CPU
 idle states as the phone's tree has them (arm/qcom sm6115.dtsi: the cores'
-and the cluster's power domains below /psci, cpu@0 in cpu_pd0), with
+and the cluster's power domains, cpu@0 in cpu_pd0; not below /psci, which
+QEMU replaces), with
 suspend parameters in PSCI 0.2's original format, the only one QEMU's
 CPU_SUSPEND takes (bit 16 power down, a 16-bit state id); without
-local-timer-stop, as QEMU's wfi keeps the timer running. Needs dtc."""
+local-timer-stop, as QEMU's wfi keeps the timer running. --virt keeps
+QEMU's compatible string (its platform, the network) with those states.
+Needs dtc."""
 import argparse
 import os
 import re
@@ -23,6 +26,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument('out')
 ap.add_argument('--psci', action='store_true')
 ap.add_argument('--bootargs', default='')
+ap.add_argument('--virt', action='store_true', help="QEMU's virt still (its devices: the network), not a Pro1X")
 a = ap.parse_args()
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -33,7 +37,8 @@ with tempfile.TemporaryDirectory() as tmp:
     dts = subprocess.run(['dtc', '-q', '-I', 'dtb', '-O', 'dts', raw], check=True,
                          capture_output=True, text=True).stdout
 
-dts = dts.replace('compatible = "linux,dummy-virt";', 'compatible = "fxtec,pro1x", "qcom,sm6115";', 1)
+if not a.virt:
+    dts = dts.replace('compatible = "linux,dummy-virt";', 'compatible = "fxtec,pro1x", "qcom,sm6115";', 1)
 chosen = f'''chosen {{
 		#address-cells = <0x02>;
 		#size-cells = <0x02>;
@@ -121,7 +126,10 @@ if a.psci:
                      dts, count=1)
     if not n:
         sys.exit('mkdtb: no cpu@0')
-    dts, n = re.subn(r'(psci \{\n(?:\t\t[^\n]*\n)*?)(\t\};)', r'\1' + domains + r'\2', dts, count=1)
+    # QEMU replaces /psci when it loads a tree (hw/arm/boot.c,
+    # fdt_add_psci_node), its children gone: the domains in a node of
+    # their own (the kernel follows the phandles, not the place)
+    dts, n = re.subn(r'(\n\tpsci \{\n)', '\n\tcpu-power-domains {' + domains + '\t};\n' + r'\1', dts, count=1)
     if not n:
         sys.exit('mkdtb: no /psci')
 

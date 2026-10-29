@@ -67,10 +67,10 @@ for c in checks:
         fail.append(f'{min(rates)} wake-ups/s < {v}')
     elif k == 'has' and v not in text:
         fail.append(f'no "{v}"')
-    elif k in ('core', 'cluster'):
-        n = sum(int(x) for x in re.findall(rf'^power: \d+ s:.* {k} (\d+),', text, re.M))
+    elif k in ('core', 'cluster', 'resumed'):
+        n = sum(int(x) for x in re.findall(rf'^power: \d+ s:.* {k} (\d+)', text, re.M))
         if not n:
-            fail.append(f'never in the {k} state')
+            fail.append(f'never {k}' if k == 'resumed' else f'never in the {k} state')
 if fail:
     print(f'{name}: FAILED: ' + '; '.join(fail))
     sys.exit(1)

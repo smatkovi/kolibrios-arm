@@ -12,7 +12,7 @@ timer, through the MPM). The steps:
 | Stage | What | Where | Tested |
 | --- | --- | --- | --- |
 | 1 | tickless idle: the timer at the next deadline instead of 100 Hz; the Pro1X's input and modem by interrupt | `kernel/arch/arm64/timer.c`, `kernel/sched.c`, `kernel/power.c`, `kernel/platform/pro1x.c`, `kernel/modem/kmodem.c` | QEMU (`make -C tests/power`) |
-| 2 | CPU idle through PSCI | | |
+| 2 | CPU idle through PSCI: the core's and the cluster's power-down states, the context kept across them, the memory-mapped timer as the wake-up | `kernel/arch/arm64/psci.c`, `suspend.S`, `powerdt.c`, `timer.c` | the device tree on the PC against the phone's (`make -C tests/power host`); QEMU's CPU_SUSPEND, the way back played (`kolibri.psci=simulate`) under Go, TLS and the network |
 | 3 | the RPM's sleep set, the MPM | | |
 | 4 | the display off, the battery's current in the log | | |
 
@@ -101,3 +101,69 @@ fake modem):
 Nearly all of what is left is the Hildon shell, which looks at its
 windows every 250 ms (`kos_wait_event_timeout(25)`), and the watchdog
 once a second in QEMU (no watchdog there: the default interval).
+
+## Stage 2: CPU idle through PSCI
+
+What the device tree says (`kernel/arch/arm64/powerdt.c`, read while the
+MMU is off; Linux's bindings `cpu/idle-states.yaml`,
+`power/domain-idle-state.yaml`, `timer/arm,arch_timer_mmio.yaml`), on the
+Pro1X (`sm6115.dtsi`, checked by `tests/power/host.c` against the
+phone's own tree):
+
+| | |
+| --- | --- |
+| PSCI | 1.0 binding, `smc` |
+| CPUs | 8: 0x0-0x3 (silver, cluster 0), 0x100-0x103 (gold, cluster 1); KolibriOS runs on CPU 0 (Linux's kexec leaves the others off: CPU_OFF) |
+| CPU 0's state | `silver-rail-power-collapse` 0x40000003, entry 290 us, exit 376 us, at least 1182 us, `local-timer-stop` (its power domain `cpu_pd0`) |
+| cluster 0's states | GDHS 0x40000022 (782 us), power collapse 0x41000044 (exit 2118 us, at least 7376 us) (the domain above, `cluster_0_pd`) |
+| the broadcast timer | `arm,armv7-timer-mem` at 0xf120000, frame 0 at 0xf121000, its physical timer SPI 8 (INTID 40) |
+
+`psci_init` asks the firmware (PSCI_VERSION, PSCI_FEATURES of
+CPU_SUSPEND: bit 0 OS-initiated mode, bit 1 the extended state ids),
+asks AFFINITY_INFO for the other CPUs and, as Linux's
+`cpuidle-psci-domain.c` does, sets OS-initiated mode (SET_SUSPEND_MODE)
+when there are cluster states. Then each idle chooses by the time to
+the next deadline, as Linux's hierarchical PSCI idle does: below 1182 us
+`wfi`, from there the core's state, and with OSI and the other cores
+off the cluster's on top of it (GDHS from 1182 us, power collapse from
+7376 us; the cluster's parameter alone, the domain state wins). The core
+state stops the core's timer: before it the frame's physical timer is
+set to the same deadline (`timer_bcast_set`, the frame's count compared
+with the virtual one, which may be offset; CNTACR as Linux's
+`find_best_frame` sets it). Without the frame those states are not used.
+
+The states are power-down states: the core comes back at `cpu_resume`
+(`suspend.S`, as Linux's `sleep.S`) with the MMU and the caches off, its
+registers gone. `psci_suspend` keeps the callee-saved registers, the
+stack pointer, the EL1 system registers (SCTLR, TCR, TTBR0/1, MAIR,
+VBAR, CPACR, CNTKCTL, the thread registers, SP_EL0), the virtual timer
+and, if the Linux personality has them on, the FP/SIMD registers (a
+thread's are kept in them lazily) in a context cleaned to the point of
+coherency; `cpu_resume` loads it, turns the MMU on under the running
+code (the kernel's addresses are its physical ones) and returns 0 from
+`psci_suspend`. The GIC's CPU interface is set up again
+(`gic3_cpu_init`, as Linux's CPU PM notifier does).
+
+| `kolibri.psci=` | |
+| --- | --- |
+| (none) | the core's and the cluster's states (OSI) |
+| `off` | `wfi` only |
+| `core` | no cluster state |
+| `cluster` | the cluster's states also without OSI (the firmware coordinates) |
+| `simulate`, `simulate,cluster` | QEMU: after CPU_SUSPEND (QEMU's is a `wfi`) the core's state is destroyed as a power-down would (the MMU and the caches off, the system registers, the timer, the GIC's CPU interface and the FP registers cleared, the stack pointer 0) and the way back through `cpu_resume` taken |
+
+The power test's line counts the states and the returns through
+`cpu_resume` (`resumed`).
+
+In QEMU (`make -C tests/power`): QEMU replaces `/psci` in a tree it is
+given, so `mkdtb.py` puts the power domains in a node of their own, and
+its CPU_SUSPEND takes only PSCI 0.2's original format (0x10003 and so
+on). The results: every idle in the core's state (QEMU has no OSI), with
+`kolibri.psci=simulate` every one back through `cpu_resume` (52 in 10
+s), with `simulate,cluster` in the cluster's; Go's runtime (the hello
+test) and its TLS 1.3 to telegram.org and web.whatsapp.com
+(`tests/linux/nettest`, FP/SIMD crypto) through 117 played power-downs
+in 10 s.
+
+Not testable in QEMU: the firmware's own power-down and warm boot, OSI
+on the SM6115, the memory-mapped timer as the wake-up.

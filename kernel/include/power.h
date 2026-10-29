@@ -24,7 +24,7 @@ static inline u32 next_min(u32 a, u32 b) { return a < b ? a : b; }
 static inline u32 next_of_ms(u32 ms) { return ms == NEXT_NONE ? NEXT_NONE : (ms + 9) / 10; }
 
 /* kernel/arch/arm64/timer.c */
-void timer_probe(const void *fdt);     /* the device tree, MMU off */
+void timer_probe(void);                /* powerdt.c's findings, MMU off */
 u32 timer_intid(void);                 /* the virtual timer's interrupt */
 void timer_start(void);                /* from gic3_init: the tick on */
 bool timer_irq(u32 id);                /* an interrupt of the timers: handled */
@@ -45,6 +45,7 @@ struct power_stats {
 	u32 irq_timer, irq_other;
 	u32 st_wfi, st_core, st_cluster;   /* the idle states entered */
 	u32 st_fail;                       /* CPU_SUSPEND refused */
+	u32 resumed;                       /* back through cpu_resume (suspend.S) */
 	u32 why[WHY_N];                    /* the deadlines that woke it, by who */
 	u16 why_task[64];                  /* ... by the task's slot */
 };
@@ -57,7 +58,7 @@ u32 power_next(void);
 u32 power_test_minutes(void);          /* kolibri.powertest=N, 0 */
 
 /* kernel/arch/arm64/psci.c: the CPU's idle states */
-void psci_probe(const void *fdt);      /* the device tree, MMU off */
+void psci_probe(void);                 /* powerdt.c's findings, MMU off */
 void psci_init(void);                  /* MMU on: the firmware asked, the mode set */
 /* the deepest state worth entering for an idle of that many counter
  * ticks, entered; false: none (wfi) */
