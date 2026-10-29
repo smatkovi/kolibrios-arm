@@ -197,8 +197,10 @@ host -> UI   {"id": 3, "result": [1761750000000]}
              {"signal": "Error", "args": ["..."]}
 ```
 
-When the server closes an unscanned provisioning socket, linking starts
-again and a new QRCode signal follows. After linking (and at a start with
+The server closes an unscanned provisioning socket after about 90 s
+(websocket close 1000, "Timeout"; seen in a 7-minute run on the PC: a new
+address every 91 s); linking starts again and a new QRCode signal
+follows (an Error signal only when no address came at all). After linking (and at a start with
 a linked store) the host receives: StateChanged `connecting`, then
 `connected` once the server's queue is empty; text messages (their own,
 sent from the phone, too: `fromMe` true) as Message signals; SendText to a

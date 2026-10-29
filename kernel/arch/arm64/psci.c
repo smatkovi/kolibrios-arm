@@ -152,6 +152,7 @@ bool psci_idle(u64 idle_ticks)
 	long r = psci_suspend(PSCI_CPU_SUSPEND, s->param, pdt.hvc, simulate && down);
 	if (resumed != before || down) gic3_cpu_init();
 	if (tstop) timer_bcast_set(0);
+	if (deepest && plat->soc_wake) plat->soc_wake();
 	if (r < 0) {
 		pstats.st_fail++;
 		if (pstats.st_fail == 1) kprintf("psci: CPU_SUSPEND %x refused (%d)\n", s->param, (int)r);

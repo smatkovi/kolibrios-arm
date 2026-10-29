@@ -80,12 +80,35 @@ static volatile u8 *mpm_reg(volatile u8 *vmpm, u32 pins, u32 reg, u32 bank)
 	return vmpm + 4 * (reg * ((pins + 31) / 32) + bank + 2);
 }
 
-void mpm_prepare(volatile u8 *vmpm, u32 pins, u64 wake, const u32 *pin_mask)
+void mpm_wake_pin(struct mpm_wake *w, u32 pin, bool rising, bool falling, bool high)
+{
+	if (pin >= 32 * MPM_BANKS) return;
+	u32 b = pin / 32, bit = 1u << pin % 32;
+	w->enable[b] |= bit;
+	w->rising[b] = rising ? w->rising[b] | bit : w->rising[b] & ~bit;
+	w->falling[b] = falling ? w->falling[b] | bit : w->falling[b] & ~bit;
+	w->high[b] = high ? w->high[b] | bit : w->high[b] & ~bit;
+}
+
+/* a register's bits of the set's pins, the others kept */
+static void mpm_merge(volatile u8 *vmpm, u32 pins, u32 reg, u32 b, u32 mask, u32 val)
+{
+	volatile u8 *r = mpm_reg(vmpm, pins, reg, b);
+	sm_wr32(r, (sm_rd32(r) & ~mask) | (val & mask));
+}
+
+void mpm_prepare(volatile u8 *vmpm, u32 pins, u64 wake, const struct mpm_wake *w)
 {
 	sm_wr32(vmpm, (u32)wake);
 	sm_wr32(vmpm + 4, (u32)(wake >> 32));
-	for (u32 b = 0; b < (pins + 31) / 32; b++) {
-		sm_wr32(mpm_reg(vmpm, pins, MPM_REG_ENABLE, b), pin_mask ? pin_mask[b] : 0);
+	for (u32 b = 0; b < (pins + 31) / 32 && b < MPM_BANKS; b++) {
+		u32 en = w ? w->enable[b] : 0;
+		if (en) {
+			mpm_merge(vmpm, pins, MPM_REG_RISING, b, en, w->rising[b]);
+			mpm_merge(vmpm, pins, MPM_REG_FALLING, b, en, w->falling[b]);
+			mpm_merge(vmpm, pins, MPM_REG_POLARITY, b, en, w->high[b]);
+		}
+		sm_wr32(mpm_reg(vmpm, pins, MPM_REG_ENABLE, b), en);
 		sm_wr32(mpm_reg(vmpm, pins, MPM_REG_STATUS, b), 0);
 	}
 	sm_barrier();

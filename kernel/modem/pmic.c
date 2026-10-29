@@ -1,5 +1,5 @@
-/* KolibriOS for ARM: the SPMI PMIC arbiter, version 5, and the Pro1X's
- * battery (pmic.h).
+/* KolibriOS for ARM: the SPMI PMIC arbiter, version 5, its peripherals'
+ * interrupts, and the Pro1X's battery (pmic.h).
  *
  * After Linux's spmi-pmic-arb.c and FreeBSD's qcom_spmi (pro1x-maemo-leste,
  * freebsd/patches/0011): every PMIC peripheral (its PPID: the slave id and
@@ -43,9 +43,13 @@
 #define MAX_APID 512
 #define APID_VALID 0x8000
 
+#define APID_IRQ_OWNER (1u << 24)   /* APID_MAP: the channel's owner gets its interrupts */
+
 static struct spmi_hw hw;
 static u16 ppid_apid[4096];
 static u8 owner[MAX_APID];
+static bool irq_ours[MAX_APID];
+static u16 apid_ppid[MAX_APID];
 static u32 napids, nours;
 
 u32 spmi_init(const struct spmi_hw *h)
@@ -58,15 +62,24 @@ u32 spmi_init(const struct spmi_hw *h)
 	nours = 0;
 	for (u32 a = 0; a < napids; a++) {
 		owner[a] = 0xff;
+		irq_ours[a] = false;
 		if (ARB_APID_MAP(a) + 4 > hw.core_size) break;
 		u32 v = hw.rd(hw.core + ARB_APID_MAP(a));
 		if (!v) continue;
 		u32 ppid = (v >> 8) & 0xfff;
+		apid_ppid[a] = (u16)ppid;
 		owner[a] = hw.rd(hw.cnfg + ARB_APID_OWNER(a)) & 7;
+		bool irq_owner = v & APID_IRQ_OWNER;
+		irq_ours[a] = irq_owner && owner[a] == hw.ee;
 		if (owner[a] == hw.ee) nours++;
 		u16 prev = ppid_apid[ppid];
-		/* the first mapping, or the one this EE owns */
-		if (!(prev & APID_VALID) || owner[a] == hw.ee) ppid_apid[ppid] = (u16)(a | APID_VALID);
+		/* the first mapping, or the one this EE owns; a later one of
+		 * another EE with the interrupts takes them from ours (Linux's
+		 * _pmic_arb_read_apid_map) */
+		if (!(prev & APID_VALID) || owner[a] == hw.ee)
+			ppid_apid[ppid] = (u16)(a | APID_VALID);
+		else if (irq_owner && owner[prev & ~APID_VALID] == hw.ee)
+			irq_ours[prev & ~APID_VALID] = false;
 	}
 	return ver;
 }
@@ -121,6 +134,102 @@ int spmi_write(u32 sid, u32 addr, const u8 *buf, u32 len)
 	if (len > 4) hw.wr(ch + CH_WDATA1, d[1]);
 	hw.wr(ch + CH_CMD, CMD(OP_WRITEL, addr, len));
 	return wait_done(ch);
+}
+
+/* --- the peripherals' interrupts --------------------------------------- */
+
+#define QPNPINT_RT_STS 0x10
+#define QPNPINT_SET_TYPE 0x11
+#define QPNPINT_LATCHED_CLR 0x14
+#define QPNPINT_EN_SET 0x15
+#define QPNPINT_EN_CLR 0x16
+#define CH_ACC_ENABLE 0x100
+#define CH_IRQ_STATUS 0x104
+#define CH_IRQ_CLEAR 0x108
+#define ACC_STATUS(ee, n) (0x10000u * (ee) + 4 * (n))
+
+static addr_t chan(u32 a, u32 off)
+{
+	return hw.chnls + 0x10000u * a + off;
+}
+
+u32 spmi_irq_quiet(void)
+{
+	u32 was_on = 0;
+	if (!hw.intr) return 0;
+	for (u32 a = 0; a < napids; a++) {
+		if (!irq_ours[a]) continue;
+		if (hw.rd(chan(a, CH_ACC_ENABLE)) & 1) was_on++;
+		hw.wr(chan(a, CH_ACC_ENABLE), 0);
+		u32 st = hw.rd(chan(a, CH_IRQ_STATUS));
+		if (st) hw.wr(chan(a, CH_IRQ_CLEAR), st);
+	}
+	return was_on;
+}
+
+/* as Linux's activate, set_type and unmask: off and cleared, the type
+ * (SET_TYPE: edge; POLARITY_HIGH: rising or high; POLARITY_LOW: falling
+ * or low), the channel into the arbiter's line, then cleared and on */
+int spmi_irq_enable(u32 sid, u32 addr, u32 irq, u32 type)
+{
+	int a = apid_of(sid, addr);
+	if (a < 0 || irq > 7 || !hw.intr) return -1;
+	if (!irq_ours[a]) return -5;
+	u8 bit = (u8)(1u << irq), t[3];
+	u32 base = addr & ~0xffu;
+	int r = spmi_write(sid, base + QPNPINT_EN_CLR, &bit, 1);
+	if (!r) r = spmi_write(sid, base + QPNPINT_LATCHED_CLR, &bit, 1);
+	if (!r) r = spmi_read(sid, base + QPNPINT_SET_TYPE, t, 3);
+	if (r) return r;
+	bool edge = type & SPMI_IRQ_EDGE_BOTH;
+	t[0] = edge ? t[0] | bit : t[0] & ~bit;
+	t[1] = type & (SPMI_IRQ_EDGE_RISING | SPMI_IRQ_LEVEL_HIGH) ? t[1] | bit : t[1] & ~bit;
+	t[2] = type & (SPMI_IRQ_EDGE_FALLING | SPMI_IRQ_LEVEL_LOW) ? t[2] | bit : t[2] & ~bit;
+	if ((r = spmi_write(sid, base + QPNPINT_SET_TYPE, t, 3))) return r;
+	hw.wr(chan((u32)a, CH_ACC_ENABLE), 1);
+	u8 two[2] = { bit, bit };               /* LATCHED_CLR, EN_SET */
+	return spmi_write(sid, base + QPNPINT_LATCHED_CLR, two, 2);
+}
+
+/* one channel's interrupts: acknowledged; reported when it is enabled */
+static bool take_one(u32 a, struct spmi_irq *ev)
+{
+	u32 st = hw.rd(chan(a, CH_IRQ_STATUS)) & 0xff;
+	if (!st) return false;
+	hw.wr(chan(a, CH_IRQ_CLEAR), st);
+	if (!(hw.rd(chan(a, CH_ACC_ENABLE)) & 1)) return false;
+	u32 sid = apid_ppid[a] >> 8, base = (apid_ppid[a] & 0xffu) << 8;
+	u8 b = (u8)st;
+	spmi_write(sid, base + QPNPINT_LATCHED_CLR, &b, 1);
+	ev->sid = sid;
+	ev->addr = base;
+	ev->bits = b;
+	return true;
+}
+
+int spmi_irq_take(struct spmi_irq *out, int max)
+{
+	if (!hw.intr) return 0;
+	int n = 0;
+	bool any = false;
+	for (u32 w = 0; w < (napids + 31) / 32; w++) {
+		u32 acc = hw.rd(hw.intr + ACC_STATUS(hw.ee, w));
+		any |= acc != 0;
+		for (u32 b = 0; acc && b < 32; b++) {
+			if (!(acc & 1u << b)) continue;
+			u32 a = 32 * w + b;
+			if (a >= napids) break;
+			struct spmi_irq ev;
+			if (take_one(a, &ev) && n < max) out[n++] = ev;
+		}
+	}
+	/* the line up but no bit in ACC_STATUS: the channels themselves (as
+	 * Linux's pmic_arb_chained_irq) */
+	for (u32 a = 0; !any && a < napids; a++) {
+		struct spmi_irq ev;
+		if (irq_ours[a] && take_one(a, &ev) && n < max) out[n++] = ev;
+	}
+	return n;
 }
 
 /* --- the battery ----------------------------------------------------- */

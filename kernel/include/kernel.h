@@ -112,6 +112,7 @@ struct platform {
 	/* the CPU's deepest idle state next (its cluster down): the SoC may
 	 * sleep, to wake at that count of the virtual counter (AArch64) */
 	void (*soc_sleep)(u64 wake);
+	void (*soc_wake)(void);       /* back from that state */
 	void (*panic_hook)(void);     /* after the panic's text is on the screen */
 	bool cached_data;             /* D-cache on */
 };

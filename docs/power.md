@@ -15,6 +15,7 @@ timer, through the MPM). The steps:
 | 2 | CPU idle through PSCI: the core's and the cluster's power-down states, the context kept across them, the memory-mapped timer as the wake-up | `kernel/arch/arm64/psci.c`, `suspend.S`, `powerdt.c`, `timer.c` | the device tree on the PC against the phone's (`make -C tests/power host`); QEMU's CPU_SUSPEND, the way back played (`kolibri.psci=simulate`) under Go, TLS and the network |
 | 3 | the RPM's sleep set, the MPM's timer before the cluster's collapse, the RPM's sleep counts | `kernel/modem/rpmsleep.c`, `rpm.c`, `kernel/platform/pro1x.c`, `powerdt.c` | `make -C tests/modem` (the requests against an RPM in RAM, the vMPM's layout, the statistics), `make -C tests/power host` (the addresses in the phone's tree) |
 | 4 | the display off (DCS, the scan-out stopped), the programs' timeouts on whole seconds, the battery's voltage and current in the power test's lines | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `kernel/sched.c` | `make -C tests/power host` (the SPMI arbiter's channels, the gauge, the ADC against an arbiter in RAM); QEMU (`kolibri.standby`: 1.4 wake-ups/s) |
+| 5 | the standby by the power key, ended by the power key or a key: the PMIC's interrupts through the SPMI arbiter, the MPM's wake pins with their types, the MPM's wake interrupt | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `rpmsleep.c`, `kernel/arch/arm64/psci.c` | `make -C tests/power host` (Linux's interrupts quieted, the PON's set up, a press latched and taken, against the arbiter in RAM), `make -C tests/modem` (the wake set in the vMPM), QEMU (`kolibri.keytest`: the standby ended by a played press, the wake-ups back from 2.3/s to 5.2/s) |
 
 ## Measuring: `kolibri.powertest=N`
 
@@ -283,13 +284,84 @@ burst-averaged current (LAST_BURST_AVG_I at 0xc6, held while it is read,
 VBAT_SNS (0x84, pre-scaled 1/3, 1875 mV over 0x70e4). Read only with the
 power test or `kolibri.battery`.
 
+## Stage 5: the standby, the power key, the wake-up by a key
+
+Without it a standby (the power test's) ended only with the lifetime's
+reset. Now the power key starts and ends one at any time:
+
+**The power key** (`pon_init`, `pon_isr`): the PM6125's PON
+(`qcom,pm8998-pon` at 0x800 of slave 0) has two keys in the Pro1X's tree,
+`qcom,pm8941-pwrkey` (KPDPWR_N, its interrupt 0) and `qcom,pm8941-resin`
+(the volume-down key, interrupt 1), `interrupts = <0 0x8 0|1
+IRQ_TYPE_EDGE_BOTH>`; their state is RT_STS (0x810) bits 0 and 1
+(Linux's `pm8941-pwrkey.c`). A peripheral's interrupt is configured in
+its own registers (QPNPINT: SET_TYPE 0x11 edge, POLARITY_HIGH/LOW 0x12/13
+both, LATCHED_CLR 0x14, EN_SET 0x15) and reaches the processor through
+the SPMI arbiter (version 5, Linux's `spmi-pmic-arb.c`): its channel's
+ACC_ENABLE, IRQ_STATUS and IRQ_CLEAR (chnls + 0x10000 * channel + 0x100,
+0x104, 0x108), this EE's ACC_STATUS bitmap (the `intr` region, 0x3f00000
++ 0x10000 * EE), and one interrupt for all of them, `periph_irq`: in the
+Pro1X's tree `interrupts-extended = <&mpm 86 IRQ_TYPE_LEVEL_HIGH>`, the
+MPM's pin 86, which the MPM's `qcom,mpm-pin-map` (`<86 183>`) puts on GIC
+SPI 183 (INTID 215). The channel map's bit 24 says whether a channel's
+owner gets its interrupts. As with the TLMM, every PMIC interrupt Linux
+left on for this EE is taken out of the arbiter's line first (ACC_ENABLE
+0, `spmi_irq_quiet`: the charger's, the gauge's, the RTC's, the
+volume-up GPIO's ...), and PON's other interrupts off (EN_CLR). A release
+seen without its press (both edges between two looks) is a short press,
+as in Linux. If the line stayed up with nothing to take (1000 times in a
+row), the interrupt is switched off and said so.
+
+**The standby** (`standby_enter`, `standby_leave`): the power key starts
+it (as the power test does after 10 s): the display off, the programs'
+timeouts on whole seconds, the SoC's sleep (the sleep set, the MPM). The
+power key again, the volume-down key, any key of the keyboard, the
+modifiers or Fn end it: the display on, the timeouts as before. The key
+that ends it is not passed on (neither its press nor its release);
+touches are read and dropped while the display is off.
+
+**The wake-up from the SoC's sleep:** while the SoC sleeps (vlow: XO
+off; vmin: CX and MX at retention) the GIC sees nothing; the MPM wakes
+the SoC by its timer or by one of its pins, then raises its own
+interrupt (the `qcom,mpm` node's, SPI 197 rising: "triggered by the RPM
+when the system resumes", Linux's `qcom_mpm_handler`). So before the
+cluster's collapse the vMPM gets a wake set (`mpm_wake_pin`, the types
+as Linux's `qcom_mpm_set_type`: an edge's bits, POLARITY for a high
+level; the other pins' types left alone):
+
+| pin | what | type |
+| --- | --- | --- |
+| 86 | the SPMI arbiter: the power key, the volume keys | high level |
+| 46, 9, 39, 53 | GPIO 93 Home, 83 right Shift, 84 left Ctrl, 19 left Alt (the gpio-keys) | both edges |
+
+The GPIOs' pins are Linux's `sm6115_mpm_map` (`pinctrl-sm6115.c`; the
+MPM does not take over the TLMM's interrupts on the SM6115, it only
+wakes: `IRQ_DOMAIN_FLAG_QCOM_MPM_WAKEUP`). The two Fn keys (GPIO 106,
+112) and the keyboard expander's INT (107) have no MPM pin: a letter key
+pressed while the SoC sleeps is seen at its next wake-up by time (in the
+standby the shell's, a second), when its INT is still low (the AW9523B
+holds it until its ports are read; `p_soc_wake` looks after every
+hand-over). The touch screen's INT (GPIO 80) has a pin (21) but is not
+in the set: a touch in a pocket should not wake it. After the wake the
+MPM's status says which pin it was: the arbiter's interrupt comes by
+itself (a level), the modifiers are looked at at once (their TLMM edge
+may have been lost while the TLMM slept). `pro1x: awake (...)` counts
+both kinds.
+
+`kolibri.nopowerkey` leaves the PMIC's interrupts alone. `kolibri.keytest=S`
+plays a press of the power key S seconds into each standby (QEMU: `make
+-C tests/power qemu`, the `keytest` run: 5.0 wake-ups/s, 2.3 in the
+standby, 5.2 after it; on the phone a standby that ends without hands).
+
 ## The device test (prepared, 2026-10-29)
 
 Nothing of this has run on the phone yet (nor has KolibriOS itself: the
 first device test ended in Linux). From a running Maemo Leste, as root,
 the kernel in `/host/kolibri/kernel.bin` (`docs/pro1x.md`), without the
 modem (no `-m`, `kolibri.nomodem`: it runs on, on its own firmware), in steps, each one ending with the watchdog's reset into
-the boot menu, then `tools/pro1x-read.py` for the console:
+the boot menu, then `tools/pro1x-read.py` for the console (the power
+key, stage 5, is set up in every step; `kolibri.nopowerkey` added leaves
+the PMIC's interrupts as Linux left them, if a step hangs early):
 
 1. `tools/pro1x-kexec.sh /host/kolibri/kernel.bin "kolibri.nomodem kolibri.lifetime=60 kolibri.psci=off"`: the
    tick (INTID 19), tickless idle, the input by interrupt. Expected:
@@ -315,3 +387,27 @@ the boot menu, then `tools/pro1x-read.py` for the console:
    -> 0`, the sleep set (`rpm: the sleep set: 12 of 12 resources at 0`),
    the MPM's hand-overs, and whether `vlow`/`vmin` move; the battery's
    mean current against Leste's 160 mA.
+4. The power key (stage 5), `... "kolibri.nomodem kolibri.lifetime=180"`, unplugged; at
+   about a minute press the power key (the display goes off), after 20 s press it again
+   (on), then once more off and a letter key (on), then off and left Shift (on). Expected:
+   `pro1x: SPMI: arbiter 5.x, EE 0, ...`, `pro1x: power key: PON at 0:800, interrupt 0,
+   volume down 1, through INTID 215 (MPM pin 86); N of Linux's PMIC interrupts quieted`
+   (N: what Linux left on, some), then for each press `pro1x: standby (the power key)`,
+   `pro1x: display off: brightness 0, display off done, sleep in done, timing engine 1 ->
+   0`, the first time `rpm: the sleep set: 12 of 12 resources at 0`, `pro1x: the SoC's
+   sleep: the sleep set voted, the MPM handed over before the cluster's collapse`, `pro1x:
+   MPM wake-ups: SPMI (pin 86) GPIO 93 (pin 46) GPIO 83 (pin 9) GPIO 84 (pin 39) GPIO 19
+   (pin 53); no MPM pin: GPIO 106 112 107`, and `pro1x: awake (the power key) after 20 s;
+   MPM wake-ups: ...`, `pro1x: display on: sleep out done, display on done, brightness 127`;
+   `pro1x: awake (a key) ...` for the letter key and for Shift. The key that woke it does
+   not reach the shell. Failures: no `power key:` line, or `its interrupt not set up (-5:
+   not this EE's)` (the PON channel's interrupts another EE's: then the volume and power keys
+   stay Linux's only); `the SPMI arbiter's interrupt stays up with nothing pending: off`;
+   a reset at about 32 s after a press (the interrupt storming: then `kolibri.nopowerkey`
+   and the console). `MPM wake-ups: 0 by keys, 0 by the SPMI arbiter` with the display
+   back on means the SoC was not asleep when the key came (the GIC saw it directly), fine
+   too.
+5. The standby without hands: `... "kolibri.nomodem kolibri.powertest=3 kolibri.keytest=60"`:
+   the power test's standby at 10 s, `pro1x: awake (the power key, played) after 60 s`,
+   the display on again, the rest of the test with the display on (the battery's current
+   up again).

@@ -204,11 +204,28 @@ static void test_rpm(void)
 	/* the vMPM (irq-qcom-mpm.c's layout, 96 pins: 3 words a register) */
 	u32 vmpm[18];
 	memset(vmpm, 0xa5, sizeof(vmpm));
-	u32 mask[3] = { 0, 0, 1u << (86 - 64) };          /* SPMI's pin 86 */
-	mpm_prepare((volatile u8 *)vmpm, 96, 0x123456789abull, mask);
+	mpm_prepare((volatile u8 *)vmpm, 96, 0x123456789abull, NULL);
 	CHECK(vmpm[0] == 0x456789ab && vmpm[1] == 0x123, "vMPM: TIMER0/1 (%x %x)", vmpm[0], vmpm[1]);
-	CHECK(vmpm[2] == 0 && vmpm[3] == 0 && vmpm[4] == 1u << 22, "vMPM: ENABLE");
+	CHECK(vmpm[2] == 0 && vmpm[3] == 0 && vmpm[4] == 0, "vMPM: no pin");
 	CHECK(vmpm[5] == 0xa5a5a5a5u && vmpm[13] == 0xa5a5a5a5u, "vMPM: the edges and polarity untouched");
+	CHECK(vmpm[14] == 0 && vmpm[15] == 0 && vmpm[16] == 0, "vMPM: STATUS cleared");
+	/* the wake set: SPMI's pin 86 (a high level), a key's GPIO 83 on
+	 * pin 9 (both edges) */
+	struct mpm_wake w;
+	memset(&w, 0, sizeof(w));
+	mpm_wake_pin(&w, 86, false, false, true);
+	mpm_wake_pin(&w, 9, true, true, false);
+	memset(vmpm, 0xa5, sizeof(vmpm));
+	mpm_prepare((volatile u8 *)vmpm, 96, 0x123456789abull, &w);
+	CHECK(vmpm[2] == 1u << 9 && vmpm[3] == 0 && vmpm[4] == 1u << 22, "vMPM: ENABLE pins 9 and 86");
+	CHECK(vmpm[5] == (0xa5a5a5a5u | 1u << 9) && vmpm[7] == (0xa5a5a5a5u & ~(1u << 22)),
+	      "vMPM: FALLING_EDGE (%x %x)", vmpm[5], vmpm[7]);
+	CHECK(vmpm[8] == (0xa5a5a5a5u | 1u << 9) && vmpm[10] == (0xa5a5a5a5u & ~(1u << 22)),
+	      "vMPM: RISING_EDGE (%x %x)", vmpm[8], vmpm[10]);
+	CHECK(vmpm[11] == (0xa5a5a5a5u & ~(1u << 9)) && vmpm[13] == (0xa5a5a5a5u | 1u << 22),
+	      "vMPM: POLARITY (%x %x)", vmpm[11], vmpm[13]);
+	CHECK(vmpm[6] == 0xa5a5a5a5u && vmpm[9] == 0xa5a5a5a5u && vmpm[12] == 0xa5a5a5a5u,
+	      "vMPM: the other pins' types untouched");
 	CHECK(vmpm[14] == 0 && vmpm[15] == 0 && vmpm[16] == 0, "vMPM: STATUS cleared");
 	vmpm[16] = 1u << 22;
 	u32 st[3];

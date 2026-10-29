@@ -16,11 +16,22 @@ int rpm_sleep_votes(bool with_rf);
  * Linux's irq-qcom-mpm.c): TIMER0/1 (the next wake-up, a count of the
  * generic timer), then ENABLE, FALLING_EDGE, RISING_EDGE, POLARITY,
  * STATUS, each pins/32 words. Before the SoC may sleep: the wake-up, no
- * pin enabled but those in pin_mask (one word per bank), the status
- * cleared. Then the RPM is told (the MPM's IPC bit) */
+ * pin enabled but those of the wake set (with their types, as Linux's
+ * qcom_mpm_set_type writes them: an edge's bits, POLARITY for a high
+ * level; the other pins' types as they are), the status cleared. Then
+ * the RPM is told (the MPM's IPC bit) */
 #define MPM_REG_ENABLE 0
+#define MPM_REG_FALLING 1
+#define MPM_REG_RISING 2
+#define MPM_REG_POLARITY 3
 #define MPM_REG_STATUS 4
-void mpm_prepare(volatile u8 *vmpm, u32 pins, u64 wake, const u32 *pin_mask);
+#define MPM_BANKS 3                     /* up to 96 pins */
+struct mpm_wake {
+	u32 enable[MPM_BANKS], falling[MPM_BANKS], rising[MPM_BANKS], high[MPM_BANKS];
+};
+/* a pin into the set: its edges, or a high level (neither edge) */
+void mpm_wake_pin(struct mpm_wake *w, u32 pin, bool rising, bool falling, bool high);
+void mpm_prepare(volatile u8 *vmpm, u32 pins, u64 wake, const struct mpm_wake *w);
 /* after the wake-up: the pins whose STATUS bits are set (bank 0..2 in
  * out[], pins/32 words), the RPM's copy */
 void mpm_status(const volatile u8 *vmpm, u32 pins, u32 *out);

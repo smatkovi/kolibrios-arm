@@ -8,7 +8,8 @@
 #          as it was, tickless idle on QEMU's virt and on the Pro1X's code
 #          paths (a tree of the Pro1X's kind, mkdtb.py), CPU_SUSPEND into
 #          the core's state and the cluster's, and the power-down played
-#          (kolibri.psci=simulate: the way back through cpu_resume)
+#          (kolibri.psci=simulate: the way back through cpu_resume); the
+#          standby ended by a played press of the power key (kolibri.keytest)
 TOP := ../..
 K := $(TOP)/build/arm64/kernel.bin
 B := $(TOP)/build/power
@@ -39,7 +40,7 @@ $(B)/sm6115-power.dtb: sm6115-power.dts
 	@mkdir -p $(B)
 	dtc -q -I dts -O dtb -o $@ $<
 
-qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cluster.dtb
+qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cluster.dtb $(B)/pro1x-key.dtb
 	python3 qemu.py $(K) periodic 23 min-rate=90 -- -append "$(ARGS) kolibri.tick=periodic"
 	python3 qemu.py $(K) tickless 23 max-rate=8 has="tickless idle" -- -append "$(ARGS)"
 	python3 qemu.py --pro1x $(B)/pro1x.dtb $(K) pro1x 23 max-rate=8 has="pro1x: lifetime 90 s"
@@ -47,6 +48,8 @@ qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cl
 	python3 qemu.py --pro1x $(B)/pro1x-sim.dtb $(K) simulate 23 max-rate=8 core resumed
 	python3 qemu.py --pro1x $(B)/pro1x-cluster.dtb $(K) cluster 23 max-rate=8 cluster resumed
 	python3 qemu.py $(K) standby 23 max-rate=2.5 has="whole seconds" -- -append "$(ARGS) kolibri.standby"
+	python3 qemu.py --pro1x $(B)/pro1x-key.dtb $(K) keytest 33 max-rate=8 "has=pro1x: standby (the power test)" \
+		"has=pro1x: awake (the power key, played) after 10 s"
 
 kernel:
 	$(MAKE) -C $(TOP) PLATFORM=arm64
@@ -60,6 +63,8 @@ $(B)/pro1x-sim.dtb: mkdtb.py
 	python3 mkdtb.py $@ --psci --bootargs "$(ARGS) kolibri.fakemodem kolibri.psci=simulate"
 $(B)/pro1x-cluster.dtb: mkdtb.py
 	python3 mkdtb.py $@ --psci --bootargs "$(ARGS) kolibri.fakemodem kolibri.psci=simulate,cluster"
+$(B)/pro1x-key.dtb: mkdtb.py
+	python3 mkdtb.py $@ --psci --bootargs "$(ARGS) kolibri.fakemodem kolibri.keytest=10"
 $(B)/qemu-psci.dtb: mkdtb.py
 	@mkdir -p $(B)
 	python3 mkdtb.py $@ --psci --virt

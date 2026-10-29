@@ -95,6 +95,11 @@ void gic3_enable_spi(u32 id)
 	wr32(gicd + GICD_ISENABLER + 4 * (id / 32), 1u << (id % 32));
 }
 
+void gic3_disable_spi(u32 id)
+{
+	wr32(gicd + GICD_ICENABLER + 4 * (id / 32), 1u << (id % 32));
+}
+
 void gic3_irq(void)
 {
 	timer_sync();

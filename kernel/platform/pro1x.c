@@ -30,8 +30,12 @@
  *    kernel sleeps until a key (tickless idle, power.h); polled while keys
  *    are held, and every 50 ms (250 ms the touch screen) without it.
  *
- * kolibri.noinput leaves the keyboard and the touch screen alone. The
- * clock (the PMIC's RTC, over SPMI) is not driven: the time starts at 0. */
+ *  - the power key (the PMIC's PON over SPMI): the standby, the display
+ *    off and the SoC asleep, ended by the power key or any key.
+ *
+ * kolibri.noinput leaves the keyboard and the touch screen alone,
+ * kolibri.nopowerkey the power key. The clock (the PMIC's RTC, over
+ * SPMI) is not driven: the time starts at 0. */
 #include "kernel.h"
 #include "fdt.h"
 #include "../modem/phone.h"
@@ -66,17 +70,19 @@ static u32 lifetime;                   /* s, 0: forever */
 static u32 powertest;                  /* kolibri.powertest=N: min */
 static bool rpmsleep;                  /* kolibri.rpmsleep: the sleep set, the MPM */
 static bool displayon, battery_arg;    /* kolibri.displayon, kolibri.battery */
-/* the SPMI arbiter's regions (core, chnls, obsrvr, cnfg), its EE; the
- * battery's gauge and ADC channel (the device tree's
- * fxtec,pro1x-adc-battery); the DSI controller */
-static addr_t spmi_pa[4], dsi_pa;
-static u32 spmi_size[4], spmi_ee;
+/* the SPMI arbiter's regions (core, chnls, obsrvr, cnfg, intr), its EE,
+ * its interrupt (an INTID) and that interrupt's MPM pin; the battery's
+ * gauge and ADC channel (the device tree's fxtec,pro1x-adc-battery); the
+ * DSI controller */
+static addr_t spmi_pa[5], dsi_pa;
+static u32 spmi_size[5], spmi_ee, spmi_intid, spmi_mpm_pin = 0xffffffffu;
 static struct battery bat;
 static bool bat_found;
 static u32 tlmm_irq, modem_irq;        /* the TLMM's summary interrupt, the modem's GLINK edge's */
 static u32 reserved[8][2];             /* the TLMM's gpio-reserved-ranges: not ours to touch */
 static int nreserved;
 static bool noinput;
+static bool standby;                   /* the display off, the SoC asleep: a key ends it */
 /* the modem (docs/pro1x-modem.md): SMEM, the rmtfs buffer, the APCS IPC
  * register and the bit that kicks its GLINK edge, the EFS images (initrd) */
 static addr_t smem_pa, rmtfs_pa, apcs_pa, efs_pa;
@@ -558,8 +564,11 @@ static u8 to_set1(u16 lc)
 	return 0;
 }
 
+static bool standby_key(int pos, bool pressed);
+
 static void key(int pos, bool pressed, u16 lc)
 {
+	if (standby_key(pos, pressed)) return;
 	u8 sc = pressed ? to_set1(lc) : ksent[pos];
 	if (!sc) return;
 	ksent[pos] = pressed ? sc : 0;
@@ -648,8 +657,11 @@ static void kbd_poll(void)
 		gkey[i].last = d;
 		if (!stable || d == gkey[i].down) continue;
 		gkey[i].down = d;
-		if (gkey[i].code == KEY_FN) fn = d;
-		else key(64 + i, d, gkey[i].code);
+		if (gkey[i].code == KEY_FN) {
+			if (!standby_key(64 + i, d)) fn = d;
+		} else {
+			key(64 + i, d, gkey[i].code);
+		}
 	}
 	if (rep_sc && (s32)(ticks - rep_tick) >= 0) {
 		input_key(rep_sc, false);
@@ -860,6 +872,10 @@ static void ts_poll(void)
 	u8 b[9];
 	if (!gt_read(GT_COOR, b, sizeof(b)) || !(b[0] & 0x80)) return;
 	gt_write(GT_COOR, 0);
+	if (standby && !ts_down) {             /* the display off: touches read, not passed on */
+		ts_sched = !input_irq;
+		return;
+	}
 	if (b[0] & 0x0f) {
 		int tx = b[2] | b[3] << 8, ty = b[4] | b[5] << 8, xm = ts_xmax, ym = ts_ymax;
 		if (xm > ym) {                   /* the long side first: swapped */
@@ -1083,9 +1099,12 @@ static void wifi_power(void)
  * the MPM's IPC bit, as pro1x-maemo-leste's Linux patch 0011 does when
  * the last CPU goes down. The RPM's statistics (vmin, vlow) in the power
  * test's lines. */
-static bool soc_sleep_on;
+static bool soc_sleep_on, handed;
 static addr_t vmpm_pa, stats_pa;
 static u32 vmpm_pins, mpm_bit, stats_size, handovers;
+static struct mpm_wake wake_set;       /* the pins that wake the SoC (the standby's keys) */
+static void wake_set_build(void);
+static void mpm_woken(void);
 
 static void mpm_setup(void)
 {
@@ -1111,9 +1130,23 @@ static void mpm_setup(void)
 static void p_soc_sleep(u64 wake)
 {
 	if (!soc_sleep_on || !vmpm_pa || !apcs_pa) return;
-	mpm_prepare((volatile u8 *)io_va(vmpm_pa), vmpm_pins, wake, NULL);
+	mpm_prepare((volatile u8 *)io_va(vmpm_pa), vmpm_pins, wake, &wake_set);
 	wr32(io_va(apcs_pa) + 8, 1u << mpm_bit);
 	handovers++;
+	handed = true;
+}
+
+/* back: what the MPM saw (its pins' status); the keyboard's INT, no MPM
+ * pin, is still low when a key went down while the SoC slept */
+static void p_soc_wake(void)
+{
+	if (!handed) return;
+	handed = false;
+	mpm_woken();
+	if (standby && kbd_ok && gpio_ok(kbd_int) && !gpio_in(kbd_int)) {
+		kbd_sched = true;
+		kbd_due = ticks;
+	}
 }
 
 static void soc_sleep_start(void)
@@ -1127,6 +1160,11 @@ static void soc_sleep_start(void)
 	soc_sleep_on = vmpm_pa != 0;
 	kprintf("pro1x: the SoC's sleep: the sleep set voted, %s\n",
 		soc_sleep_on ? "the MPM handed over before the cluster's collapse" : "no MPM");
+	if (!soc_sleep_on) return;
+	wake_set_build();
+	/* the RPM's interrupt when the SoC wakes by an MPM pin (the mpm
+	 * node's, rising edge): the pins' status read then */
+	if (pdt.mpm && pdt.mpm_irq) gic3_enable_spi_edge(pdt.mpm_irq, true);
 }
 
 static void rpm_stats_line(const char *what)
@@ -1165,7 +1203,8 @@ static bool pmic_up(void)
 		return false;
 	}
 	struct spmi_hw h = { io_va(spmi_pa[0]), io_va(spmi_pa[1]), io_va(spmi_pa[2]), io_va(spmi_pa[3]),
-			     spmi_size[0], spmi_ee, spmi_rd, spmi_wr, delay_us };
+			     spmi_pa[4] ? io_va(spmi_pa[4]) : 0, spmi_size[0], spmi_ee, spmi_rd, spmi_wr,
+			     delay_us };
 	u32 ver = spmi_init(&h), ours;
 	u32 n = spmi_channels(&ours);
 	if (!ver) {
@@ -1389,6 +1428,8 @@ static void p_power_report(int when)
 	if (when == 2 && display_off) display_power(true);
 }
 
+static void standby_enter(const char *why);
+
 static void standby_start(void)
 {
 	standby_done = true;
@@ -1396,10 +1437,240 @@ static void standby_start(void)
 		kprintf("pro1x: power test: the display stays on (kolibri.displayon)\n");
 		return;
 	}
+	standby_enter("the power test");
+}
+
+/* --- the standby and the power key (docs/power.md, stage 5) ----------- *
+ *
+ * The power key: the PM6125's PON (qcom,pm8998-pon at 0x800 of slave 0;
+ * its qcom,pm8941-pwrkey child: KPDPWR_N, interrupt 0, RT_STS 0x10 bit 0;
+ * qcom,pm8941-resin: the volume-down key, interrupt 1, bit 1; Linux's
+ * pm8941-pwrkey.c) through the SPMI arbiter's interrupt (sm6115.dtsi:
+ * <&mpm 86 IRQ_TYPE_LEVEL_HIGH>, the MPM's pin 86, GIC SPI 183 by its pin
+ * map). Every other PMIC interrupt Linux left on for this processor is
+ * taken out of the arbiter's line first (spmi_irq_quiet), as the TLMM's.
+ *
+ * The power key starts the standby: the display off, the programs'
+ * timeouts on whole seconds, the SoC's sleep (the sleep set, the MPM).
+ * The power key again, the volume-down key, any key of the keyboard or
+ * Fn end it (that key is not passed on), the display on; touches are
+ * read and dropped meanwhile. While the SoC sleeps (vlow, vmin) only the
+ * MPM's pins wake it: the arbiter's (the power and volume keys), and the
+ * TLMM GPIOs with an MPM pin (Linux's sm6115_mpm_map, pinctrl-sm6115.c):
+ * of the Pro1X's keys the modifiers Home (GPIO 93), right Shift (83),
+ * left Ctrl (84), left Alt (19); not the two Fn keys (106, 112) nor the
+ * expander's INT (107): a letter key is seen at the next wake-up by time
+ * (the shell's, a second in the standby), by its INT still low. */
+static const u8 sm6115_mpm_gpio[][2] = {
+	{ 0, 84 }, { 3, 75 }, { 4, 16 }, { 6, 59 }, { 8, 63 }, { 11, 17 }, { 13, 18 },
+	{ 14, 51 }, { 17, 20 }, { 18, 52 }, { 19, 53 }, { 24, 6 }, { 25, 71 }, { 27, 73 },
+	{ 28, 41 }, { 31, 27 }, { 32, 54 }, { 33, 55 }, { 34, 56 }, { 35, 57 }, { 36, 58 },
+	{ 39, 28 }, { 46, 29 }, { 62, 60 }, { 63, 61 }, { 64, 62 }, { 65, 30 }, { 66, 31 },
+	{ 67, 32 }, { 69, 33 }, { 70, 34 }, { 72, 72 }, { 75, 35 }, { 79, 36 }, { 80, 21 },
+	{ 81, 38 }, { 83, 9 }, { 84, 39 }, { 85, 40 }, { 86, 19 }, { 87, 42 }, { 88, 43 },
+	{ 89, 45 }, { 91, 74 }, { 93, 46 }, { 94, 47 }, { 95, 48 }, { 96, 49 }, { 97, 50 },
+};
+
+static int mpm_pin_of_gpio(int gpio)
+{
+	for (u32 i = 0; i < ARRAY_SIZE(sm6115_mpm_gpio); i++)
+		if (sm6115_mpm_gpio[i][0] == gpio) return sm6115_mpm_gpio[i][1];
+	return -1;
+}
+
+/* a PON key: its peripheral, its interrupt, its RT_STS bit */
+struct ponkey {
+	bool found, down;
+	u32 sid, base, irq, bit;
+};
+static struct ponkey pwrkey, resin;
+static bool pon_on, nopowerkey;
+static u32 standby_since, keytest, keytest_at, mpm_key_wakes, mpm_spmi_wakes;
+static u8 swallowed[64 + 8];           /* keys that ended the standby: their release dropped too */
+
+static void standby_enter(const char *why)
+{
+	if (standby) return;
+	standby = true;
+	standby_since = ticks;
+	mpm_key_wakes = mpm_spmi_wakes = 0;
+	kprintf("pro1x: standby (%s)\n", why);
 	display_power(false);
 	extern bool power_standby;
-	power_standby = display_off;
+	power_standby = true;
 	if (!soc_sleep_on) soc_sleep_start();
+	if (keytest) keytest_at = ticks + keytest * 100;
+}
+
+static void standby_leave(const char *why)
+{
+	if (!standby) return;
+	standby = false;
+	extern bool power_standby;
+	power_standby = false;
+	kprintf("pro1x: awake (%s) after %u s; MPM wake-ups: %u by keys, %u by the SPMI arbiter\n", why,
+		(ticks - standby_since) / 100, mpm_key_wakes, mpm_spmi_wakes);
+	if (display_off) display_power(true);
+}
+
+/* key() and Fn in the standby: the press ends it, press and release are
+ * not passed on */
+static bool standby_key(int pos, bool pressed)
+{
+	if (pressed && standby) {
+		swallowed[pos] = 1;
+		standby_leave("a key");
+		return true;
+	}
+	if (!pressed && swallowed[pos]) {
+		swallowed[pos] = 0;
+		return true;
+	}
+	return false;
+}
+
+static void powerkey_press(const char *how)
+{
+	if (standby) standby_leave(how);
+	else standby_enter(how);
+}
+
+/* the PON's interrupts: the keys' state from RT_STS; a release without
+ * its press (both edges between two looks) a short press, as Linux */
+static void pon_key(struct ponkey *k, u8 rt, bool power)
+{
+	bool d = rt & k->bit;
+	bool press = d && !k->down;
+	if (!d && !k->down) press = true;
+	k->down = d;
+	if (!press) return;
+	if (power) powerkey_press("the power key");
+	else if (standby) standby_leave("volume down");
+}
+
+static void pon_isr(void)
+{
+	static bool said;
+	static u32 empty;
+	struct spmi_irq ev[8];
+	int n = spmi_irq_take(ev, 8);
+	/* the line up with nothing to take, again and again: off, said */
+	if (!n && ++empty == 1000) {
+		gic3_disable_spi(spmi_intid);
+		pon_on = false;
+		kprintf("pro1x: power key: the SPMI arbiter's interrupt stays up with nothing pending: off\n");
+	}
+	if (n) empty = 0;
+	for (int i = 0; i < n; i++) {
+		if (ev[i].sid != pwrkey.sid || ev[i].addr != pwrkey.base) {
+			if (!said) kprintf("pro1x: SPMI: an interrupt of %u:%x (%x), not ours\n", ev[i].sid,
+					   ev[i].addr, ev[i].bits);
+			said = true;
+			continue;
+		}
+		u8 rt = 0;
+		if (spmi_read(pwrkey.sid, pwrkey.base + 0x10, &rt, 1)) continue;
+		if (ev[i].bits & 1u << pwrkey.irq) pon_key(&pwrkey, rt, true);
+		if (resin.found && resin.sid == pwrkey.sid && resin.base == pwrkey.base && (ev[i].bits & 1u << resin.irq))
+			pon_key(&resin, rt, false);
+	}
+}
+
+static void pon_init(void)
+{
+	if (nopowerkey) {
+		kprintf("pro1x: power key: off (kolibri.nopowerkey)\n");
+		return;
+	}
+	if (!pwrkey.found) {
+		kprintf("pro1x: power key: no qcom,pm8941-pwrkey in the device tree\n");
+		return;
+	}
+	if (!spmi_intid || !spmi_pa[4]) {
+		kprintf("pro1x: power key: the SPMI arbiter has no %s in the device tree\n",
+			spmi_intid ? "intr region" : "interrupt");
+		return;
+	}
+	if (!pmic_up()) return;
+	u32 quiet = spmi_irq_quiet();
+	int r = spmi_irq_enable(pwrkey.sid, pwrkey.base, pwrkey.irq, SPMI_IRQ_EDGE_BOTH);
+	if (r) {
+		kprintf("pro1x: power key: its interrupt not set up (%d: %s)\n", r,
+			r == -5 ? "not this EE's" : r == -2 ? "not ours to write" : r == -1 ? "no channel" : "refused");
+		return;
+	}
+	int r2 = resin.found && resin.sid == pwrkey.sid && resin.base == pwrkey.base ?
+		 spmi_irq_enable(resin.sid, resin.base, resin.irq, SPMI_IRQ_EDGE_BOTH) : -1;
+	if (r2) resin.found = false;
+	/* PON's other interrupts (Linux's driver uses these two) off */
+	u8 others = (u8)~(1u << pwrkey.irq | (resin.found ? 1u << resin.irq : 0));
+	spmi_write(pwrkey.sid, pwrkey.base + 0x16, &others, 1);
+	u8 rt = 0;
+	spmi_read(pwrkey.sid, pwrkey.base + 0x10, &rt, 1);
+	pwrkey.down = rt & pwrkey.bit;
+	resin.down = rt & resin.bit;
+	gic3_enable_spi_edge(spmi_intid, false);
+	pon_on = true;
+	kprintf("pro1x: power key: PON at %u:%x, interrupt %u%s, through INTID %u (MPM pin %d); "
+		"%u of Linux's PMIC interrupts quieted\n", pwrkey.sid, pwrkey.base, pwrkey.irq,
+		resin.found ? ", volume down 1" : "", spmi_intid, (int)spmi_mpm_pin, quiet);
+}
+
+/* the MPM's wake set: the arbiter's pin (a high level), the keys' GPIOs
+ * that have a pin (both edges) */
+static void wake_set_build(void)
+{
+	int none[10], nn = 0;
+	bool any = false;
+	mzero(&wake_set, sizeof(wake_set));
+	kprintf("pro1x: MPM wake-ups:");
+	if (pon_on && spmi_mpm_pin < vmpm_pins) {
+		mpm_wake_pin(&wake_set, spmi_mpm_pin, false, false, true);
+		kprintf(" SPMI (pin %u)", spmi_mpm_pin);
+		any = true;
+	}
+	for (int i = 0; i < ngkeys; i++) {
+		int pin = mpm_pin_of_gpio(gkey[i].pin);
+		if (pin >= 0 && (u32)pin < vmpm_pins) {
+			mpm_wake_pin(&wake_set, (u32)pin, true, true, false);
+			kprintf(" GPIO %d (pin %d)", gkey[i].pin, pin);
+			any = true;
+		} else if (nn < (int)ARRAY_SIZE(none)) {
+			none[nn++] = gkey[i].pin;
+		}
+	}
+	if (kbd_ok && gpio_ok(kbd_int)) {
+		int pin = mpm_pin_of_gpio(kbd_int);
+		if (pin >= 0 && (u32)pin < vmpm_pins) mpm_wake_pin(&wake_set, (u32)pin, false, true, false);
+		else if (nn < (int)ARRAY_SIZE(none)) none[nn++] = kbd_int;
+	}
+	if (!any) kprintf(" the timer only");
+	if (nn) kprintf("; no MPM pin: GPIO");
+	for (int i = 0; i < nn; i++) kprintf(" %d", none[i]);
+	kprintf("\n");
+}
+
+static void mpm_woken(void)
+{
+	u32 st[MPM_BANKS];
+	if (!vmpm_pa) return;
+	mzero(st, sizeof(st));
+	mpm_status((const volatile u8 *)io_va(vmpm_pa), vmpm_pins, st);
+	bool keys = false;
+	for (u32 b = 0; b < MPM_BANKS; b++) {
+		u32 hit = st[b] & wake_set.enable[b];
+		for (u32 i = 0; hit && i < 32; i++) {
+			if (!(hit & 1u << i)) continue;
+			if (32 * b + i == spmi_mpm_pin) mpm_spmi_wakes++;
+			else keys = true, mpm_key_wakes++;
+		}
+	}
+	/* the modifiers: looked at now (their TLMM edge may be lost); the
+	 * arbiter's level interrupt comes by itself */
+	if (keys) {
+		kbd_sched = true;
+		kbd_due = ticks;
+	}
 }
 
 static void p_other_irq(u32 id);
@@ -1414,6 +1685,7 @@ static void p_init(void)
 	if (powertest || battery_arg) pmic_up();
 	gic3_init(gicd, gicr, p_other_irq);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
+	pon_init();
 	prng_init();
 	if (wifi) wifi_power();
 	if (rpmsleep) soc_sleep_start();
@@ -1458,6 +1730,9 @@ static void p_tick(void)
 		if (due(ts_sched, ts_due)) ts_poll();
 	}
 	if (powertest && !standby_done && (s32)(ticks - standby_at) >= 0) standby_start();
+	/* kolibri.keytest=S: a press of the power key played S s into each
+	 * standby (the way back without hands; QEMU) */
+	if (keytest && standby && (s32)(ticks - keytest_at) >= 0) powerkey_press("the power key, played");
 }
 
 /* tickless idle: the watchdog, the lifetime, the input's polls */
@@ -1465,6 +1740,7 @@ static u32 p_next_tick(void)
 {
 	u32 n = wdt_feeding ? until(wdt_next) : 0xffffffffu;
 	if (powertest && !standby_done) n = MIN(n, until(standby_at));
+	if (keytest && standby) n = MIN(n, until(keytest_at));
 	if (!noinput) {
 		if (kbd_sched) n = MIN(n, until(kbd_due));
 		if (ts_sched && ts_ok) n = MIN(n, until(ts_due));
@@ -1584,6 +1860,8 @@ static void p_other_irq(u32 id)
 {
 	if (id == tlmm_irq && input_irq) tlmm_isr();
 	else if (id == modem_irq && modem_irq) kmodem_irq();
+	else if (id == spmi_intid && pon_on) pon_isr();
+	else if (id == pdt.mpm_irq && soc_sleep_on) mpm_woken();
 }
 
 static void p_panic(void)
@@ -1610,6 +1888,7 @@ struct platform platform_pro1x = {
 	.tick = p_tick,
 	.next_tick = p_next_tick,
 	.soc_sleep = p_soc_sleep,
+	.soc_wake = p_soc_wake,
 	.panic_hook = p_panic,
 	.cached_data = true,
 };
@@ -1838,9 +2117,9 @@ bool pro1x_probe(const void *fdt)
 	 * channel its io-channels name (pmi632.dtsi: VBAT_SNS, 1/3) */
 	int sp = fdt_find_compatible(fdt, "qcom,spmi-pmic-arb", -1, &ac, &sc);
 	const char *rnames = sp >= 0 ? fdt_prop(fdt, sp, "reg-names", &len) : NULL;
-	static const char *const spmi_names[4] = { "core", "chnls", "obsrvr", "cnfg" };
+	static const char *const spmi_names[5] = { "core", "chnls", "obsrvr", "cnfg", "intr" };
 	for (int k = 0, idx = 0, o = 0; rnames && o < len; idx++) {
-		for (k = 0; k < 4; k++)
+		for (k = 0; k < 5; k++)
 			if (!strcmp(rnames + o, spmi_names[k]) && fdt_reg(fdt, sp, ac, sc, idx, &a, &s)) {
 				spmi_pa[k] = a;
 				spmi_size[k] = (u32)s;
@@ -1849,6 +2128,41 @@ bool pro1x_probe(const void *fdt)
 		o += strlen(rnames + o) + 1;
 	}
 	if (sp >= 0) spmi_ee = fdt_u32(fdt, sp, "qcom,ee", 0);
+	/* its interrupt: through the MPM (a pin, the GIC's SPI by the pin
+	 * map), or the GIC's own */
+	p = sp >= 0 ? fdt_prop(fdt, sp, "interrupts-extended", &len) : NULL;
+	if (p && len >= 12) {
+		int ic = fdt_find_phandle(fdt, cell(p, 0));
+		int ml = 0;
+		const void *map = ic >= 0 ? fdt_prop(fdt, ic, "qcom,mpm-pin-map", &ml) : NULL;
+		if (map && fdt_is_compatible(fdt, ic, "qcom,mpm")) {
+			for (int i = 0; i + 1 < ml / 4; i += 2)
+				if (cell(map, i) == cell(p, 1)) {
+					spmi_mpm_pin = cell(p, 1);
+					spmi_intid = 32 + cell(map, i + 1);
+				}
+		} else if (ic >= 0 && fdt_is_compatible(fdt, ic, "arm,gic-v3") && len >= 16 && cell(p, 1) == 0) {
+			spmi_intid = 32 + cell(p, 2);
+		}
+	} else if (sp >= 0 && (p = fdt_prop(fdt, sp, "interrupts", &len)) && len >= 12 && cell(p, 0) == 0) {
+		spmi_intid = 32 + cell(p, 1);
+	}
+	/* the power key and the volume-down key: PON's children (pm6125.dtsi:
+	 * qcom,pm8941-pwrkey, qcom,pm8941-resin; interrupts <sid peripheral
+	 * irq type>, RT_STS bits 0 and 1) */
+	for (int pm = sp >= 0 ? fdt_next_child(fdt, sp, -1) : -1; pm >= 0; pm = fdt_next_child(fdt, sp, pm))
+		for (int pon = fdt_next_child(fdt, pm, -1); pon >= 0; pon = fdt_next_child(fdt, pm, pon))
+			for (int k = fdt_next_child(fdt, pon, -1); k >= 0; k = fdt_next_child(fdt, pon, k)) {
+				bool pw = fdt_is_compatible(fdt, k, "qcom,pm8941-pwrkey");
+				if (!pw && !fdt_is_compatible(fdt, k, "qcom,pm8941-resin")) continue;
+				const char *st = fdt_prop(fdt, k, "status", &len);
+				if (st && strcmp(st, "okay") && strcmp(st, "ok")) continue;
+				p = fdt_prop(fdt, k, "interrupts", &len);
+				if (!p || len < 16) continue;
+				struct ponkey *pk = pw ? &pwrkey : &resin;
+				*pk = (struct ponkey){ .found = true, .sid = cell(p, 0), .base = cell(p, 1) << 8,
+						       .irq = cell(p, 2), .bit = pw ? 1u : 2u };
+			}
 	for (int pm = sp >= 0 ? fdt_next_child(fdt, sp, -1) : -1; pm >= 0; pm = fdt_next_child(fdt, sp, pm)) {
 		int g = fdt_child_compatible(fdt, pm, "fxtec,pro1x-adc-battery");
 		p = g >= 0 ? fdt_prop(fdt, g, "io-channels", &len) : NULL;
@@ -1894,6 +2208,8 @@ bool pro1x_probe(const void *fdt)
 		rpmsleep = word(args, len, "kolibri.rpmsleep", NULL);
 		displayon = word(args, len, "kolibri.displayon", NULL);
 		battery_arg = word(args, len, "kolibri.battery", NULL);
+		nopowerkey = word(args, len, "kolibri.nopowerkey", NULL);
+		word(args, len, "kolibri.keytest=", &keytest);
 		adopt_ipcrtr = word(args, len, "kolibri.ipcrtr=adopt", NULL);
 	}
 	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of

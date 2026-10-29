@@ -18,8 +18,8 @@
 //!
 //! GetQR starts linking: Signal's server hands out a provisioning address
 //! (the QR code the phone's Signal scans: Settings, Linked devices); when
-//! the server closes it unscanned, a new one follows (another QRCode
-//! signal). Once linked, the messages are received and stored. The
+//! the server closes it unscanned (after about 90 s), a new one follows
+//! (another QRCode signal). Once linked, the messages are received and stored. The
 //! program ends with its standard input; its log goes to standard error
 //! (RUST_LOG, warnings by default). The store:
 //! `$XDG_DATA_HOME/signal-host/store.db` (`$HOME/.local/share/...`).
@@ -122,20 +122,23 @@ async fn link(h: H) {
                 spawn_local(receive(h.clone(), m));
                 return;
             }
+            Err(e) if shown => {
+                // the server closes an unscanned provisioning socket
+                // after about 90 s ("Timeout"): the next address
+                eprintln!("signal-host: linking: {e}; a new address");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
             Err(e) => {
+                // no address at all: the network or the server; the user
+                // interface asks again
                 let e = format!("linking: {e}");
                 signal("Error", json!([e]));
                 let waiting = std::mem::take(&mut h.borrow_mut().qr_waiting);
                 for id in waiting {
                     reply(&id, Err(e.clone()));
                 }
-                if !shown {
-                    // no address at all: the network or the server; the
-                    // user interface asks again
-                    h.borrow_mut().linking = false;
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                h.borrow_mut().linking = false;
+                return;
             }
         }
     }
