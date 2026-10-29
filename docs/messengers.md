@@ -1,16 +1,21 @@
-# Messengers: WhatsApp and Telegram under KolibriOS
+# Messengers: WhatsApp, Telegram and Signal under KolibriOS
 
 The messengers on the Pro1X under KolibriOS use the same backends as on
-Maemo Leste:
+Maemo Leste where there is one, and an open Signal client library for
+Signal:
 
 - **WhatsApp**: Yappari's daemon `yappari-wa`
   ([smatkovi/yappari-leste](https://github.com/smatkovi/yappari-leste)),
   Go with whatsmeow, the multi-device protocol, linked to the main phone by
   QR code or phone number;
 - **Telegram**: the libpurple plugin tdlib-purple (Leste's
-  `purple-telegram`) on TDLib, in a small libpurple host program.
+  `purple-telegram`) on TDLib, in a small libpurple host program;
+- **Signal**: [presage](https://github.com/whisperfish/presage), the Rust
+  Signal client library of whisperfish and flare, on Signal's own
+  libsignal, in a small program of its own (`tools/signal-host`), linked
+  to the main phone as a secondary device by QR code.
 
-Both run unchanged as Linux programs on a Linux personality of the kernel;
+All three run unchanged as Linux programs on a Linux personality of the kernel;
 the user interfaces are KolibriOS programs in the Hildon look. Below: why
 that way, the pieces, the protocol between them, the Telegram build, and
 what is done. The network under them: [pro1x-network.md](pro1x-network.md).
@@ -39,6 +44,8 @@ stay as they are; Linux programs are AArch64 at EL0 next to them.
  | chat (Hildon look):        |  pipes   | yappari-wa -stdio  (WhatsApp)  |
  |  accounts, chats, a chat,  | <------> | purple-host -stdio (Telegram:  |
  |  QR code, login prompts    |          |   libpurple + tdlib-purple)    |
+ |                            |          | signal-host -stdio (Signal:    |
+ |                            |          |   presage + libsignal)         |
  +----------------------------+          +-------------------------------+
               | function 101                  | Linux system calls
  +-----------------------------------------------------------------------+
@@ -157,6 +164,110 @@ telegram,NUMBER`), logging in with that number at once.
 TDLib's database (the login) is in the RAM file system, the same
 persistence question as WhatsApp's.
 
+## Signal: the signal host
+
+`signal-host` (`tools/signal-host/`) is a Rust program of its own on
+[presage](https://github.com/whisperfish/presage) (the library under
+flare and whisperfish), which is built on whisperfish's
+[libsignal-service-rs](https://github.com/whisperfish/libsignal-service-rs)
+(Signal's service: the REST calls, the websockets, the provisioning) and
+Signal's own [libsignal](https://github.com/signalapp/libsignal) (the
+protocol, zkgroup, the account keys). It links as a **secondary device**
+(as Signal Desktop does): GetQR opens Signal's provisioning websocket,
+the server hands out a provisioning address, and the program shows it as
+a QR code; the phone's Signal (Settings, Linked devices, Link new device)
+scans it and sends the account's keys over that socket. The store is
+presage's SQLite one (`$XDG_DATA_HOME/signal-host/store.db`, in the RAM
+file system: lost at a reboot, as WhatsApp's).
+
+The protocol is `yappari-wa -stdio`'s, so the messenger's WhatsApp path
+serves it unchanged (`kolibri.args=signal`: the title, the linking text,
+`/bin/signal-host`):
+
+```
+UI -> host   {"id": 1, "call": "Status", "args": []}
+host -> UI   {"id": 1, "result": ["logged-out"]}               (or "connecting", "connected")
+UI -> host   {"id": 2, "call": "GetQR", "args": []}
+host -> UI   {"signal": "QRCode", "args": ["sgnl://linkdevice?uuid=...&pub_key=..."]}
+             {"id": 2, "result": ["sgnl://linkdevice?uuid=...&pub_key=..."]}
+UI -> host   {"id": 3, "call": "SendText", "args": ["<ACI uuid> or group:<master key, hex>", "hello"]}
+host -> UI   {"id": 3, "result": [1761750000000]}
+             {"signal": "StateChanged", "args": ["connected"]}
+             {"signal": "Message", "args": ["<timestamp ms>", "<chat>", "<sender>", "", 1761750000, false, "text", "hi", "", 0]}
+             {"signal": "Error", "args": ["..."]}
+```
+
+When the server closes an unscanned provisioning socket, linking starts
+again and a new QRCode signal follows. After linking (and at a start with
+a linked store) the host receives: StateChanged `connecting`, then
+`connected` once the server's queue is empty; text messages (their own,
+sent from the phone, too: `fromMe` true) as Message signals; SendText to a
+contact (its ACI) or a group (its master key). Received messages, the
+contacts and the groups are in presage's store as well. Only linking up
+to the QR code has been tried (below); receiving and sending have not run
+against Signal yet, since no account is linked in tests.
+
+**Versions** (`tools/signal-host/Cargo.toml`, all of them in its
+`Cargo.lock`, built with `--locked`):
+
+| | |
+| --- | --- |
+| presage, presage-store-sqlite | `aeaedf99b` (2026-10-27, "feat(manager): sync groups from the storage service") |
+| libsignal-service-rs | `72a09876` (2026-10-25, presage's pin), without `cdsi` (no libsignal-net, no BoringSSL) |
+| libsignal (libsignal-protocol, -core, -account-keys, signal-crypto, zkgroup, usernames) | tag `v0.99.0` (`439f035d9`) |
+| SQLite | libsqlite3-sys 0.36.0 (whisperfish's rusqlite fork `2a42b335`, as presage pins it), plain SQLite compiled in (`bundled`: not presage's default SQLCipher) |
+| TLS | rustls 0.23.45 with ring 0.17.14 (libsignal-service installs it as the provider; Signal's servers are checked against the certificates libsignal-service carries, `certs/`), and AWS-LC (aws-lc-sys 0.46.0) through reqwest's `rustls` feature (presage's link previews; it is linked, not used for Signal's servers) |
+| Rust | 1.99.1 (Arch's `rust`, `rust-aarch64-musl`: Rust's own musl, self-contained) |
+
+**Licences:** presage, presage-store-sqlite, libsignal-service-rs and
+libsignal are AGPL-3.0-only (their `LICENSE` files and `Cargo.toml`), so
+`signal-host` is AGPL-3.0-only too (its `Cargo.toml`); whoever runs it
+for others must offer its source. It is a program of its own, started
+through function 101, not linked with KolibriOS (GPL 2). The rest: ring
+Apache-2.0 AND ISC, AWS-LC ISC/Apache-2.0 (with MIT and BSD parts),
+rustls Apache-2.0/MIT/ISC, SQLite public domain, tokio and the other
+crates MIT/Apache-2.0.
+
+**The build:** `tools/signal-host/build.sh WORKDIR`: `cargo build
+--release --locked --target aarch64-unknown-linux-musl`, the C parts
+(SQLite, AWS-LC, ring's assembly) through `zig cc -target
+aarch64-linux-musl` (wrappers that drop the cc crate's `--target` and
+zig's sanitizer for code built without -O: AWS-LC's jitterentropy), the
+link by clang with lld against Rust's self-contained musl
+(`+crt-static`). The target directory some 1.2 GB; the result one
+static program of 17 MB.
+
+`make run-signal SIGNAL_HOST=WORKDIR/signal-host`: QEMU with the
+messenger in Signal mode (`kolibri.args=signal`). No CA bundle is needed:
+the host trusts only the certificates it carries for Signal.
+
+**What it needed of the Linux personality** (measured with
+`qemu-aarch64 -strace` on the PC, then in QEMU): 46 system calls, all
+there before but two:
+
+- `pwritev2` (287): musl 1.2.5's `pwrite` tries it first with
+  `RWF_NOAPPEND` (POSIX's pwrite on an `O_APPEND` file), and falls back to
+  `pwrite64` on `ENOSYS`; SQLite writes with `pwrite`, so every write
+  logged "system call 287 not there". Now `preadv`, `pwritev`, `preadv2`
+  and `pwritev2` are there (`kernel/linux/file.c`, offset -1: the file's
+  position; `RWF_APPEND`, `RWF_NOAPPEND`).
+- `mkdirat` of a directory whose parent is missing answered `EROFS`
+  instead of `ENOENT`, so Rust's `create_dir_all` gave up at once
+  (`~/.local/share/signal-host`); `EROFS` is now only for a parent on the
+  ramdisk (`/bin/...`), as for `openat` with `O_CREAT`.
+
+SQLite's WAL index (`store.db-shm`) is a `MAP_SHARED` mapping, which the
+personality gives as a private copy. That is enough here: SQLite maps the
+index once per process and shares it between its connections (one
+`mmap` in the trace for presage's three), and no other process uses the
+file. A real shared mapping (the RAM file's pages themselves) would be
+needed for two processes on one database.
+
+The rest was there: threads (`clone`, futexes), `epoll` and `eventfd`
+(tokio), TCP with keep-alive options, UDP and `bind` (musl's resolver),
+`ppoll`, `sendmsg`/`recvmsg`, file locks (`F_SETLK`), `fsync`,
+`ftruncate`, `getrandom`.
+
 ## Status
 
 - [x] the design (this document, [pro1x-network.md](pro1x-network.md))
@@ -171,6 +282,9 @@ persistence question as WhatsApp's.
 - [x] the purple host's build and program (`tools/purple-host/`); in QEMU (`make run-telegram`)
   the messenger's Telegram mode logs in with a number that is not anyone's, and Telegram's
   question for the login code shows in its window (sendmsg/recvmsg were missing before)
+- [x] the signal host (`tools/signal-host/`, presage): on the PC under `qemu-aarch64` and in
+  QEMU (`make run-signal`), the messenger's Signal mode shows the linking QR code from Signal's
+  server (below)
 - [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), randomness, persistence
 
 In QEMU (`make run-messenger YAPPARI_WA=<yappari-wa for linux/arm64>`): `messenger` starts the
@@ -178,3 +292,19 @@ daemon, which connects to WhatsApp through lwIP and Go's TLS and hands over its 
 one every 20 seconds); a screenshot of QEMU's screen decodes with `zbarimg` to the daemon's code
 of that moment. Linking itself was not tried (no account is used in tests), and must not be
 until the random numbers come from hardware (`getrandom`, above).
+
+Signal, the same way (`tests/linux/qrcheck.py`, which waits for the backend's code on the
+serial console, takes QEMU's screenshot and decodes it with `zbarimg`):
+
+```
+make PLATFORM=arm64 LINUX_FILES="bin/signal-host=WORKDIR/signal-host" all
+python3 tests/linux/qrcheck.py build/arm64/kernel.bin 200 sgnl://linkdevice -- \
+    -append "kolibri.run=/sys/messenger kolibri.args=signal"
+qrcheck: the backend's code: sgnl://linkdevice?uuid=X7dj6ZeuXXyfNNkinUIKmw%3D%3D&pub_key=Bdwl...
+qrcheck: on the screen:       sgnl://linkdevice?uuid=X7dj6ZeuXXyfNNkinUIKmw%3D%3D&pub_key=Bdwl...
+qrcheck: the same
+```
+
+The address is a real one from Signal's server (`chat.signal.org`'s provisioning socket needs
+no account). It was not scanned: linking a real account waits for the phone's hardware
+random numbers and the user.

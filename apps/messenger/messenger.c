@@ -1,10 +1,13 @@
-/* messenger: WhatsApp and Telegram for KolibriOS, the first part. Each
- * through its backend, a Linux program started through function 101
- * (docs/messengers.md), in JSON lines:
+/* messenger: WhatsApp, Telegram and Signal for KolibriOS, the first
+ * part. Each through its backend, a Linux program started through
+ * function 101 (docs/messengers.md), in JSON lines:
  *
  *  - WhatsApp: Yappari's daemon (/bin/yappari-wa -stdio): its state, and
  *    linking by QR code (WhatsApp on the main phone: Linked devices, Link
  *    a device);
+ *  - Signal (parameter "signal"): presage (/bin/signal-host -stdio), the
+ *    same calls and signals as Yappari's: linking as a secondary device by
+ *    QR code (Signal on the phone: Settings, Linked devices);
  *  - Telegram (parameter "telegram"): libpurple with tdlib-purple
  *    (/bin/purple-host -stdio): the phone number, then what Telegram asks
  *    (the login code, the password). "telegram NUMBER" logs in with that
@@ -39,6 +42,7 @@ static int lx_write(const char *s, unsigned n) { return kos_call(101, 2, handle,
 static int lx_read(char *b, unsigned n) { return kos_call(101, 3, handle, (u32)b, n, 0); }
 
 static bool tg;                        /* Telegram, not WhatsApp */
+static bool sg;                        /* Signal (WhatsApp's way: a QR code) */
 static char field[64];                 /* what is typed */
 static unsigned nfield;
 static int ask_id = -1;                /* Telegram's question (an Input signal) */
@@ -78,7 +82,7 @@ static int call(const char *method)
 static void debug_line(const char *s)
 {
 	kos_debug_char('[');
-	for (const char *p = "wa] "; *p; p++) kos_debug_char(*p);
+	for (const char *p = tg ? "tg] " : sg ? "sg] " : "wa] "; *p; p++) kos_debug_char(*p);
 	for (unsigned i = 0; s[i] && i < 160; i++) kos_debug_char(s[i]);
 	kos_debug_char('\n');
 }
@@ -249,16 +253,19 @@ static void draw(void)
 	int sw, sh;
 	kos_screen_size(&sw, &sh);
 	kos_begin_draw();
-	kos_window(0, 0, sw, sh, KOS_WIN_SKINNED | BG, "WhatsApp");
+	const char *name = sg ? "Signal" : "WhatsApp";
+	kos_window(0, 0, sw, sh, KOS_WIN_SKINNED | BG, name);
 	/* the window's inside: the work area (the Hildon shell's panel above it) */
 	struct kos_r2 wa = kos_call2(48, 5, 0, 0, 0, 0);
 	int w = (int)(wa.eax & 0xffff) - (int)(wa.eax >> 16) - 10;
 	int h = (int)(wa.ebx & 0xffff) - (int)(wa.ebx >> 16) - kos_skin_height() - 10;
 	char buf[96];
 	if (ended) {
-		kos_text(24, 24, "The WhatsApp service ended.", FG, 1);
+		ksprintf(buf, "The %s service ended.", name);
+		kos_text(24, 24, buf, FG, 1);
 	} else if (!strcmp(state, "connected")) {
-		kos_text(24, 24, "Linked to WhatsApp.", FG, 1);
+		ksprintf(buf, "Linked to %s.", name);
+		kos_text(24, 24, buf, FG, 1);
 		kos_text(24, 48, "The chats come in a later version.", DIM, 1);
 	} else if (qr_size) {
 		/* the QR code with its quiet zone, as large as fits */
@@ -279,11 +286,17 @@ static void draw(void)
 		if (tx + 200 > w) tx = 24;
 		int ty = tx == 24 ? y0 + full + 16 : y0;
 		kos_text(tx, ty, "Link this device:", FG, 1);
-		kos_text(tx, ty + 24, "WhatsApp on your phone,", DIM, 1);
-		kos_text(tx, ty + 44, "Linked devices,", DIM, 1);
-		kos_text(tx, ty + 64, "Link a device, scan the code.", DIM, 1);
+		if (sg) {
+			kos_text(tx, ty + 24, "Signal on your phone,", DIM, 1);
+			kos_text(tx, ty + 44, "Settings, Linked devices,", DIM, 1);
+			kos_text(tx, ty + 64, "Link new device, scan the code.", DIM, 1);
+		} else {
+			kos_text(tx, ty + 24, "WhatsApp on your phone,", DIM, 1);
+			kos_text(tx, ty + 44, "Linked devices,", DIM, 1);
+			kos_text(tx, ty + 64, "Link a device, scan the code.", DIM, 1);
+		}
 	} else {
-		ksprintf(buf, "WhatsApp: %s", state);
+		ksprintf(buf, "%s: %s", name, state);
 		kos_text(24, 24, buf, FG, 1);
 		if (!strcmp(state, "logged-out")) {
 			kos_button(24, 60, 200, 36, 10, ACCENT);
@@ -327,8 +340,9 @@ int main(const char *params)
 		tg = true;
 		if (params[8] == ' ' && params[9]) test_number = params + 9;
 	}
+	sg = params && !strcmp(params, "signal");
 	kos_event_mask(7 | 1 << 7);                 /* redraw, key, button, network (function 101) */
-	const char *backend = tg ? "/bin/purple-host" : "/bin/yappari-wa";
+	const char *backend = tg ? "/bin/purple-host" : sg ? "/bin/signal-host" : "/bin/yappari-wa";
 	handle = lx_start(backend, "-stdio");
 	if (handle < 0) {
 		ksprintf(state, "not there (%s)", backend);

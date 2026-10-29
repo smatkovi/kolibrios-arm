@@ -193,7 +193,8 @@ through the modem, which keeps running from Linux's time through the
 kexec: `docs/pro1x-modem.md`; their sound through the ADSP, whose
 channel KolibriOS takes over from Linux: `docs/pro1x-audio.md`. The
 network and the messengers (WhatsApp through Yappari's daemon, Telegram
-through libpurple's tdlib-purple, both as Linux programs):
+through libpurple's tdlib-purple, Signal through presage, all three as
+Linux programs; `tools/signal-host` is AGPL-3.0, as presage and libsignal):
 `docs/pro1x-network.md`, `docs/messengers.md`.
 
 ## Licence

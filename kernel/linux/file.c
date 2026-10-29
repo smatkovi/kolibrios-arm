@@ -268,6 +268,20 @@ static const struct rd_file *rd_lookup(const char *path)
 	return NULL;
 }
 
+/* a new name whose directory is not in the RAM file system: read-only
+ * when the directory is the ramdisk's, else it is not there (mkdir -p,
+ * as Rust's create_dir_all, goes on with the parent only on ENOENT) */
+static long no_parent(const char *path)
+{
+	char d[PATH_MAX];
+	strncpy0(d, path, sizeof(d));
+	int l = strlen(d);
+	while (l > 1 && d[l - 1] == '/') d[--l] = 0;
+	while (l > 0 && d[l - 1] != '/') d[--l] = 0;
+	while (l > 1 && d[l - 1] == '/') d[--l] = 0;
+	return l && rd_dir_exists(d) ? -EROFS : -ENOENT;
+}
+
 static void look_up(const char *path, struct look *lk)
 {
 	memset(lk, 0, sizeof(*lk));
@@ -621,6 +635,31 @@ static long rw_vec(struct task *t, struct lx_file *f, u64 iov, int cnt, u64 *pos
 	return total;
 }
 
+/* preadv, pwritev and their -v2 (offset -1: the file's position; the
+ * flags RWF_APPEND and RWF_NOAPPEND, the others only hints here). On a
+ * 64-bit kernel the offset is a[3] alone (pos_from_hilo). */
+#define RWF_APPEND 0x10
+#define RWF_NOAPPEND 0x20
+#define RWF_KNOWN 0xff
+
+static long sys_prwv(struct task *t, struct lx_file *f, int nr, u64 *a)
+{
+	bool write = nr == 70 || nr == 287, v2 = nr >= 286;
+	s64 off = (s64)a[3];
+	u32 rwf = v2 ? (u32)a[5] : 0;
+	if (rwf & ~RWF_KNOWN) return -EOPNOTSUPP;
+	if (v2 && off == -1) return rw_vec(t, f, a[1], (int)a[2], &f->pos, write);
+	if (f->type != F_RD && f->type != F_RAM && f->type != F_TEXT) return -ESPIPE;
+	if (off < 0) return -EINVAL;
+	u64 pos = (u64)off;
+	u32 was = f->flags;
+	if (rwf & RWF_NOAPPEND) f->flags &= ~O_APPEND;
+	if (rwf & RWF_APPEND) f->flags |= O_APPEND;
+	long r = rw_vec(t, f, a[1], (int)a[2], &pos, write);
+	f->flags = was;
+	return r;
+}
+
 static int user_path(struct task *t, int dirfd, u64 upath, char *out)
 {
 	struct lx_proc *p = t->lx->p;
@@ -670,7 +709,7 @@ static long sys_openat(struct task *t, int dirfd, u64 upath, u32 flags)
 	struct lx_file *f = NULL;
 	if (!look_exists(&lk)) {
 		if (!(flags & O_CREAT)) return -ENOENT;
-		if (!lk.parent) return lk.last ? -ENOENT : (rd_dir_exists(path) ? -EROFS : -ENOENT);
+		if (!lk.parent) return no_parent(path);
 		struct rnode *n = node_new(lk.parent, lk.last, false);
 		if (!n) return -ENOSPC;
 		look_up(path, &lk);
@@ -864,7 +903,7 @@ static long sys_mkdirat(struct task *t, int dirfd, u64 upath)
 	struct look lk;
 	look_up(path, &lk);
 	if (look_exists(&lk)) return -EEXIST;
-	if (!lk.parent) return lk.last ? -ENOENT : -EROFS;
+	if (!lk.parent) return no_parent(path);
 	return node_new(lk.parent, lk.last, true) ? 0 : -ENOSPC;
 }
 
@@ -1037,6 +1076,9 @@ long lx_file_syscall(struct task *t, int nr, u64 *a, bool *handled)
 		u64 pos = a[3];
 		return rw_user(t, f, a[1], a[2], &pos, nr == 68);
 	}
+	case 69: case 70:                       /* preadv, pwritev */
+	case 286: case 287:                     /* preadv2, pwritev2 (musl's pwrite: RWF_NOAPPEND) */
+		return f ? sys_prwv(t, f, nr, a) : -EBADF;
 	case 56: return sys_openat(t, (int)a[0], a[1], (u32)a[2]);
 	case 57:                                /* close */
 		if (!f) return -EBADF;

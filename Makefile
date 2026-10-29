@@ -192,8 +192,16 @@ run-telegram:
 	$(QEMU64) -kernel build/arm64/kernel.bin \
 		-append "kolibri.run=/sys/messenger kolibri.args=telegram$(if $(TG_NUMBER),$(comma)$(TG_NUMBER))"
 
+# the messenger with Signal: SIGNAL_HOST, tools/signal-host/build.sh's
+# signal-host (presage); it shows the linking QR code from Signal's server
+SIGNAL_HOST ?=
+run-signal:
+	@[ -f "$(SIGNAL_HOST)" ] || { echo "SIGNAL_HOST=<tools/signal-host/build.sh's signal-host>"; exit 1; }
+	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/signal-host=$(SIGNAL_HOST)" all
+	$(QEMU64) -kernel build/arm64/kernel.bin -append "kolibri.run=/sys/messenger kolibri.args=signal"
+
 clean:
 	rm -rf build
 
-.PHONY: all run run-net run-linux run-messenger run-telegram clean dirs FORCE
+.PHONY: all run run-net run-linux run-messenger run-telegram run-signal clean dirs FORCE
 .SECONDARY:

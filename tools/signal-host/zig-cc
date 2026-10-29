@@ -1,0 +1,11 @@
+#!/bin/sh
+# the C compiler for static AArch64 Linux programs with musl (zig's),
+# without the --target the cc crate adds for clang-like compilers, and
+# without the sanitizer zig turns on for code built without -O (AWS-LC's
+# jitterentropy): no runtime for it here
+for a; do
+	shift
+	case $a in --target=*) continue ;; esac
+	set -- "$@" "$a"
+done
+exec zig cc -target aarch64-linux-musl -fno-sanitize=all "$@"
