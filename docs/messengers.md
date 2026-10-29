@@ -168,8 +168,9 @@ persistence question as WhatsApp's.
   QR code (`lib/qr.h`, checked with zbarimg against the daemon's code)
 - [ ] the chats in `messenger`: the conversation list, a conversation, sending (the daemon has
   all of it: `GetContacts`, `Message`, `SendText`, ...)
-- [x] the purple host's build and program (`tools/purple-host/`, on the host under qemu-aarch64:
-  Telegram's servers answer and ask for the login code)
+- [x] the purple host's build and program (`tools/purple-host/`); in QEMU (`make run-telegram`)
+  the messenger's Telegram mode logs in with a number that is not anyone's, and Telegram's
+  question for the login code shows in its window (sendmsg/recvmsg were missing before)
 - [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), randomness, persistence
 
 In QEMU (`make run-messenger YAPPARI_WA=<yappari-wa for linux/arm64>`): `messenger` starts the

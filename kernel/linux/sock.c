@@ -446,7 +446,64 @@ long sock_syscall(struct task *t, int nr, u64 *a, bool *handled)
 			s->shut_wr = true;
 		}
 		return 0;
-	default:                                /* sendmsg, recvmsg */
+	case 211: {                             /* sendmsg: the pieces gathered */
+		u64 m[7];
+		if (lx_copy_in(p, m, a[1], sizeof(m))) return -EFAULT;
+		u64 len = 0;
+		for (u64 i = 0; i < m[3] && i < 64; i++) {
+			u64 v[2];
+			if (lx_copy_in(p, v, m[2] + 16 * i, 16)) return -EFAULT;
+			u64 n = MIN(v[1], sizeof(sbuf) - len);
+			if (n && lx_copy_in(p, sbuf + len, v[0], n)) return -EFAULT;
+			len += n;
+		}
+		bool dontwait = nb || (a[2] & 0x40);
+		if (s->type == SOCK_DGRAM && m[0]) {
+			if ((err = get_addr(p, m[0], (u32)m[1], &ip, &port))) return err;
+			struct pbuf *pb = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+			if (!pb) return -ENOBUFS;
+			pbuf_take(pb, sbuf, len);
+			err_t e = udp_sendto(s->udp, pb, &ip, port);
+			pbuf_free(pb);
+			return e == ERR_OK ? (long)len : -ENETUNREACH;
+		}
+		return sock_write(s, sbuf, len, dontwait);
+	}
+	case 212: {                             /* recvmsg: into the pieces */
+		u64 m[7];
+		if (lx_copy_in(p, m, a[1], sizeof(m))) return -EFAULT;
+		u64 room = 0;
+		for (u64 i = 0; i < m[3] && i < 64; i++) {
+			u64 v[2];
+			if (lx_copy_in(p, v, m[2] + 16 * i, 16)) return -EFAULT;
+			room += v[1];
+		}
+		bool dgram = s->type == SOCK_DGRAM && s->dq_n;
+		ip_addr_t from;
+		u16 fport = 0;
+		if (dgram) {
+			ip_addr_copy(from, s->dq[s->dq_head].addr);
+			fport = s->dq[s->dq_head].port;
+		}
+		long n = sock_read(s, sbuf, MIN(room, (u64)sizeof(sbuf)), nb || (a[2] & 0x40));
+		if (n <= 0) return n;
+		u64 done = 0;
+		for (u64 i = 0; i < m[3] && i < 64 && done < (u64)n; i++) {
+			u64 v[2];
+			lx_copy_in(p, v, m[2] + 16 * i, 16);
+			u64 k = MIN(v[1], (u64)n - done);
+			if (k && lx_copy_out(p, v[0], sbuf + done, k)) return -EFAULT;
+			done += k;
+		}
+		if (dgram && m[0]) put_addr(p, m[0], a[1] + 8, &from, fport);
+		u64 zero = 0;
+		lx_copy_out(p, a[1] + 40, &zero, 8);        /* no control data */
+		u32 flags = 0;
+		lx_copy_out(p, a[1] + 48, &flags, 4);
+		return n;
+	}
+	default:
+		kprintf("lx: socket call %d not there\n", nr);
 		return -ENOSYS;
 	}
 }
