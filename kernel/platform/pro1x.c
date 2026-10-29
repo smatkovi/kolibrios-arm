@@ -869,6 +869,11 @@ static void callaudio_start(void)
 			kprintf("pro1x: ADSP edge: no GLINK FIFOs in SMEM\n");
 		}
 	}
+	/* no edge, no voice session: not the speaker switch alone either */
+	if (callaudio && !h.adsp) {
+		kprintf("pro1x: kolibri.callaudio without the ADSP's edge: calls without sound\n");
+		h.prepared = false;
+	}
 	kcallaudio_start(&h);
 }
 

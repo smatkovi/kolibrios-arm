@@ -81,9 +81,12 @@ pa() {
 	[ -n "$pa_user" ] || return 0
 	su "$pa_user" -s /bin/sh -c "XDG_RUNTIME_DIR=/run/user/$(id -u "$pa_user") pactl $*"
 }
+# (the sinks' monitors go with their sinks)
 pa_suspend() {
-	for s in $(pa list short sinks | cut -f2); do pa suspend-sink "$s" "$1"; done
-	for s in $(pa list short sources | cut -f2); do pa suspend-source "$s" "$1"; done
+	for s in $(pa list short sinks | cut -f2); do pa suspend-sink "$s" "$1" || true; done
+	for s in $(pa list short sources | cut -f2 | grep -v '\.monitor$'); do
+		pa suspend-source "$s" "$1" || true
+	done
 }
 
 # kexec_file: the device tree this kernel booted with goes along; any

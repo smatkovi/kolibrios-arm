@@ -198,7 +198,9 @@ on/off` in the log, the button lit).
 ## The device test
 
 Needs the user at the phone (a reboot into KolibriOS, the watchdog back
-into the boot menu), with a SIM. On Leste, as root:
+into the boot menu), with a SIM. The modem's own test
+(`docs/pro1x-modem.md`, `-m` alone: calls connect) comes first, so that a
+run with `-a` has one unknown less. On Leste, as root:
 
 ```sh
 cp build/arm64/kernel.bin /host/kolibri/kernel.bin
@@ -206,8 +208,9 @@ tools/pro1x-kexec.sh -n -m -a        # checks: kernel, EFS images, sound card, P
 tools/pro1x-kexec.sh -m -a /host/kolibri/kernel.bin "kolibri.lifetime=300"
 ```
 
-Then in the phone app: the "Speaker" button during a call, no hint about
-`-a`. A call out: the other side in the earpiece, the microphone heard
+If it stops with "a stream of -a did not start", PulseAudio took the
+device back in between: run it again. Then in the phone app: the
+"Speaker" button during a call, no hint about `-a`. A call out: the other side in the earpiece, the microphone heard
 there; Speaker (or S): the loudspeaker, again: the earpiece; ended. A
 second call (the session anew), and a call in, answered. After the reset
 back in Leste, `tools/pro1x-read.py` has the `pro1x: ADSP edge` and
