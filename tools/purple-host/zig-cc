@@ -1,3 +1,9 @@
 #!/bin/sh
-# the C compiler for static AArch64 Linux programs with musl (zig's)
+# the C compiler for static AArch64 Linux programs with musl (zig's);
+# without the linker option zig's linker lacks (TDLib's shared tdjson)
+for a; do
+	shift
+	case $a in -Wl,--exclude-libs,*) continue ;; esac
+	set -- "$@" "$a"
+done
 exec zig cc -target aarch64-linux-musl "$@"

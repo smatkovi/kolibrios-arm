@@ -7,8 +7,8 @@
 # WORKDIR holds the sources (dl/, src/), the build trees (build/) and the
 # libraries (sysroot/): some 6 GB, TDLib's the most; on a disk with room.
 # Stages, in order (all without arguments): fetch zlib openssl td glib
-# libxml2 purple tdpurple host. TDLib is 1.7.9 (the commit tdlib-purple
-# 0.8.1 wants); it builds its code generators natively first.
+# libxml2 purple tdpurple host. TDLib is 1.7.9 of mid-November 2021
+# (the API tdlib-purple 0.8.1 is written against); it builds its code generators natively first.
 set -eu
 W=$(cd "$1" && pwd)
 shift
@@ -21,7 +21,8 @@ export PKG_CONFIG_LIBDIR=$P/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=
 HOST=aarch64-linux-musl
 mkdir -p "$W/dl" "$W/src" "$W/build" "$P"
 
-TD_COMMIT=42aadccc8    # "Fix warning.", the last of TDLib 1.7.9 (2021-12-07)
+TD_COMMIT=423e82ae2     # TDLib 1.7.9 before "Improve MessageSender field names" (2021-11-15):
+                       # the API tdlib-purple 0.8.1 is written against
 TDP_COMMIT=912a430     # tdlib-purple 0.8.1
 
 fetch() {
@@ -73,6 +74,8 @@ td() {
 	env -u PKG_CONFIG_LIBDIR -u SYSROOT cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 	    -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR=/usr "$W/src/td" > /dev/null
 	env -u PKG_CONFIG_LIBDIR -u SYSROOT cmake --build . --target prepare_cross_compiling -j"$J" > /dev/null
+	# no shared tdjson: zig's linker does not take it (and nothing here needs it)
+	sed -i 's/add_library(tdjson SHARED/add_library(tdjson STATIC/' "$W/src/td/CMakeLists.txt"
 	mkdir -p "$W/build/td"
 	cd "$W/build/td"
 	cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_TOOLCHAIN_FILE="$TOOLS/toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
