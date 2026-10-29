@@ -136,10 +136,10 @@ answers OPEN with an error, as Linux's rmtfs does for a missing partition.
 
 ## Not done yet
 
-- **Call audio.** The voice path goes through the ADSP (its `apr_voice_svc`
-  and the audio front ends) and the codec; Linux sets it up with ALSA's
-  UCM. Calls connect, are answered and ended, but there is no sound
-  under KolibriOS yet.
+- **Call audio** is written but not tried on the device
+  (`docs/pro1x-audio.md`: `pro1x-kexec.sh -a`, Linux's APR channel to the
+  ADSP taken over, the voice session per call, the speaker switch).
+  Without `-a`, calls connect without sound.
 - Starting the modem (above), restarting it after a crash (the crash
   shows: the QRTR BYE, or nothing any more).
 - SIM PIN entry (UIM service): the SIM stays unlocked from Linux.
@@ -160,5 +160,5 @@ tools/pro1x-kexec.sh -m /host/kolibri/kernel.bin "kolibri.lifetime=300"
 
 Then: the phone app's state (registered, operator), a message to the
 phone and one from it, a call to it and one from it (answered, ended:
-without sound). The RAM console (`tools/pro1x-read.py`) has the modem's
+without sound; with `-a` too, the sound: `docs/pro1x-audio.md`). The RAM console (`tools/pro1x-read.py`) has the modem's
 log lines (`modem:`) after the reset.

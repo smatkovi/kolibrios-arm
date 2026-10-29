@@ -146,6 +146,8 @@ struct modem_hw;
 void kmodem_start(const struct modem_hw *hw);
 void kmodem_fake(void);
 void kmodem_tick(void);
+struct callaudio_hw;
+void kcallaudio_start(const struct callaudio_hw *hw);
 
 /* input (input.c): what the platform's drivers report */
 void input_key_set2(u8 byte);  /* PS/2 scan code set 2 byte */

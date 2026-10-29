@@ -27,6 +27,8 @@ struct kos_modem {
 	u32 fake;              /* a modem in RAM (QEMU), not a real one */
 	char operator_name[32];
 	char status[64];       /* what happens now, or the last error */
+	u32 audio;             /* KOS_AUDIO_*: the call's sound */
+	u32 audio_route;       /* KOS_ROUTE_*: where it plays */
 };
 
 enum { KOS_SMS_IN, KOS_SMS_OUT };
@@ -40,6 +42,12 @@ struct kos_sms {
 	char number[32];
 	char text[KOS_SMS_TEXT];   /* UTF-8 */
 };
+
+/* audio: none (calls without sound), or prepared: the codec Linux left
+ * running and its channel to the ADSP taken over (tools/pro1x-kexec.sh
+ * -a, docs/pro1x-audio.md) */
+enum { KOS_AUDIO_NONE, KOS_AUDIO_PREPARED };
+enum { KOS_ROUTE_EARPIECE, KOS_ROUTE_SPEAKER };
 
 enum { KOS_CALL_NONE, KOS_CALL_DIALING, KOS_CALL_ALERTING, KOS_CALL_INCOMING, KOS_CALL_ACTIVE,
        KOS_CALL_HELD, KOS_CALL_ENDED };
@@ -64,6 +72,7 @@ enum {
 	KOS_MODEM_CALL = 6,    /* ecx: struct kos_call * */
 	KOS_MODEM_DELETE = 7,  /* ecx: index */
 	KOS_MODEM_READ = 8,    /* ecx: index: marked read */
+	KOS_MODEM_ROUTE = 9,   /* ecx: KOS_ROUTE_*: the call's sound there; eax 0, -1 (no sound) */
 };
 
 #endif

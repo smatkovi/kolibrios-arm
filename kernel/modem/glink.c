@@ -345,6 +345,32 @@ static void rx_intent_req(struct glink *g, u16 rcid, u32 size)
 	cmd(g, GLINK_CMD_RX_INTENT_REQ_ACK, c->lcid, li != 0);
 }
 
+/* data into an intent Linux had advertised (an adopted channel): through
+ * the bounce buffer, then the intent given back for reuse */
+static void rx_linux_intent(struct glink *g, struct glink_chan *c, u32 liid, u32 chunk, u32 left)
+{
+	if (c->fliid != liid) {
+		c->fliid = liid;
+		c->foff = 0;
+		c->fover = false;
+	}
+	if (c->foff + chunk <= sizeof(g->bounce)) rx_peek(g, 16, g->bounce + c->foff, chunk);
+	else c->fover = true;
+	c->foff += chunk;
+	rx_advance(g, 16 + chunk);
+	if (left) return;
+	if (c->fover) {
+		g->errors++;
+		mlog("glink: %s: %u bytes, too long: dropped\n", c->name, c->foff);
+	} else {
+		c->rx_msgs++;
+		if (c->rx) c->rx(c, g->bounce, c->foff, c->arg);
+	}
+	cmd(g, GLINK_CMD_RX_DONE_W_REUSE, c->lcid, liid);
+	c->fliid = c->foff = 0;
+	c->fover = false;
+}
+
 /* data, or its next chunk; -1: not all of it in the FIFO yet */
 static int rx_data(struct glink *g, u16 rcid, u32 liid, u32 avail)
 {
@@ -357,6 +383,10 @@ static int rx_data(struct glink *g, u16 rcid, u32 liid, u32 avail)
 	struct glink_lintent *li = 0;
 	for (int i = 0; c && i < GLINK_LINTENTS; i++)
 		if (c->li[i].valid && c->li[i].id == liid) li = &c->li[i];
+	if (!li && c && c->adopted) {
+		rx_linux_intent(g, c, liid, chunk, left);
+		return 0;
+	}
 	if (!li) {
 		g->errors++;
 		mlog("glink: data for channel %u intent %u: not known\n", rcid, liid);
@@ -485,6 +515,77 @@ int glink_init(struct glink *g, struct smem *s, void (*kick)(void))
 	if (!g->tx_fifo || g->tx_len < 1024) return -1;
 	rx_fifo(g);
 	return 0;
+}
+
+/* --- channels Linux left open ---------------------------------------- */
+
+/* Each command starts 8-byte aligned. Going back from the head, a command
+ * found back bytes behind it is whole only if it ends before the head. */
+static void ring(struct glink *g, bool tx, volatile u8 **fifo, u32 *len, u32 *head)
+{
+	*fifo = tx ? g->tx_fifo : (rx_fifo(g) ? g->rx_fifo : 0);
+	*len = tx ? g->tx_len : g->rx_len;
+	*head = sm_rd32(g->desc + (tx ? 4 : 12));
+}
+
+s32 glink_scan_data(struct glink *g, bool tx, bool (*match)(const u8 *data, u32 len))
+{
+	volatile u8 *f;
+	u32 len, head;
+	ring(g, tx, &f, &len, &head);
+	if (!f || head >= len || head % 8) return -1;
+	u8 h[16 + 64];
+	for (u32 back = 8; back + 16 <= len; back += 8) {
+		u32 at = (head + len - back) % len;
+		glink_fifo_peek(f, len, at, 0, h, 16);
+		u32 chunk = get32(h + 8), left = get32(h + 12);
+		if (get16(h) != GLINK_CMD_TX_DATA || left || !chunk || chunk > GLINK_MSG_MAX || 16 + chunk > back)
+			continue;
+		glink_fifo_peek(f, len, at, 16, h + 16, MIN(chunk, 64u));
+		if (match(h + 16, chunk)) return get16(h + 2);
+	}
+	return -1;
+}
+
+s32 glink_scan_open(struct glink *g, bool tx, const char *name)
+{
+	volatile u8 *f;
+	u32 len, head, nl = mstrlen(name) + 1;
+	ring(g, tx, &f, &len, &head);
+	if (!f || head >= len || nl > 32) return -1;
+	u8 h[8 + 32];
+	for (u32 back = 8; back <= len; back += 8) {
+		u32 at = (head + len - back) % len;
+		glink_fifo_peek(f, len, at, 0, h, 8 + nl);
+		if (get16(h) == GLINK_CMD_OPEN && (get32(h + 4) & 0xffff) == nl && !h[8 + nl - 1] &&
+		    !memcmp_m(h + 8, name, nl))
+			return get16(h + 2);
+	}
+	return -1;
+}
+
+struct glink_chan *glink_adopt(struct glink *g, const char *name, u16 lcid, u16 rcid, glink_rx_fn rx, void *arg)
+{
+	struct glink_chan *c = 0;
+	for (int i = 0; i < GLINK_MAX_CHAN && !c; i++)
+		if (!g->ch[i].used) c = &g->ch[i];
+	if (!c) return 0;
+	mzero(c, sizeof(*c));
+	c->g = g;
+	c->used = c->adopted = true;
+	c->open_sent = c->open_acked = c->remote_open = true;
+	c->lcid = lcid;
+	c->rcid = rcid;
+	c->hint_rcid = -1;
+	c->rx = rx;
+	c->arg = arg;
+	mstrcpy(c->name, name, sizeof(c->name));
+	/* our own receive buffers too, numbered clear of Linux's (its ids
+	 * count from 1 per channel) */
+	if (g->next_liid < 0x10000) g->next_liid = 0x10000;
+	send_intents(c);
+	flush(g);
+	return c;
 }
 
 /* The remote's last OPEN of name in what was read of the receive FIFO

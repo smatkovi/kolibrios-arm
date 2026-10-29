@@ -96,7 +96,8 @@ input there).
 | AArch64 kernel: EL1, AArch32 programs at EL0, GICv3, the RAM in banks (QEMU virt with 8 GiB) | runs (QEMU) |
 | Pro1X: display takeover, landscape screen, RAM console, screenshot, watchdog | runs in QEMU with the phone's device tree (no display controller there), **not tried on the device** |
 | Pro1X: keyboard (AW9523B on GENI I2C, modifier GPIOs), touch screen (Goodix on GPIO I2C) | written, **not tried on the device** |
-| Pro1X: the modem, calls and SMS (SMEM, GLINK, QRTR, QMI WMS/VOICE/NAS/DMS, rmtfs), function 100 | written, runs against a modem in RAM (QEMU, `tests/modem`), **not tried on the device**; calls without sound |
+| Pro1X: the modem, calls and SMS (SMEM, GLINK, QRTR, QMI WMS/VOICE/NAS/DMS, rmtfs), function 100 | written, runs against a modem in RAM (QEMU, `tests/modem`), **not tried on the device** |
+| Pro1X: call audio (Linux's APR channel to the ADSP taken over, the voice session per call, the speaker amplifier) | written, `tests/audio`, the speaker switch in QEMU, **not tried on the device** |
 | Pro1X: the clock from the mobile network (NAS) | written, **not tried on the device** |
 | Pro1X: clock (PMIC RTC), battery, everything else | not yet |
 
@@ -153,7 +154,9 @@ such as the Pro1X's layout (`docs/pro1x.md`).
 The modem's code (`kernel/modem`) also builds on the PC: `make -C
 tests/modem` runs the SMS codec against known PDUs and the whole stack
 against a modem in RAM (`kernel/modem/fake.c`, which QEMU's kernels use
-too), with the address and undefined behaviour sanitizers.
+too), with the address and undefined behaviour sanitizers; `make -C
+tests/audio` the call audio's APR packets and voice session against a
+fake ADSP, and the takeover of Linux's GLINK channel.
 
 ## The N950
 
@@ -184,7 +187,8 @@ the kernel leaves its output and a screenshot in the splash memory, where
 Linux reads them after the next boot, and the SoC's watchdog resets a hung
 system into the boot menu. `docs/pro1x.md` has the steps. Calls and SMS go
 through the modem, which keeps running from Linux's time through the
-kexec: `docs/pro1x-modem.md`.
+kexec: `docs/pro1x-modem.md`; their sound through the ADSP, whose
+channel KolibriOS takes over from Linux: `docs/pro1x-audio.md`.
 
 ## Licence
 

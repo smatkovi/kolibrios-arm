@@ -1,2 +1,3 @@
 build/
 tests/modem/test
+tests/audio/test

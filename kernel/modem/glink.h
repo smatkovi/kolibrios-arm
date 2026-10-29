@@ -36,6 +36,9 @@ struct glink_chan {
 	struct glink_pend pend[GLINK_PEND];
 	int npend;
 	u32 intent_req;        /* the size asked of the remote, 0: none asked */
+	bool adopted;          /* Linux's, taken over open (glink_adopt) */
+	u32 fliid, foff;       /* a message into one of Linux's intents, so far */
+	bool fover;            /* too long for the bounce buffer: dropped */
 	s32 hint_rcid;         /* the remote's OPEN seen in the FIFO's past (Linux read it), -1: none */
 	u32 wait_polls;        /* polls since our OPEN was acknowledged without the remote's */
 	u32 rx_msgs, tx_msgs;
@@ -58,6 +61,7 @@ struct glink {
 	u32 arena_used;
 	bool kick_due;
 	u32 errors;
+	u8 bounce[GLINK_MSG_MAX];          /* data into Linux's intents (adopted channels) */
 };
 
 /* the transport of the edge with remote (its SMEM host); 0, or -1 when
@@ -70,6 +74,20 @@ bool glink_ready(const struct glink_chan *c);
 int glink_send(struct glink_chan *c, const void *data, u32 len);
 /* what arrived, then what waits to be sent */
 void glink_poll(struct glink *g);
+
+/* A channel Linux left open, taken over as it is (the ADSP's APR after the
+ * kexec, docs/pro1x-audio.md): lcid Linux's id for it, rcid the remote's.
+ * No OPEN is sent; the remote's intents are asked for as messages need
+ * them, and what the remote sends into the intents Linux had advertised is
+ * received too and given back for reuse. */
+struct glink_chan *glink_adopt(struct glink *g, const char *name, u16 lcid, u16 rcid, glink_rx_fn rx, void *arg);
+/* The ids of a channel Linux used, from what the rings still hold behind
+ * their heads: the newest whole data command (tx: Linux's, param1 its
+ * lcid; rx: the remote's, param1 the remote's lcid) whose payload match
+ * takes (it sees the first 64 bytes at most, len the whole length);
+ * -1: none. And the newest OPEN of name in a ring's past. */
+s32 glink_scan_data(struct glink *g, bool tx, bool (*match)(const u8 *data, u32 len));
+s32 glink_scan_open(struct glink *g, bool tx, const char *name);
 
 /* the FIFO arithmetic, also the fake remote's (fake.c) */
 u32 glink_fifo_avail(u32 head, u32 tail, u32 len);

@@ -5,6 +5,7 @@
 #include "task.h"
 #include "phone.h"
 #include "fake.h"
+#include "callaudio.h"
 
 static struct modem_hw hw;
 static bool fake;
@@ -23,6 +24,13 @@ void kmodem_start(const struct modem_hw *h)
 	modem_start(&hw);
 }
 
+/* QEMU: amplifiers that answer, no ADSP, so that the programs' speaker
+ * switch works */
+static bool fake_i2c_write(u8 addr, u8 reg, u8 val) { return true; }
+static bool fake_i2c_read(u8 addr, u8 reg, u8 *val) { *val = 0x39; return true; }
+static void fake_gpio(int pin, bool high) {}
+static void fake_delay(u32 us) {}
+
 void kmodem_fake(void)
 {
 	if (modem_present()) return;
@@ -32,6 +40,30 @@ void kmodem_fake(void)
 	fake = true;
 	kprintf("modem: a fake one in RAM (QEMU)\n");
 	modem_start(&hw);
+	struct callaudio_hw ah = {
+		.i2c_write = fake_i2c_write, .i2c_read = fake_i2c_read, .gpio_set = fake_gpio,
+		.delay_us = fake_delay, .prepared = true,
+	};
+	callaudio_init(&ah);
+}
+
+void kcallaudio_start(const struct callaudio_hw *h)
+{
+	callaudio_init(h);
+}
+
+/* the call, for its sound: being set up (dialling, ringing either way),
+ * talking (or held), or none */
+static int call_now(u32 *id)
+{
+	struct kos_call c;
+	modem_call(&c);
+	*id = c.id;
+	switch (c.state) {
+	case KOS_CALL_DIALING: case KOS_CALL_ALERTING: case KOS_CALL_INCOMING: return CALLAUDIO_CALL_SETUP;
+	case KOS_CALL_ACTIVE: case KOS_CALL_HELD: return CALLAUDIO_CALL_ACTIVE;
+	default: return CALLAUDIO_CALL_NONE;
+	}
 }
 
 void kmodem_tick(void)
@@ -40,6 +72,9 @@ void kmodem_tick(void)
 	u32 ms = ticks * 10;
 	if (fake) fake_poll(ms);
 	modem_poll(ms);
+	u32 id;
+	int call = call_now(&id);
+	callaudio_poll(ms, call, id);
 }
 
 #define EAX r[0]
@@ -54,6 +89,8 @@ void sys_modem(struct task *t, u32 *r)
 		struct kos_modem *m = uptr(t, ECX, sizeof(*m));
 		if (!m) { EAX = -1; return; }
 		modem_status(m);
+		m->audio = callaudio_state() == CALLAUDIO_PREPARED ? KOS_AUDIO_PREPARED : KOS_AUDIO_NONE;
+		m->audio_route = callaudio_route() == CALLAUDIO_SPEAKER ? KOS_ROUTE_SPEAKER : KOS_ROUTE_EARPIECE;
 		EAX = 0;
 		return;
 	}
@@ -83,6 +120,9 @@ void sys_modem(struct task *t, u32 *r)
 	}
 	case KOS_MODEM_DELETE: EAX = modem_delete(ECX); return;
 	case KOS_MODEM_READ: EAX = modem_mark_read(ECX); return;
+	case KOS_MODEM_ROUTE:
+		EAX = callaudio_set_route(ECX == KOS_ROUTE_SPEAKER ? CALLAUDIO_SPEAKER : CALLAUDIO_EARPIECE);
+		return;
 	default: EAX = -1; return;
 	}
 }

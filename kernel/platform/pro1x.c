@@ -30,6 +30,8 @@
 #include "kernel.h"
 #include "fdt.h"
 #include "../modem/phone.h"
+#include "../modem/glink.h"
+#include "../modem/callaudio.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -55,6 +57,9 @@ static bool noinput;
  * register and the bit that kicks its GLINK edge, the EFS images (initrd) */
 static addr_t smem_pa, rmtfs_pa, apcs_pa, efs_pa;
 static u32 smem_size, rmtfs_size, apcs_bit, efs_size;
+/* the ADSP's GLINK edge: its IPC bit (the call's sound, callaudio.c) */
+static u32 adsp_bit = 0xffffffffu;
+static bool callaudio;                 /* kolibri.callaudio: Linux left the voice path running */
 static bool nomodem, fakemodem;
 
 static addr_t io_va(addr_t pa)
@@ -816,6 +821,57 @@ static void modem_kick(void)
 	wr32(io_va(apcs_pa) + 8, 1u << apcs_bit);
 }
 
+/* --- the call's sound (kernel/modem/callaudio.c) --------------------- */
+
+static void adsp_kick(void)
+{
+	asm volatile("dsb sy" ::: "memory");
+	wr32(io_va(apcs_pa) + 8, 1u << adsp_bit);
+}
+
+static bool amp_write(u8 addr, u8 reg, u8 val)
+{
+	u8 b[2] = { reg, val };
+	return geni && geni_xfer(addr, b, 2, NULL, 0);
+}
+
+static bool amp_read(u8 addr, u8 reg, u8 *val)
+{
+	return geni && geni_xfer(addr, &reg, 1, val, 1);
+}
+
+/* push-pull: the value, then the output on (as Linux's pinctrl left
+ * the amplifiers' enable lines: GPIO function, an output) */
+static void gpio_out(int pin, bool high)
+{
+	if (!gpio_ok(pin)) return;
+	addr_t io = gpio_reg(pin, TLMM_IO), c = gpio_reg(pin, TLMM_CTL);
+	wr32(io, high ? 2u : 0u);
+	wr32(c, rd32(c) | CTL_OE);
+}
+
+/* the ADSP's GLINK edge (SMEM host 2), its APR channel taken over from
+ * Linux in callaudio.c */
+static void callaudio_start(void)
+{
+	static struct smem adsp_smem;
+	struct callaudio_hw h = {
+		.i2c_write = amp_write, .i2c_read = amp_read, .gpio_set = gpio_out, .delay_us = udelay,
+		.prepared = callaudio,
+	};
+	if (callaudio && adsp_bit < 32 && smem_init(&adsp_smem, (volatile u8 *)smem_pa, smem_size, SMEM_HOST_APPS, 2) == 0) {
+		struct glink *g = kmalloc_aligned(sizeof(*g), 64);
+		if (glink_init(g, &adsp_smem, adsp_kick) == 0) {
+			h.adsp = g;
+			kprintf("pro1x: ADSP edge: tx FIFO %u bytes, rx FIFO %u bytes, IPC bit %u\n",
+				g->tx_len, g->rx_len, adsp_bit);
+		} else {
+			kprintf("pro1x: ADSP edge: no GLINK FIFOs in SMEM\n");
+		}
+	}
+	kcallaudio_start(&h);
+}
+
 static void modem_init(void)
 {
 	if (efs_pa) {
@@ -846,6 +902,7 @@ static void modem_init(void)
 	kprintf("pro1x: modem: SMEM %p (%u KiB), rmtfs %p, IPC %p bit %u, EFS images %p (%u KiB)\n",
 		smem_pa, smem_size >> 10, rmtfs_pa, apcs_pa, apcs_bit, efs_pa, efs_size >> 10);
 	kmodem_start(&hw);
+	callaudio_start();
 }
 
 static void p_init(void)
@@ -1085,6 +1142,12 @@ bool pro1x_probe(const void *fdt)
 		rmtfs_size = s;
 		add_io(a, s, MAP_UNCACHED);
 	}
+	int ap = fdt_find_compatible(fdt, "qcom,sm6115-adsp-pas", -1, &ac, &sc);
+	int aedge = ap >= 0 ? fdt_next_child(fdt, ap, -1) : -1;
+	while (aedge >= 0 && strcmp(fdt_node_name(fdt, aedge), "glink-edge"))
+		aedge = fdt_next_child(fdt, ap, aedge);
+	p = aedge >= 0 ? fdt_prop(fdt, aedge, "mboxes", &len) : NULL;
+	if (p && len >= 8) adsp_bit = cell(p, 1);
 	int mp = fdt_find_compatible(fdt, "qcom,sm6115-mpss-pas", -1, &ac, &sc);
 	int edge = mp >= 0 ? fdt_next_child(fdt, mp, -1) : -1;
 	while (edge >= 0 && strcmp(fdt_node_name(fdt, edge), "glink-edge"))
@@ -1106,6 +1169,7 @@ bool pro1x_probe(const void *fdt)
 		noinput = word(args, len, "kolibri.noinput", NULL);
 		nomodem = word(args, len, "kolibri.nomodem", NULL);
 		fakemodem = word(args, len, "kolibri.fakemodem", NULL);
+		callaudio = word(args, len, "kolibri.callaudio", NULL);
 	}
 	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of
 	 * the programs' memory, mapped as RAM */

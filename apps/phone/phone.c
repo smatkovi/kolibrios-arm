@@ -26,7 +26,7 @@
 #define C_OUT 0x1f5fa8
 
 enum { B_TAB_PHONE = 10, B_TAB_MSG, B_CALL, B_DEL, B_ANSWER, B_REJECT, B_END, B_NEW, B_BACK,
-       B_SEND, B_NUMBER, B_TEXT, B_KEY = 20, B_THREAD = 100 };
+       B_SEND, B_NUMBER, B_TEXT, B_SPEAKER, B_KEY = 40, B_THREAD = 100 };
 
 enum { V_PHONE, V_LIST, V_THREAD };
 static int view = V_PHONE;
@@ -265,9 +265,16 @@ static void draw_call_buttons(void)
 		text_at(W / 2 - bw / 2 - 20 - 20, by + bh / 2 - 16, "Answer", C_TEXT, 2);
 		button(W / 2 + 20, by, bw, bh, B_REJECT, C_RED, "Reject", 2);
 	} else if (call.state != KOS_CALL_ENDED) {
-		button(W / 2 - bw / 2, by, bw, bh, B_END, C_RED, "End call", 2);
+		int sound = mdm.audio == KOS_AUDIO_PREPARED;
+		int sw = sound ? bw * 3 / 4 : 0, gap = sound ? 40 : 0, x = W / 2 - (bw + gap + sw) / 2;
+		button(x, by, bw, bh, B_END, C_RED, "End call", 2);
+		/* the loudspeaker (the earpiece otherwise): lit while on */
+		if (sound)
+			button(x + bw + gap, by, sw, bh, B_SPEAKER,
+				mdm.audio_route == KOS_ROUTE_SPEAKER ? C_HI : C_TILE, "Speaker", 2);
 	}
-	text_center(W / 2, H - 30, "Calls have no sound under KolibriOS yet.", C_DIM, 1);
+	if (mdm.audio != KOS_AUDIO_PREPARED)
+		text_center(W / 2, H - 30, "No sound: start KolibriOS with pro1x-kexec.sh -a", C_DIM, 1);
 }
 
 /* the conversations */
@@ -465,6 +472,9 @@ static void on_button(int id)
 	else if (id == B_CALL && dial[0]) kos_call(100, KOS_MODEM_DIAL, (u32)dial, 0, 0, 0);
 	else if (id == B_ANSWER) kos_call(100, KOS_MODEM_ANSWER, 0, 0, 0, 0);
 	else if (id == B_REJECT || id == B_END) kos_call(100, KOS_MODEM_HANGUP, 0, 0, 0, 0);
+	else if (id == B_SPEAKER)
+		kos_call(100, KOS_MODEM_ROUTE,
+			mdm.audio_route == KOS_ROUTE_SPEAKER ? KOS_ROUTE_EARPIECE : KOS_ROUTE_SPEAKER, 0, 0, 0);
 	else if (id == B_NEW) { view = V_THREAD; thread_no[0] = 0; to_no[0] = 0; focus_number = 1; }
 	else if (id == B_BACK) view = V_LIST;
 	else if (id == B_SEND) send_text();
@@ -481,6 +491,7 @@ static void on_key(u32 k)
 	if (call.state != KOS_CALL_NONE) {
 		if (c == 13 && call.state == KOS_CALL_INCOMING) kos_call(100, KOS_MODEM_ANSWER, 0, 0, 0, 0);
 		if (c == 27) kos_call(100, KOS_MODEM_HANGUP, 0, 0, 0, 0);
+		if (c == 's' || c == 'S') on_button(B_SPEAKER);
 		return;
 	}
 	if (view == V_PHONE) {
