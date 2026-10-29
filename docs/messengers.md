@@ -1,0 +1,159 @@
+# Messengers: WhatsApp and Telegram under KolibriOS
+
+The messengers on the Pro1X under KolibriOS use the same backends as on
+Maemo Leste:
+
+- **WhatsApp**: Yappari's daemon `yappari-wa`
+  ([smatkovi/yappari-leste](https://github.com/smatkovi/yappari-leste)),
+  Go with whatsmeow, the multi-device protocol, linked to the main phone by
+  QR code or phone number;
+- **Telegram**: the libpurple plugin tdlib-purple (Leste's
+  `purple-telegram`) on TDLib, in a small libpurple host program.
+
+Both run unchanged as Linux programs on a Linux personality of the kernel;
+the user interfaces are KolibriOS programs in the Hildon look. Below: why
+that way, the pieces, the protocol between them, the Telegram build, and
+what is done. The network under them: [pro1x-network.md](pro1x-network.md).
+
+## Why a Linux personality
+
+- `yappari-wa` is Go. Go's runtime exists for real operating systems
+  only; a KolibriOS port of it would be a new `GOOS` (runtime, syscall
+  package, net poller), kept up with every Go release. A static
+  `linux/arm64` program (`CGO_ENABLED=0`) instead needs some 40 Linux
+  system calls (measured below), and whatsmeow, its SQLite (modernc, pure
+  Go), TLS and DNS come with it unchanged.
+- The Telegram plugin is C++17 on TDLib, libpurple and GLib: threads, a
+  C++ runtime, a libc. Statically linked with musl, it too only needs the
+  Linux system calls, the same layer.
+
+So one piece in the kernel serves both, and both backends stay what Leste
+runs (and what gets their fixes). The KolibriOS programs (ARMv7, AArch32)
+stay as they are; Linux programs are AArch64 at EL0 next to them.
+
+## The pieces
+
+```
+ KolibriOS (AArch32 programs)            Linux personality (AArch64 EL0)
+ +----------------------------+          +-------------------------------+
+ | chat (Hildon look):        |  pipes   | yappari-wa -stdio  (WhatsApp)  |
+ |  accounts, chats, a chat,  | <------> | purple-host -stdio (Telegram:  |
+ |  QR code, login prompts    |          |   libpurple + tdlib-purple)    |
+ +----------------------------+          +-------------------------------+
+              | function 101                  | Linux system calls
+ +-----------------------------------------------------------------------+
+ | kernel: tasks, windows | kernel/linux: ELF, memory, threads, futexes, |
+ |                        | files, sockets, epoll | kernel/net: lwIP      |
+ +-----------------------------------------------------------------------+
+```
+
+### The protocol: JSON lines over a pipe
+
+A backend's standard input and output are a pair of kernel pipes; the
+UI program starts the backend and reads and writes them through function
+101 (below). One JSON object per line, shaped after Yappari's D-Bus
+interface, so the D-Bus methods and signals map one to one:
+
+```
+UI -> backend   {"id": 7, "call": "SendText", "args": ["", "4366...@s.whatsapp.net", "hello"]}
+backend -> UI   {"id": 7, "result": ["3EB0..."]}
+                {"id": 8, "error": "not connected"}
+backend -> UI   {"signal": "QRCode", "args": ["2@..."]}
+                {"signal": "Message", "args": ["id", "chat", "sender", "pushname", 1761750000, false, "text", "hi", "", 0]}
+```
+
+- `yappari-wa -stdio`: the same methods and signals as on the session
+  bus (the list is in `backend/main.go` of yappari-leste); D-Bus stays the
+  default on Leste. The questions it asks the bus (is the UI running,
+  desktop notifications) are answered by the pipe: the UI is the other end.
+- `purple-host -stdio`: the same message shapes for libpurple's side:
+  `Login` (the account's fields), `Status`, `SendText`, `GetContacts`,
+  `GetChats`; signals `StateChanged`, `Message`, `Receipt`, `ChatState`,
+  and `Input` for what the plugin asks the user (Telegram's login code, the
+  2FA password), answered with `InputReply`.
+
+The chat program keeps one model for both: accounts, chats, messages;
+the Hildon look as the Leste programs have it (the conversation list,
+bubbles, the text field at the bottom; the QR code drawn as a picture).
+
+### Function 101: Linux programs (KolibriOS for ARM)
+
+| ebx | |
+| --- | --- |
+| 1 | start: ecx = path, edx = arguments (one string, space separated); eax = handle or -1 |
+| 2 | write to its standard input: ecx = handle, edx = buffer, esi = length; eax = bytes or -1 |
+| 3 | read its standard output: ecx = handle, edx = buffer, esi = size; eax = bytes (0: none now), -1 when it ended |
+| 4 | status: eax = 0 running, 1 ended (and ebx its exit code) |
+| 5 | stop it |
+
+Output arriving posts event 8 (`EV_NETWORK`, KolibriOS's event for data)
+to the program that started it, so the UI waits with function 10 as usual.
+
+## The Linux personality (`kernel/linux/`)
+
+What a static Go program does at start and while running, measured with
+`qemu-aarch64 -strace` on a Go 1.27 hello world and on `yappari-wa`:
+
+| | calls | here |
+| --- | --- | --- |
+| memory | `mmap` (anonymous, large `PROT_NONE` reservations: two of 512 MiB, 64 MiB, 8 MiB at start; then `MAP_FIXED` read-write pieces), `munmap`, `mprotect`, `madvise`, `brk` | 4 KiB pages, three-level tables of the process's own, pages allocated on first touch (data abort -> a zeroed page), reservations cost only address space. The address space: the first GiB (the program's ELF, from 0x10000) and 64-256 GiB (mmap) |
+| threads | `clone(CLONE_VM \| CLONE_THREAD \| ...)`, `gettid`, `set_tid_address`, `exit`, `exit_group`, `sched_yield`, `sched_getaffinity` (one CPU) | a thread is a kernel task sharing the process's tables; x0-x30, SP_EL0, TPIDR_EL0, the FP/SIMD registers saved per thread |
+| waiting | `futex` (WAIT, WAKE, private, with timeouts), `nanosleep`, `clock_gettime` (realtime, monotonic: the generic timer), `epoll_create1`/`epoll_ctl`/`epoll_pwait`, `eventfd2` | the kernel keeps no stack per task: a waiting call is a wait state, re-run or answered when the thread wakes |
+| signals | `rt_sigaction`, `rt_sigprocmask`, `sigaltstack` (recorded), `tgkill` (Go's preemption by `SIGURG`: dropped; Go then preempts at function entries) | no delivery yet; a fault ends the process with a register dump |
+| files | `openat`, `read`, `write`, `pread64`, `pwrite64`, `close`, `fstat`/`newfstatat`, `lseek`, `fcntl` (locks always granted: one process per file), `getdents64`, `mkdirat`, `unlinkat`, `renameat`, `ftruncate`, `fsync`, `readlinkat`, `getcwd` | the ramdisk read-only under `/`, a RAM file system for `/tmp`, `/var` and `$HOME`; `/dev/null`, `/dev/urandom`; `/etc/resolv.conf` from the DHCP lease; the CA bundle `/etc/ssl/certs/ca-certificates.crt` on the ramdisk |
+| network | `socket` (TCP, UDP, v4), `connect` (non-blocking: `EINPROGRESS`), `getsockopt(SO_ERROR)`, `setsockopt`, `getsockname`, `getpeername`, `sendto`, `recvfrom`, `read`, `write`, `shutdown` | sockets on lwIP's raw API, readiness to epoll |
+| other | `getrandom`, `uname`, `prlimit64`, `getpid`, `getuid` and friends | a ChaCha20 generator seeded from virtio-rng in QEMU, on the phone from the SoC's PRNG (to do: until then the seed is weak and linking must not be trusted) |
+
+Not planned: `fork`/`exec` (neither backend runs programs), shared
+memory between processes, `ptrace`.
+
+## WhatsApp: yappari-wa
+
+- Built as on Leste: `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build` in
+  yappari-leste's `backend/` (21 MiB), put on the ramdisk.
+- Its state (`$XDG_DATA_HOME/yappari-wa/session.db`, the linked device's
+  keys) is in the RAM file system: **lost at every reboot** until KolibriOS
+  can write somewhere. Options: `tools/pro1x-kexec.sh` brings Leste's
+  `session.db` along (the same linked device; Leste is gone while
+  KolibriOS runs, but the Signal sessions move on under KolibriOS, and
+  Leste's copy is stale afterwards); or a native UFS driver (large).
+- Its clock must be right (TLS): KolibriOS's real-time clock, which the
+  modem sets on the phone.
+
+## Telegram: the purple host
+
+`purple-host` is a C program of its own (`tools/purple-host/`), linked
+statically with musl: libpurple's core (no UI), tdlib-purple registered
+as a static protocol plugin, GLib's main loop, the JSON-lines protocol on
+stdin/stdout. libpurple's UI operations (request fields, the account's
+connection, conversations) become the protocol's signals.
+
+The build (`tools/purple-host/build.sh`, not run yet):
+
+| step | what | notes |
+| --- | --- | --- |
+| toolchain | `zig cc -target aarch64-linux-musl` (Arch's `zig`), or a musl cross GCC | the host has no musl or AArch64 Linux compiler today |
+| zlib, OpenSSL 3, libxml2 | static, `no-shared`, `--disable-shared` | TDLib needs OpenSSL and zlib; libpurple needs libxml2 |
+| GLib 2.8x | meson, `-Ddefault_library=static`, a cross file | libpurple's main loop and its types |
+| libpurple 2.14.x | `--disable-gtkui --disable-consoleui --disable-perl --disable-tcl --disable-gstreamer --disable-vv --disable-idn --disable-avahi --disable-dbus --disable-nm --disable-plugins --with-static-prpls=` (none of its own) | only `libpurple.a` |
+| TDLib 1.8.x | first natively: `cmake --build . --target prepare_cross_compiling` (generates the sources with gperf and its own generators), then cross: `tdjson_static` | the largest part: about 1.5 h on 2 cores and up to 4 GB RAM per compile job; some 3 GB on disk |
+| tdlib-purple | cmake with `-DNoVoip=True -DNoLottie=True -DNoWebp=True -DNoTranslations=True`, as a static library | its `purple_init_plugin` called from purple-host |
+| purple-host | some 800 lines of C | links all of the above into one static ELF |
+
+Its Linux needs beyond Go's: musl's threads (`clone` with
+`CLONE_SETTLS`, `CLONE_CHILD_CLEARTID`, whose wake on thread exit
+`pthread_join` waits for), `poll`, `pipe2`, `brk`, `membarrier` (may fail),
+`timerfd` if TDLib uses it (to measure under `qemu-aarch64 -strace`).
+TDLib's database (the login) is in the RAM file system, the same
+persistence question as WhatsApp's.
+
+## Status
+
+- [x] the design (this document, [pro1x-network.md](pro1x-network.md))
+- [ ] the network stack in QEMU (virtio-net, lwIP, DHCP, DNS)
+- [ ] the Linux personality: a static Go hello world
+- [ ] sockets and epoll: `yappari-wa -stdio` reaching its QR code in QEMU
+- [ ] `yappari-wa -stdio` in yappari-leste
+- [ ] function 101 and the chat program
+- [ ] the purple host's build and program
+- [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), randomness, persistence
