@@ -193,6 +193,12 @@ u32 sched_next_work(void)
 		case T_SLEEP:
 		case T_WAIT_TIMEOUT:
 			v = until(t->wake_tick);
+#ifdef __aarch64__
+			/* the display off: the programs' timeouts (a shell's
+			 * look at its windows, a clock) together, on whole
+			 * seconds, at most a second late */
+			if (power_standby && v) v = (ticks + v + 99) / 100 * 100 - ticks;
+#endif
 			break;
 #ifdef __aarch64__
 		case T_LX_WAIT:

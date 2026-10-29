@@ -1,7 +1,8 @@
 # The AArch64 kernel's power management: make -C tests/power
 #
 #   host   powerdt.c on the PC against the SM6115's tree (sm6115-power.dts,
-#          and the phone's own with PRO1X_DTB=...) and QEMU's
+#          and the phone's own with PRO1X_DTB=...) and QEMU's; pmic.c (the
+#          SPMI arbiter, the battery) against an arbiter in RAM
 #   qemu   the kernel in QEMU (builds it first); each run prints the
 #          kernel's power lines and checks them (qemu.py): the 100 Hz tick
 #          as it was, tickless idle on QEMU's virt and on the Pro1X's code
@@ -19,8 +20,13 @@ PRO1X_DTB ?=
 
 test: host qemu
 
-host: $(B)/host $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb
+host: $(B)/host $(B)/pmic $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb
 	$(B)/host $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb $(PRO1X_DTB)
+	$(B)/pmic
+
+$(B)/pmic: pmic.c $(TOP)/kernel/modem/pmic.c $(TOP)/kernel/modem/pmic.h $(TOP)/kernel/modem/modem.h
+	@mkdir -p $(B)
+	$(CC) $(CFLAGS) -DMODEM_HOST pmic.c $(TOP)/kernel/modem/pmic.c -o $@
 
 $(B)/host: host.c $(TOP)/kernel/arch/arm64/powerdt.c $(TOP)/kernel/arch/arm64/powerdt.h $(TOP)/kernel/fdt.c
 	@mkdir -p $(B)
@@ -40,6 +46,7 @@ qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cl
 	python3 qemu.py --pro1x $(B)/pro1x-psci.dtb $(K) psci 23 max-rate=8 core
 	python3 qemu.py --pro1x $(B)/pro1x-sim.dtb $(K) simulate 23 max-rate=8 core resumed
 	python3 qemu.py --pro1x $(B)/pro1x-cluster.dtb $(K) cluster 23 max-rate=8 cluster resumed
+	python3 qemu.py $(K) standby 23 max-rate=2.5 has="whole seconds" -- -append "$(ARGS) kolibri.standby"
 
 kernel:
 	$(MAKE) -C $(TOP) PLATFORM=arm64

@@ -24,6 +24,9 @@ static struct power_stats first;
 
 /* the platform's part of a report line, and of the start and the end */
 void (*plat_power_report)(int when);
+/* the display is off (the power test's standby): the programs' timeouts
+ * on a grid of a second (sched_next_work) */
+bool power_standby;
 
 u32 power_test_minutes(void)
 {
@@ -70,6 +73,12 @@ static void line(const char *what, const struct power_stats *a, const struct pow
 
 void power_init(void)
 {
+	/* kolibri.standby: the standby's timer slack without switching a
+	 * display off (QEMU) */
+	if (boot_arg("kolibri.standby")) {
+		power_standby = true;
+		kprintf("power: standby: the programs' timeouts on whole seconds\n");
+	}
 	const char *v = boot_arg("kolibri.powertest");
 	if (!v) return;
 	minutes = num(v);

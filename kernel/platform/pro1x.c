@@ -39,6 +39,7 @@
 #include "../modem/callaudio.h"
 #include "../modem/rpm.h"
 #include "../modem/rpmsleep.h"
+#include "../modem/pmic.h"
 #include "rng.h"
 #include "power.h"
 #include "powerdt.h"
@@ -64,6 +65,14 @@ static int fb_w, fb_h, fb_stride;      /* the panel, portrait; stride in bytes *
 static u32 lifetime;                   /* s, 0: forever */
 static u32 powertest;                  /* kolibri.powertest=N: min */
 static bool rpmsleep;                  /* kolibri.rpmsleep: the sleep set, the MPM */
+static bool displayon, battery_arg;    /* kolibri.displayon, kolibri.battery */
+/* the SPMI arbiter's regions (core, chnls, obsrvr, cnfg), its EE; the
+ * battery's gauge and ADC channel (the device tree's
+ * fxtec,pro1x-adc-battery); the DSI controller */
+static addr_t spmi_pa[4], dsi_pa;
+static u32 spmi_size[4], spmi_ee;
+static struct battery bat;
+static bool bat_found;
 static u32 tlmm_irq, modem_irq;        /* the TLMM's summary interrupt, the modem's GLINK edge's */
 static u32 reserved[8][2];             /* the TLMM's gpio-reserved-ranges: not ours to touch */
 static int nreserved;
@@ -248,9 +257,12 @@ static int p_display_init(u32 **fb, int *w, int *h, int *stride)
  * clockwise: landscape (X, Y) is the panel's (fb_w - 1 - Y, X), so a line
  * of the screen is a pair of the panel's columns. Panel line by panel
  * line, two pixels in a 64-bit store, the alpha opaque. */
+static bool display_off;               /* the power test's standby: nothing to scan out */
+
 static bool p_display_flush(int y0, int y1)
 {
 	static u64 span[1080];
+	if (display_off) return true;
 	y1 = MIN(y1, lh);
 	if (y0 >= y1) return true;
 	int n = MIN(y1 - y0, (int)ARRAY_SIZE(span));
@@ -1138,10 +1150,256 @@ static void rpm_stats_line(const char *what)
 	have = true;
 }
 
-/* the power test's lines (power.c): 0 the start, 1 a minute, 2 the end */
+/* --- the PMICs: the battery (docs/power.md, stage 4) ---------------- */
+
+static u32 spmi_rd(addr_t a) { return rd32(a); }
+static void spmi_wr(addr_t a, u32 v) { wr32(a, v); }
+
+static bool pmic_up(void)
+{
+	static bool tried, ok;
+	if (tried) return ok;
+	tried = true;
+	if (!spmi_pa[0] || !spmi_pa[1] || !spmi_pa[2] || !spmi_pa[3]) {
+		kprintf("pro1x: no SPMI arbiter in the device tree\n");
+		return false;
+	}
+	struct spmi_hw h = { io_va(spmi_pa[0]), io_va(spmi_pa[1]), io_va(spmi_pa[2]), io_va(spmi_pa[3]),
+			     spmi_size[0], spmi_ee, spmi_rd, spmi_wr, delay_us };
+	u32 ver = spmi_init(&h), ours;
+	u32 n = spmi_channels(&ours);
+	if (!ver) {
+		kprintf("pro1x: SPMI: the arbiter is not version 5\n");
+		return false;
+	}
+	kprintf("pro1x: SPMI: arbiter %u.%u, EE %u, %u channels, %u of them ours\n", ver >> 28,
+		(ver >> 16) & 0xfff, spmi_ee, n, ours);
+	if (!bat_found) {
+		kprintf("pro1x: battery: no fxtec,pro1x-adc-battery in the device tree\n");
+	} else if (battery_init(&bat) == 0) {
+		kprintf("pro1x: battery: gauge at %u:%x (%s), ADC at %u:%x, channel %x (%u/%u)\n", bat.sid, bat.qg,
+			bat.na_per_lsb == 152588 ? "5 A" : "10 A", bat.sid, bat.adc, bat.chan, bat.pre_num, bat.pre_den);
+		ok = true;
+	} else {
+		kprintf("pro1x: battery: the gauge does not answer\n");
+	}
+	return ok;
+}
+
+/* samples during the power test, with the watchdog's (every 10 s): the
+ * minute's and the test's sums */
+static struct { s64 ma, mv; u32 n, errors; s32 lo, hi; } bmin, ball;
+static u32 bfirst_mv;
+
+static void battery_sample(void)
+{
+	s32 ma;
+	u32 mv;
+	if (!bat.ok) return;
+	if (battery_current(&bat, &ma) || battery_voltage(&bat, &mv)) {
+		bmin.errors++;
+		return;
+	}
+	if (!bfirst_mv) bfirst_mv = mv;
+	if (!bmin.n || ma < bmin.lo) bmin.lo = ma;
+	if (!bmin.n || ma > bmin.hi) bmin.hi = ma;
+	bmin.ma += ma, bmin.mv += mv, bmin.n++;
+	ball.ma += ma, ball.mv += mv, ball.n++;
+}
+
+static void battery_line(int when)
+{
+	if (!bat.ok) return;
+	if (when == 0) {
+		battery_sample();
+		if (bmin.n) kprintf("battery: at the start %u mV, %d mA (positive: discharging)\n", (u32)bmin.mv,
+				    (int)bmin.ma);
+		bmin.n = 0, bmin.ma = bmin.mv = 0;
+		return;
+	}
+	if (when == 1) {
+		if (bmin.n)
+			kprintf("battery: %u mV, %d mA (%u samples, %d to %d)%s\n", (u32)(bmin.mv / bmin.n),
+				(int)(bmin.ma / bmin.n), bmin.n, bmin.lo, bmin.hi, bmin.errors ? ", read errors" : "");
+		else
+			kprintf("battery: no samples this minute (%u read errors)\n", bmin.errors);
+		bmin.n = bmin.errors = 0, bmin.ma = bmin.mv = 0;
+		return;
+	}
+	if (ball.n)
+		kprintf("battery: the test's mean %d mA over %u samples, %u mV to %u mV\n", (int)(ball.ma / ball.n),
+			ball.n, bfirst_mv, (u32)(ball.mv / ball.n));
+}
+
+/* --- the display off: the panel's DCS commands, the scan-out stopped -- *
+ *
+ * As FreeBSD's qcom_dpu (pro1x-maemo-leste freebsd/patches/0022, after
+ * Linux's msm dsi_cmd_dma_tx): the packet in msm's format in a buffer
+ * below 4 GiB (the display's streams bypass the SMMU), the controller in
+ * command mode as well, the DMA started after a frame's video, done when
+ * CMD_DMA_DONE latches; the panel's OFF commands in high speed, as
+ * Linux's panel-boe-bf060y8m-aj0 sends them (display off, 20 ms, sleep
+ * in). Then the interface's timing engine stops (INTF_1 at the DPU's
+ * 0x6a800, INTF_TIMING_ENGINE_EN: Linux's dpu_6_3_sm6115.h,
+ * dpu_hw_intf.c): no more frames read from RAM. */
+#define DSI_REG 4                       /* the 6G controller's register shift */
+#define DSI_CTRL 0x000
+#define DSI_CTRL_ENABLE (1u << 0)
+#define DSI_CTRL_CMD_MODE_EN (1u << 2)
+#define DSI_STATUS0 0x004
+#define DSI_STATUS0_VIDEO_BUSY (1u << 3)
+#define DSI_CMD_DMA_CTRL 0x038
+#define DSI_CMD_DMA_LOW_POWER (1u << 26)
+#define DSI_DMA_BASE 0x044
+#define DSI_DMA_LEN 0x048
+#define DSI_TRIG_DMA 0x08c
+#define DSI_INTR_CTRL 0x10c
+#define DSI_IRQ_CMD_DMA_DONE (1u << 0)
+#define DSI_IRQ_VIDEO_DONE (1u << 16)
+#define DSI_IRQ_MASKS 0x02220202u
+#define INTF1_TIMING_ENGINE_EN 0x6a800
+#define DCS_ENTER_SLEEP 0x10
+#define DCS_EXIT_SLEEP 0x11
+#define DCS_DISPLAY_OFF 0x28
+#define DCS_DISPLAY_ON 0x29
+#define DCS_BRIGHTNESS 0x51
+
+static u8 *dsi_buf;
+
+static u32 dsi_rd(u32 off) { return rd32(io_va(dsi_pa) + DSI_REG + off); }
+static void dsi_wr(u32 off, u32 v) { wr32(io_va(dsi_pa) + DSI_REG + off, v); }
+
+static bool dsi_dcs(const u8 *p, u32 n, bool hs)
+{
+	if (!dsi_pa || !dsi_buf || !n || n > 64) return false;
+	u32 ctrl = dsi_rd(DSI_CTRL);
+	if (!(ctrl & DSI_CTRL_ENABLE)) return false;
+	u8 *d = dsi_buf;
+	u32 len;
+	if (n <= 2) {
+		d[0] = p[0];
+		d[1] = n == 2 ? p[1] : 0;
+		d[2] = n == 2 ? 0x15 : 0x05;           /* DCS short write, with a parameter */
+		d[3] = 0x80;                          /* the last */
+		len = 4;
+	} else {
+		d[0] = (u8)n;
+		d[1] = 0;
+		d[2] = 0x39;                          /* DCS long write */
+		d[3] = 0x80 | 0x40;
+		memcpy(d + 4, p, n);
+		len = ALIGN_UP(4 + n, 4);
+		memset(d + 4 + n, 0xff, len - 4 - n);
+	}
+	for (addr_t a = (addr_t)d & ~63ul; a < (addr_t)d + len; a += 64)
+		asm volatile("dc cvac, %0" :: "r"(a) : "memory");
+	asm volatile("dsb sy");
+	u32 dma = dsi_rd(DSI_CMD_DMA_CTRL);
+	dsi_wr(DSI_CMD_DMA_CTRL, hs ? dma & ~DSI_CMD_DMA_LOW_POWER : dma | DSI_CMD_DMA_LOW_POWER);
+	dsi_wr(DSI_CTRL, ctrl | DSI_CTRL_CMD_MODE_EN | DSI_CTRL_ENABLE);
+	u32 masks = dsi_rd(DSI_INTR_CTRL) & DSI_IRQ_MASKS;
+	dsi_wr(DSI_INTR_CTRL, masks | DSI_IRQ_CMD_DMA_DONE << 1 | DSI_IRQ_VIDEO_DONE << 1 | DSI_IRQ_CMD_DMA_DONE |
+	       DSI_IRQ_VIDEO_DONE);
+	if (dsi_rd(DSI_STATUS0) & DSI_STATUS0_VIDEO_BUSY) {
+		for (int i = 0; i < 70 && !(dsi_rd(DSI_INTR_CTRL) & DSI_IRQ_VIDEO_DONE); i++) delay_us(1000);
+		delay_us(3000);                       /* past the blanking's first line, as msm */
+	}
+	dsi_wr(DSI_DMA_BASE, (u32)(addr_t)d);
+	dsi_wr(DSI_DMA_LEN, len);
+	dsi_wr(DSI_TRIG_DMA, 1);
+	int i;
+	for (i = 0; i < 2000 && !(dsi_rd(DSI_INTR_CTRL) & DSI_IRQ_CMD_DMA_DONE); i++) delay_us(100);
+	bool ok = dsi_rd(DSI_INTR_CTRL) & DSI_IRQ_CMD_DMA_DONE;
+	dsi_wr(DSI_INTR_CTRL, masks | DSI_IRQ_CMD_DMA_DONE | DSI_IRQ_VIDEO_DONE);
+	dsi_wr(DSI_CTRL, ctrl);
+	dsi_wr(DSI_CMD_DMA_CTRL, dma);
+	if (!ok) kprintf("pro1x: DCS %x: no CMD_DMA_DONE\n", p[0]);
+	return ok;
+}
+
+static bool dcs1(u8 cmd, bool hs)
+{
+	return dsi_dcs(&cmd, 1, hs);
+}
+
+static bool dcs_brightness(u32 v)
+{
+	u8 c[3] = { DCS_BRIGHTNESS, (u8)v, (u8)(v >> 8) };
+	return dsi_dcs(c, 3, false);
+}
+
+/* off: brightness 0, display off, sleep in, the frames stopped; on: the
+ * reverse (the panel keeps its registers through sleep; brightness 127,
+ * the panel driver's default) */
+static void display_power(bool on)
+{
+	if (!dsi_pa || !mdp) {
+		kprintf("pro1x: display %s: no DSI controller or DPU in the device tree\n", on ? "on" : "off");
+		return;
+	}
+	if (!dsi_buf) dsi_buf = kmalloc_aligned(256, 64);
+	if ((addr_t)dsi_buf >> 32) {
+		kprintf("pro1x: display: no buffer below 4 GiB for the DSI's DMA\n");
+		return;
+	}
+	addr_t te = io_va(mdp) + INTF1_TIMING_ENGINE_EN;
+	if (!on) {
+		bool b = dcs_brightness(0);
+		bool o = dcs1(DCS_DISPLAY_OFF, true);
+		delay_us(20000);
+		bool sl = dcs1(DCS_ENTER_SLEEP, true);
+		delay_us(2000);
+		u32 was = rd32(te);
+		wr32(te, 0);
+		delay_us(20000);                       /* the last frame out */
+		display_off = true;
+		kprintf("pro1x: display off: brightness %s, display off %s, sleep in %s, timing engine %u -> 0\n",
+			b ? "0" : "failed", o ? "done" : "failed", sl ? "done" : "failed", was);
+	} else {
+		wr32(te, 1);
+		delay_us(20000);
+		bool sl = dcs1(DCS_EXIT_SLEEP, true);
+		delay_us(30000);
+		bool o = dcs1(DCS_DISPLAY_ON, true);
+		delay_us(50000);
+		bool b = dcs_brightness(127);
+		display_off = false;
+		extern void gfx_dirty(int y0, int y1);
+		gfx_dirty(0, lh);
+		kprintf("pro1x: display on: sleep out %s, display on %s, brightness %s\n", sl ? "done" : "failed",
+			o ? "done" : "failed", b ? "127" : "failed");
+	}
+}
+
+/* --- the power test on the Pro1X ------------------------------------- *
+ *
+ * kolibri.powertest=N: the battery sampled every 10 s and shown a
+ * minute, the RPM's counts; the standby: 10 s after the start the
+ * display off and the SoC's sleep (the sleep set, the MPM; as
+ * kolibri.rpmsleep), with kolibri.displayon the display stays on and the
+ * sleep set as it is. At the end the display on again, then the
+ * lifetime's reset. */
+static u32 standby_at;
+static bool standby_done;
+
 static void p_power_report(int when)
 {
 	rpm_stats_line(when == 0 ? "at the start" : when == 2 ? "at the end" : "this minute");
+	battery_line(when);
+	if (when == 2 && display_off) display_power(true);
+}
+
+static void standby_start(void)
+{
+	standby_done = true;
+	if (displayon) {
+		kprintf("pro1x: power test: the display stays on (kolibri.displayon)\n");
+		return;
+	}
+	display_power(false);
+	extern bool power_standby;
+	power_standby = display_off;
+	if (!soc_sleep_on) soc_sleep_start();
 }
 
 static void p_other_irq(u32 id);
@@ -1152,12 +1410,15 @@ static void p_init(void)
 	extern void (*plat_power_report)(int when);
 	if (!stats_pa) stats_pa = pdt.stats_pa, stats_size = pdt.stats_size;
 	plat_power_report = p_power_report;
+	/* the battery before the power test's first line (timer_start) */
+	if (powertest || battery_arg) pmic_up();
 	gic3_init(gicd, gicr, p_other_irq);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
 	prng_init();
 	if (wifi) wifi_power();
 	if (rpmsleep) soc_sleep_start();
 	else if (stats_pa) rpm_stats_line("left by Linux");
+	standby_at = ticks + 1000;
 	modem_init();
 	if (noinput) {
 		kprintf("pro1x: no input (kolibri.noinput)\n");
@@ -1187,6 +1448,7 @@ static void p_tick(void)
 			wdt_feeding = false;
 		} else {
 			if (wdt) wr32(io_va(wdt) + WDT_RST, 1);
+			if (powertest) battery_sample();
 			wdt_next = ticks + wdt_every;
 			if (lifetime && (s32)(wdt_next - lifetime * 100) > 0) wdt_next = lifetime * 100;
 		}
@@ -1195,12 +1457,14 @@ static void p_tick(void)
 		if (due(kbd_sched, kbd_due)) kbd_poll();
 		if (due(ts_sched, ts_due)) ts_poll();
 	}
+	if (powertest && !standby_done && (s32)(ticks - standby_at) >= 0) standby_start();
 }
 
 /* tickless idle: the watchdog, the lifetime, the input's polls */
 static u32 p_next_tick(void)
 {
 	u32 n = wdt_feeding ? until(wdt_next) : 0xffffffffu;
+	if (powertest && !standby_done) n = MIN(n, until(standby_at));
 	if (!noinput) {
 		if (kbd_sched) n = MIN(n, until(kbd_due));
 		if (ts_sched && ts_ok) n = MIN(n, until(ts_due));
@@ -1561,6 +1825,47 @@ bool pro1x_probe(const void *fdt)
 	p = gr >= 0 ? fdt_prop(fdt, gr, "mboxes", &len) : NULL;
 	if (p && len >= 8) rpm_bit = cell(p, 1);
 
+	/* the PMICs: the SPMI arbiter's regions by name, and the battery: a
+	 * PMIC (qcom,spmi-pmic, reg <sid type>) with the gauge, the ADC's
+	 * channel its io-channels name (pmi632.dtsi: VBAT_SNS, 1/3) */
+	int sp = fdt_find_compatible(fdt, "qcom,spmi-pmic-arb", -1, &ac, &sc);
+	const char *rnames = sp >= 0 ? fdt_prop(fdt, sp, "reg-names", &len) : NULL;
+	static const char *const spmi_names[4] = { "core", "chnls", "obsrvr", "cnfg" };
+	for (int k = 0, idx = 0, o = 0; rnames && o < len; idx++) {
+		for (k = 0; k < 4; k++)
+			if (!strcmp(rnames + o, spmi_names[k]) && fdt_reg(fdt, sp, ac, sc, idx, &a, &s)) {
+				spmi_pa[k] = a;
+				spmi_size[k] = (u32)s;
+				add_io(a, s, MAP_DEVICE);
+			}
+		o += strlen(rnames + o) + 1;
+	}
+	if (sp >= 0) spmi_ee = fdt_u32(fdt, sp, "qcom,ee", 0);
+	for (int pm = sp >= 0 ? fdt_next_child(fdt, sp, -1) : -1; pm >= 0; pm = fdt_next_child(fdt, sp, pm)) {
+		int g = fdt_child_compatible(fdt, pm, "fxtec,pro1x-adc-battery");
+		p = g >= 0 ? fdt_prop(fdt, g, "io-channels", &len) : NULL;
+		if (!p || len < 8) continue;
+		int adc = fdt_find_phandle(fdt, cell(p, 0));
+		u32 chan = cell(p, 1);
+		bool same = false;
+		for (int c = fdt_next_child(fdt, pm, -1); c >= 0; c = fdt_next_child(fdt, pm, c))
+			if (c == adc) same = true;
+		if (!same || !fdt_is_compatible(fdt, adc, "qcom,spmi-adc5")) continue;
+		bat = (struct battery){ .sid = fdt_u32(fdt, pm, "reg", 0), .qg = fdt_u32(fdt, g, "reg", 0),
+					.adc = fdt_u32(fdt, adc, "reg", 0), .chan = chan, .pre_num = 1, .pre_den = 1 };
+		for (int c = fdt_next_child(fdt, adc, -1); c >= 0; c = fdt_next_child(fdt, adc, c)) {
+			const void *ps = fdt_prop(fdt, c, "qcom,pre-scaling", &len);
+			if (fdt_u32(fdt, c, "reg", 0xffffffffu) == chan && ps && len >= 8 && cell(ps, 0)) {
+				bat.pre_num = cell(ps, 0);
+				bat.pre_den = cell(ps, 1);
+			}
+		}
+		bat_found = true;
+		break;
+	}
+	/* the DSI controller (its DCS commands: the panel off) */
+	reg_io(fdt, fdt_find_compatible(fdt, "qcom,sm6115-dsi-ctrl", -1, &ac, &sc), ac, sc, 0, &dsi_pa, MAP_DEVICE);
+
 	/* the command line: kolibri.lifetime=N, kolibri.noinput */
 	int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
 	const char *args = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
@@ -1579,6 +1884,8 @@ bool pro1x_probe(const void *fdt)
 		callaudio = word(args, len, "kolibri.callaudio", NULL);
 		wifi = word(args, len, "kolibri.wifi", NULL);
 		rpmsleep = word(args, len, "kolibri.rpmsleep", NULL);
+		displayon = word(args, len, "kolibri.displayon", NULL);
+		battery_arg = word(args, len, "kolibri.battery", NULL);
 		adopt_ipcrtr = word(args, len, "kolibri.ipcrtr=adopt", NULL);
 	}
 	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of

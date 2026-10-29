@@ -17,6 +17,8 @@ typedef uint64_t u64;
 typedef int8_t s8;
 typedef int16_t s16;
 typedef int32_t s32;
+typedef int64_t s64;
+typedef unsigned long addr_t;
 #define mlog(...) printf(__VA_ARGS__)
 #else
 #include "kernel.h"

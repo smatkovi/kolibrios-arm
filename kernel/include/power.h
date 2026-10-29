@@ -56,6 +56,7 @@ void power_init(void);                 /* the command line */
 void power_tick(void);                 /* from the tick */
 u32 power_next(void);
 u32 power_test_minutes(void);          /* kolibri.powertest=N, 0 */
+extern bool power_standby;             /* the display off: timer slack */
 
 /* kernel/arch/arm64/psci.c: the CPU's idle states */
 void psci_probe(void);                 /* powerdt.c's findings, MMU off */

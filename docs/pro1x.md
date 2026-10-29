@@ -38,9 +38,12 @@ The command line:
 | `kolibri.fakemodem` | a modem in RAM instead (QEMU with the phone's device tree) |
 | `kolibri.ipcrtr=adopt` | Linux's `IPCRTR` channel taken over as it is (`pro1x-kexec.sh -m` passes it; `docs/pro1x-modem.md`) |
 | `kolibri.wifi` | the WLAN part's rails on through the RPM, the WLAN firmware's QMI service asked what it is (with `-m`; `docs/pro1x-network.md`) |
-| `kolibri.powertest=N` | N minutes of power measurement, a console line a minute, then the reset (as a lifetime of N minutes and 30 s); `docs/power.md` |
+| `kolibri.powertest=N` | N minutes of power measurement as a standby (after 10 s the display off, the SoC's sleep), a console line a minute with the battery's current and the RPM's sleep counts, then the reset (as a lifetime of N minutes and 30 s); `docs/power.md` |
 | `kolibri.tick=periodic` | the 100 Hz tick also in idle (no tickless idle), the input polled as before |
 | `kolibri.rpmsleep` | the RPM's sleep set at 0 and the MPM handed the next wake-up before the cluster's collapse: the SoC may sleep (vlow, vmin; `docs/power.md`) |
+| `kolibri.displayon` | the power test without the standby: the display stays on, the sleep set as it is |
+| `kolibri.battery` | the PMIC's battery readings also without a power test |
+| `kolibri.standby` | the programs' timeouts on whole seconds, as while the display is off |
 | `kolibri.psci=off` | the CPU idles with `wfi` only, no PSCI power-down states (`core`: no cluster state; `docs/power.md`) |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;

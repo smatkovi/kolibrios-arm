@@ -14,7 +14,7 @@ timer, through the MPM). The steps:
 | 1 | tickless idle: the timer at the next deadline instead of 100 Hz; the Pro1X's input and modem by interrupt | `kernel/arch/arm64/timer.c`, `kernel/sched.c`, `kernel/power.c`, `kernel/platform/pro1x.c`, `kernel/modem/kmodem.c` | QEMU (`make -C tests/power`) |
 | 2 | CPU idle through PSCI: the core's and the cluster's power-down states, the context kept across them, the memory-mapped timer as the wake-up | `kernel/arch/arm64/psci.c`, `suspend.S`, `powerdt.c`, `timer.c` | the device tree on the PC against the phone's (`make -C tests/power host`); QEMU's CPU_SUSPEND, the way back played (`kolibri.psci=simulate`) under Go, TLS and the network |
 | 3 | the RPM's sleep set, the MPM's timer before the cluster's collapse, the RPM's sleep counts | `kernel/modem/rpmsleep.c`, `rpm.c`, `kernel/platform/pro1x.c`, `powerdt.c` | `make -C tests/modem` (the requests against an RPM in RAM, the vMPM's layout, the statistics), `make -C tests/power host` (the addresses in the phone's tree) |
-| 4 | the display off, the battery's current in the log | | |
+| 4 | the display off (DCS, the scan-out stopped), the programs' timeouts on whole seconds, the battery's voltage and current in the power test's lines | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `kernel/sched.c` | `make -C tests/power host` (the SPMI arbiter's channels, the gauge, the ADC against an arbiter in RAM); QEMU (`kolibri.standby`: 1.4 wake-ups/s) |
 
 ## Measuring: `kolibri.powertest=N`
 
@@ -41,6 +41,24 @@ power: test over, all 600 s: ...
   happen.
 
 `kolibri.powerline=S` makes it a line every S seconds (the QEMU tests).
+
+On the Pro1X the test is a standby (stage 4): 10 s after the start the
+display goes off and the SoC may sleep (the sleep set, the MPM: stage
+3); every 10 s (with the watchdog's feeding) the battery is sampled, a
+line a minute shows the minute's mean, and the RPM's counts:
+
+```
+battery: 3902 mV, 152 mA (6 samples, 140 to 171)
+rpm: this minute: vmin 0 (+0, 0 s in all), vlow 12 (+12, 50 s), votes 0 0; MPM hand-overs 58
+...
+battery: the test's mean 150 mA over 54 samples, 3921 mV to 3903 mV
+pro1x: display on: ...
+```
+
+The current is positive while discharging (the gauge's sign); on a USB
+cable it is the charger's, so the test is meant to run unplugged.
+`kolibri.displayon` keeps the display on (and the sleep set as it is),
+for a comparison.
 
 ## Stage 1: tickless idle
 
@@ -226,3 +244,70 @@ rpm: this minute: vmin 0 (+0, ...), vlow 3 (+3, 41 s), ...; MPM hand-overs 120
 
 A count that does not move while the hand-overs do: another master or a
 vote still holds the SoC up (the display is the first: stage 4).
+
+## Stage 4: the display off, the battery
+
+**The display** (`display_power`, `kernel/platform/pro1x.c`): Linux
+leaves the panel (BOE BF060Y8M-AJ0) in video mode, 60 frames a second
+read from RAM. Off: DCS commands through the DSI controller's command
+DMA, as FreeBSD's `qcom_dpu` sends them (pro1x-maemo-leste
+`freebsd/patches/0022`, after Linux's msm `dsi_cmd_dma_tx`: the packet
+in a buffer below 4 GiB, the controller in command mode as well, the DMA
+started after a frame's video, done when CMD_DMA_DONE latches; untested
+on the phone there too): brightness 0, display off (high speed), 20 ms,
+sleep in (high speed), as Linux's `panel-boe-bf060y8m-aj0.c` switches it
+off; then the interface's timing engine stops (INTF_1 at the DPU's
+0x6a800, `INTF_TIMING_ENGINE_EN`; `dpu_6_3_sm6115.h`, `dpu_hw_intf.c`):
+no more frames. The flushes into the framebuffer stop meanwhile. On at
+the end: the timing engine, sleep out, 30 ms, display on, brightness 127
+(the panel driver's default; the panel keeps its registers through
+sleep). Each step's result goes to the console.
+
+**The programs' timeouts** while the display is off: on a grid of whole
+seconds (`sched_next_work`), at most a second late, so that the shell's
+look at its windows every 250 ms and a clock's second come together:
+one wake-up a second instead of four or five. `kolibri.standby` does the
+same without a display to switch off (QEMU: 4.1-4.8 wake-ups/s become
+1.4).
+
+**The battery** (`kernel/modem/pmic.c`): the SPMI PMIC arbiter, version
+5 (Linux's `spmi-pmic-arb.c`, FreeBSD's `qcom_spmi`: the APID map in the
+core region, the owners in cnfg, reads through this EE's observer
+channel, writes through the channel itself), the regions by the device
+tree's `reg-names`, the EE from `qcom,ee`. The gauge and the ADC from
+the device tree's `fxtec,pro1x-adc-battery` (pro1x-maemo-leste's Linux
+driver `pro1x-adc-battery.c`): the PMI632's fuel gauge at 2:0x4800, its
+burst-averaged current (LAST_BURST_AVG_I at 0xc6, held while it is read,
+152588 nA a step on the 5 A part), the ADC5 at 2:0x3100, channel
+VBAT_SNS (0x84, pre-scaled 1/3, 1875 mV over 0x70e4). Read only with the
+power test or `kolibri.battery`.
+
+## The device test (prepared, 2026-10-29)
+
+Nothing of this has run on the phone yet (nor has KolibriOS itself: the
+first device test ended in Linux). From a running Maemo Leste, as root,
+the kernel in `/host/kolibri/kernel.bin` (`docs/pro1x.md`), without the
+modem (no `-m`, `kolibri.nomodem`: it runs on, on its own firmware), in steps, each one ending with the watchdog's reset into
+the boot menu, then `tools/pro1x-read.py` for the console:
+
+1. `tools/pro1x-kexec.sh /host/kolibri/kernel.bin "kolibri.nomodem kolibri.lifetime=60 kolibri.psci=off"`: the
+   tick (INTID 19), tickless idle, the input by interrupt. Expected:
+   `timer: 19200000 Hz, INTID 19, tickless idle`, `timer: broadcast:
+   frame 0 at ...f121000, INTID 40, 19200000 Hz`, `psci: 1.x over smc,
+   OS-initiated mode, extended state ids; CPUs off: fe of 8`, the three
+   states, `psci: off (kolibri.psci=off): wfi`, `pro1x: input
+   interrupts: N GPIOs through INTID 259 (...)`, keys and touch working,
+   `pro1x: lifetime over` after 60 s. A console that ends after
+   `running` and a reset after about 32 s: no tick (the timer's
+   interrupt), the watchdog not fed.
+2. `... "kolibri.nomodem kolibri.powertest=3 kolibri.displayon"` (PSCI on): `power:`
+   lines with `core`/`cluster` counts above 0 and `resumed` equal to
+   them, the battery's lines. A hang after the first idle (a reset at
+   about 32 s, the console ending at `running`): the way back from the
+   power-down (cpu_resume) or the broadcast timer; then once more with
+   `kolibri.psci=core`.
+3. `... "kolibri.nomodem kolibri.powertest=10"` unplugged: the standby: `pro1x: display
+   off: brightness 0, display off done, sleep in done, timing engine 1
+   -> 0`, the sleep set (`rpm: the sleep set: 12 of 12 resources at 0`),
+   the MPM's hand-overs, and whether `vlow`/`vmin` move; the battery's
+   mean current against Leste's 160 mA.
