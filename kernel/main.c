@@ -112,15 +112,16 @@ void kmain(void)
 #endif
 	autorun();
 #ifdef __aarch64__
-	/* kolibri.run=/bin/x: a Linux program from the ramdisk too (tests) */
+	/* kolibri.run=/bin/x (a Linux program) or /sys/x: one more program
+	 * from the ramdisk (tests) */
 	const char *run = boot_arg("kolibri.run");
 	if (run && *run) {
 		char path[64] = "/sys/linux";
-		u32 n = 0;
-		while (run[n] && run[n] != ' ' && 10 + n + 1 < sizeof(path)) n++;
-		memcpy(path + 10, run, n);
-		path[10 + n] = 0;
-		if (load_program(path, NULL, NULL) < 0) kprintf("kolibri.run: %s not started\n", path + 10);
+		u32 n = 0, at = strncmp(run, "/sys/", 5) ? 10 : 0;
+		while (run[n] && run[n] != ' ' && at + n + 1 < sizeof(path)) n++;
+		memcpy(path + at, run, n);
+		path[at + n] = 0;
+		if (load_program(path, NULL, NULL) < 0) kprintf("kolibri.run: %s not started\n", run);
 	}
 #endif
 	gfx_flush();

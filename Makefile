@@ -66,7 +66,7 @@ KLINK = $(CC32) $(LDFLAGS) -T kernel/arch/armv7/kernel.ld -Wl,--defsym,KERNEL_BA
 endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
-APPS := taskbar menu example clock board cpu hildon hstatus phone
+APPS := taskbar menu example clock board cpu hildon hstatus phone messenger
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
 RDNAME_hildon := @hildon
@@ -74,6 +74,7 @@ RDNAME_hstatus := @hstatus
 # memory beyond the default 1 MiB (the shell keeps the task switcher's pictures)
 MEM_hildon := 0x400000
 MEM_phone := 0x400000
+MEM_messenger := 0x200000
 # the look the kernel starts with: hildon (the Hildon shell) or classic
 # (KolibriOS's panel and menu): apps/autorun or apps/autorun.classic
 LOOK ?= hildon
@@ -113,7 +114,7 @@ $(A)/lib/%.o: lib/%.c lib/kos.h | dirs
 	$(CC32) $(ACFLAGS) -c $< -o $@
 $(A)/lib/%.o: lib/%.S | dirs
 	$(CC32) $(ACFLAGS) -c $< -o $@
-$(A)/%.o: apps/%/*.c lib/kos.h lib/kos_modem.h | dirs
+$(A)/%.o: apps/%/*.c lib/kos.h lib/kos_modem.h lib/qr.h | dirs
 	$(CC32) $(ACFLAGS) -c apps/$*/$*.c -o $@
 $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
 	$(CC32) $(LDFLAGS) $(if $(MEM_$*),-Wl$(comma)--defsym$(comma)MEMORY_SIZE=$(MEM_$*)) \
@@ -169,8 +170,18 @@ run-linux: tests/linux/hello/hello
 	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/hello=tests/linux/hello/hello" all
 	$(QEMU64) -kernel build/arm64/kernel.bin -append "kolibri.run=/bin/hello"
 
+# the messenger with Yappari's daemon: YAPPARI_WA, yappari-wa built for
+# linux/arm64 (CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build in
+# yappari-leste's backend/), and a CA bundle
+YAPPARI_WA ?=
+CA_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
+run-messenger:
+	@[ -f "$(YAPPARI_WA)" ] || { echo "YAPPARI_WA=<yappari-wa for linux/arm64>"; exit 1; }
+	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/yappari-wa=$(YAPPARI_WA) etc/ssl/certs/ca-certificates.crt=$(CA_BUNDLE)" all
+	$(QEMU64) -kernel build/arm64/kernel.bin -append "kolibri.run=/sys/messenger"
+
 clean:
 	rm -rf build
 
-.PHONY: all run run-net run-linux clean dirs FORCE
+.PHONY: all run run-net run-linux run-messenger clean dirs FORCE
 .SECONDARY:

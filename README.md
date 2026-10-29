@@ -100,6 +100,8 @@ input there).
 | Pro1X: call audio (Linux's APR channel to the ADSP taken over, the voice session per call, the speaker amplifier) | written, `tests/audio`, the speaker switch in QEMU, **not tried on the device** |
 | Pro1X: the clock from the mobile network (NAS) | written, **not tried on the device** |
 | Pro1X: clock (PMIC RTC), battery, everything else | not yet |
+| AArch64 kernel: the network (lwIP: DHCP, DNS, TCP, UDP), virtio-net | runs (QEMU, `make PLATFORM=arm64 run-net`); the Pro1X's Wi-Fi not yet (`docs/pro1x-network.md`) |
+| AArch64 kernel: a Linux personality for static AArch64 programs (Go, musl): memory, threads, futexes, files, pipes, epoll, sockets; function 101 | runs (QEMU: `make run-linux`, `tests/linux`, Yappari's daemon) |
 
 The system functions done are in `kernel/syscall.c`; the others return
 -1 and say so on the debug output.
@@ -122,6 +124,7 @@ can be recompiled.
 | `board` | the debug board: what the kernel and programs write (function 63) |
 | `cpu` | the process manager: the threads, their memory and state; ends one |
 | `phone` | calls and SMS (function 100): the dialler, the call screen, the conversations as bubbles, writing a message; `@hildon` starts it when a call comes in |
+| `messenger` | WhatsApp through Yappari's daemon (a Linux program, function 101): its state, linking by QR code (`lib/qr.h`); the chats next (`docs/messengers.md`) |
 
 `apps/autorun` lists what the kernel starts.
 
@@ -188,7 +191,10 @@ Linux reads them after the next boot, and the SoC's watchdog resets a hung
 system into the boot menu. `docs/pro1x.md` has the steps. Calls and SMS go
 through the modem, which keeps running from Linux's time through the
 kexec: `docs/pro1x-modem.md`; their sound through the ADSP, whose
-channel KolibriOS takes over from Linux: `docs/pro1x-audio.md`.
+channel KolibriOS takes over from Linux: `docs/pro1x-audio.md`. The
+network and the messengers (WhatsApp through Yappari's daemon, Telegram
+through libpurple's tdlib-purple, both as Linux programs):
+`docs/pro1x-network.md`, `docs/messengers.md`.
 
 ## Licence
 

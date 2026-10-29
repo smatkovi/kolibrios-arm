@@ -151,9 +151,18 @@ persistence question as WhatsApp's.
 
 - [x] the design (this document, [pro1x-network.md](pro1x-network.md))
 - [x] the network stack in QEMU (virtio-net, lwIP, DHCP, DNS: [pro1x-network.md](pro1x-network.md))
-- [ ] the Linux personality: a static Go hello world
-- [ ] sockets and epoll: `yappari-wa -stdio` reaching its QR code in QEMU
-- [ ] `yappari-wa -stdio` in yappari-leste
-- [ ] function 101 and the chat program
+- [x] the Linux personality (`kernel/linux/`): `tests/linux/hello` (Go: goroutines, timers,
+  the GC), `tests/linux/nettest` (files, Go's resolver, three HTTPS requests at once, TLS 1.3)
+- [x] `yappari-wa -stdio` in yappari-leste (`backend/stdio.go`)
+- [x] function 101 and `messenger`, its first part: the daemon started, its state, linking by
+  QR code (`lib/qr.h`, checked with zbarimg against the daemon's code)
+- [ ] the chats in `messenger`: the conversation list, a conversation, sending (the daemon has
+  all of it: `GetContacts`, `Message`, `SendText`, ...)
 - [ ] the purple host's build and program
 - [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), randomness, persistence
+
+In QEMU (`make run-messenger YAPPARI_WA=<yappari-wa for linux/arm64>`): `messenger` starts the
+daemon, which connects to WhatsApp through lwIP and Go's TLS and hands over its QR codes (a new
+one every 20 seconds); a screenshot of QEMU's screen decodes with `zbarimg` to the daemon's code
+of that moment. Linking itself was not tried (no account is used in tests), and must not be
+until the random numbers come from hardware (`getrandom`, above).
