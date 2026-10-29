@@ -711,6 +711,20 @@ void modem_poll(u32 ms)
 	glink_poll(&glink);
 }
 
+/* tickless idle: milliseconds from ms until modem_poll has work of its
+ * own (its setup, an answer awaited, a call, the next network poll);
+ * what the modem sends comes with its interrupt (or the next poll).
+ * 0xffffffff: none */
+u32 modem_next_ms(u32 ms)
+{
+	if (!hw || st == ST_OFF || st == ST_FAILED) return 0xffffffffu;
+	if (st != ST_READY || call.state != KOS_CALL_NONE) return 0;
+	for (int i = 0; i < NREQ; i++)
+		if (reqs[i].used) return 0;
+	s32 d = (s32)(next_poll - ms);
+	return d > 0 ? (u32)d : 0;
+}
+
 /* --- for the programs ------------------------------------------------------- */
 
 void modem_status(struct kos_modem *m)

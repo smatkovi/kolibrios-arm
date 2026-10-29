@@ -1,13 +1,16 @@
 /* KolibriOS for ARM, AArch64: the GICv3 interrupt controller (system
- * register interface) and the 100 Hz tick from the virtual timer (PPI 27,
- * what Linux uses below a hypervisor). One core only. */
+ * register interface). The timers' interrupts go to timer.c (the virtual
+ * timer: the device tree's PPI, what Linux uses below a hypervisor). One
+ * core only. */
 #include "kernel.h"
+#include "power.h"
 
 #define GICD_CTLR 0x0000
 #define GICD_TYPER 0x0004
 #define GICD_ISENABLER 0x0100
 #define GICD_ICENABLER 0x0180
 #define GICD_ICPENDR 0x0280
+#define GICD_ICFGR 0x0c00
 #define GICD_IGROUPR 0x0080
 #define GICD_IPRIORITYR 0x0400
 #define GICD_IROUTER 0x6000
@@ -19,10 +22,7 @@
 #define GICR_ICENABLER0 0x0180
 #define GICR_ICPENDR0 0x0280
 #define GICR_IPRIORITYR 0x0400
-#define TIMER_PPI 27
-
 static addr_t gicd, gicr;
-static u32 timer_reload;
 static void (*other_irq)(u32 id);
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
@@ -47,16 +47,17 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 		;
 	/* nothing of what the previous system (Linux, before kexec) had on:
 	 * the shared interrupts off, the private ones but the timer */
+	u32 ppi = timer_intid();
 	u32 nlines = ((rd32(gicd + GICD_TYPER) & 0x1f) + 1) * 32;
 	for (u32 i = 32; i < nlines && i < 1020; i += 32) {
 		wr32(gicd + GICD_ICENABLER + i / 8, 0xffffffffu);
 		wr32(gicd + GICD_ICPENDR + i / 8, 0xffffffffu);
 	}
-	wr32(gicr + SGI + GICR_ICENABLER0, ~(1u << TIMER_PPI));
-	wr32(gicr + SGI + GICR_ICPENDR0, ~(1u << TIMER_PPI));
+	wr32(gicr + SGI + GICR_ICENABLER0, ~(1u << ppi));
+	wr32(gicr + SGI + GICR_ICPENDR0, ~(1u << ppi));
 	wr32(gicr + SGI + GICR_IGROUPR0, 0xffffffffu);
-	wr8(gicr + SGI + GICR_IPRIORITYR + TIMER_PPI, 0xa0);
-	wr32(gicr + SGI + GICR_ISENABLER0, 1u << TIMER_PPI);
+	wr8(gicr + SGI + GICR_IPRIORITYR + ppi, 0xa0);
+	wr32(gicr + SGI + GICR_ISENABLER0, 1u << ppi);
 	SYSREG_W(S3_0_C12_C12_5, SYSREG_R(S3_0_C12_C12_5) | 7);  /* ICC_SRE_EL1 */
 	asm volatile("isb");
 	SYSREG_W(S3_0_C4_C6_0, 0xf0);                             /* ICC_PMR_EL1 */
@@ -64,14 +65,19 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id))
 	SYSREG_W(S3_0_C12_C12_4, SYSREG_R(S3_0_C12_C12_4) & ~2ul); /* ICC_CTLR_EL1: EOI deactivates */
 	SYSREG_W(S3_0_C12_C12_7, 1);                              /* ICC_IGRPEN1_EL1 */
 	asm volatile("isb");
-	/* the tick */
-	timer_reload = SYSREG_R(cntfrq_el0) / 100;
-	SYSREG_W(cntv_tval_el0, timer_reload);
-	SYSREG_W(cntv_ctl_el0, 1);
-	asm volatile("isb");
+	timer_start();
 }
 
-/* a shared peripheral interrupt to this core */
+/* a shared peripheral interrupt to this core, edge or level triggered */
+void gic3_enable_spi_edge(u32 id, bool edge)
+{
+	addr_t cfg = gicd + GICD_ICFGR + 4 * (id / 16);
+	u32 bit = 2u << 2 * (id % 16);
+	wr32(cfg, edge ? rd32(cfg) | bit : rd32(cfg) & ~bit);
+	gic3_enable_spi(id);
+}
+
+/* ... as it is configured (level: the reset value; or what Linux left) */
 void gic3_enable_spi(u32 id)
 {
 	wr8(gicd + GICD_IPRIORITYR + id, 0xa0);
@@ -83,15 +89,14 @@ void gic3_enable_spi(u32 id)
 
 void gic3_irq(void)
 {
+	timer_sync();
 	for (;;) {
 		u64 iar = SYSREG_R(S3_0_C12_C12_0);                       /* ICC_IAR1_EL1 */
 		u32 id = iar & 0xffffff;
 		if (id >= 1020 && id <= 1023) break;
-		if (id == TIMER_PPI) {
-			SYSREG_W(cntv_tval_el0, timer_reload);
-			timer_tick();
-		} else if (other_irq) {
-			other_irq(id);
+		if (!timer_irq(id)) {
+			pstats.irq_other++;
+			if (other_irq) other_irq(id);
 		}
 		SYSREG_W(S3_0_C12_C12_1, iar);                            /* ICC_EOIR1_EL1 */
 		asm volatile("isb");

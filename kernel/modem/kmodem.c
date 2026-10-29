@@ -77,6 +77,33 @@ void kmodem_tick(void)
 	callaudio_poll(ms, call, id);
 }
 
+/* the modem's interrupt (its GLINK edge): from now on what it sends
+ * wakes the kernel, its idle poll can wait for its own timeouts */
+static bool irq_wired;
+
+void kmodem_irq(void)
+{
+	irq_wired = true;
+	kmodem_tick();
+}
+
+/* tickless idle: the next tick kmodem_tick needs. Without the modem's
+ * interrupt, what it sends is seen by a poll at least every second (a
+ * call rings, rmtfs answers within it); the fake modem answers when
+ * polled, as the real one's messages would interrupt */
+#define POLL_IDLE_MS 1000
+
+u32 kmodem_next(void)
+{
+	if (!modem_present()) return 0xffffffffu;
+	u32 ms = ticks * 10, id;
+	if (call_now(&id) != CALLAUDIO_CALL_NONE) return 0;
+	u32 n = modem_next_ms(ms);
+	if (fake) n = MIN(n, fake_next_ms(ms));
+	else if (!irq_wired) n = MIN(n, (u32)POLL_IDLE_MS);
+	return n == 0xffffffffu ? n : (n + 9) / 10;
+}
+
 #define EAX r[0]
 #define EBX r[1]
 #define ECX r[2]

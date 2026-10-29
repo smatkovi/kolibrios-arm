@@ -27,6 +27,8 @@
 #define UXN (1ul << 54)
 
 static u64 *kroot;                      /* the kernel's L1 table */
+static struct mem_region extra_io[8];   /* the architecture's devices (timer.c) */
+static int nextra;
 static u64 *free_roots[64];
 static int nfree;
 
@@ -78,8 +80,8 @@ void mmu_init(void)
 		addr_t ram = plat->ram_base & ~(BLOCK - 1);
 		map(kroot, ram, ram, ALIGN_UP(plat->ram_base + plat->ram_size - ram, BLOCK), normal());
 	}
-	for (int i = 0; i < plat->nio; i++) {
-		const struct mem_region *r = &plat->io[i];
+	for (int i = 0; i < plat->nio + nextra; i++) {
+		const struct mem_region *r = i < plat->nio ? &plat->io[i] : &extra_io[i - plat->nio];
 		u64 attr = r->attr == MAP_DEVICE ? (ATTR_DEV | AP_EL1 | PXN | UXN) :
 			   r->attr == MAP_UNCACHED ? (ATTR_DEV_GRE | AP_EL1 | PXN | UXN) : normal();
 		addr_t pa = r->pa & ~(BLOCK - 1);
@@ -101,6 +103,12 @@ void mmu_init(void)
 	sctlr |= 1ul << 5;                               /* AArch32 EL0's CP15 barriers */
 	SYSREG_W(sctlr_el1, sctlr);
 	asm volatile("isb");
+}
+
+void mmu_add_io(addr_t pa, u32 size)
+{
+	if (nextra < (int)ARRAY_SIZE(extra_io))
+		extra_io[nextra++] = (struct mem_region){ 0, pa, size, MAP_DEVICE };
 }
 
 addr_t mmu_io_va(addr_t pa)

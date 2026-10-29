@@ -4,9 +4,12 @@
  * one program, function 51, are not there yet). The kernel keeps no
  * stack per task: a task's state is its saved trap frame, and a task
  * that waits (functions 5, 10, 23) gets its return value written into
- * that frame when it wakes. Round robin, preempted by the 100 Hz tick. */
+ * that frame when it wakes. Round robin, preempted by the 100 Hz tick;
+ * when nothing is ready, sched_next_work says when the next timeout is
+ * (tickless idle, AArch64). */
 #include "gui.h"
 #include "net.h"
+#include "power.h"
 #ifdef __aarch64__
 #include "../linux/lx.h"
 #endif
@@ -155,6 +158,66 @@ void timer_tick(void)
 		need_resched = true;
 	}
 	gfx_flush();
+#ifdef __aarch64__
+	power_tick();
+#endif
+}
+
+/* ticks from now until t's timeout */
+static u32 until(u32 tick)
+{
+	s32 d = (s32)(tick - ticks);
+	return d > 0 ? (u32)d : 0;
+}
+
+int next_why, next_why_slot;
+
+static u32 n_min(u32 n, u32 v, int why)
+{
+	if (v >= n) return n;
+	next_why = why;
+	return v;
+}
+
+u32 sched_next_work(void)
+{
+	u32 n = NEXT_NONE;
+	next_why = WHY_NONE;
+	for (int i = 1; i < MAX_TASKS; i++) {
+		struct task *t = &tasks[i];
+		u32 v = NEXT_NONE;
+		switch (t->state) {
+		case T_READY:
+			v = 0;
+			break;
+		case T_SLEEP:
+		case T_WAIT_TIMEOUT:
+			v = until(t->wake_tick);
+			break;
+#ifdef __aarch64__
+		case T_LX_WAIT:
+			/* a Linux thread's deadline, a count of the generic timer */
+			if (t->lx && t->lx->deadline) v = timer_ticks_until(t->lx->deadline);
+			break;
+#endif
+		default:
+			break;
+		}
+		if (v < n) {
+			n = v;
+			next_why = WHY_TASK;
+			next_why_slot = i;
+		}
+	}
+	if (plat->tick) n = n_min(n, plat->next_tick ? plat->next_tick() : 0, WHY_PLAT);
+	n = n_min(n, kmodem_next(), WHY_MODEM);
+	if (scr.dirty_y0 < scr.dirty_y1) n = n_min(n, 1, WHY_SCREEN);
+#ifdef __aarch64__
+	extern u32 net_next(void);
+	n = n_min(n, net_next(), WHY_NET);
+	n = n_min(n, power_next(), WHY_POWER);
+#endif
+	return n;
 }
 
 void *uptr(struct task *t, u32 va, u32 len)

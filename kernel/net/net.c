@@ -117,6 +117,15 @@ void net_tick(void)
 	sys_check_timeouts();
 }
 
+/* tickless idle: the ticks until lwIP's next timeout (its cyclic timers
+ * included); frames come with the device's interrupt */
+u32 net_next(void)
+{
+	if (!started) return 0xffffffffu;
+	u32 ms = sys_timeouts_sleeptime();
+	return ms == SYS_TIMEOUTS_SLEEPTIME_INFINITE ? 0xffffffffu : (ms + 9) / 10;
+}
+
 u32 net_addr(void)
 {
 	return started ? ip4_addr_get_u32(netif_ip4_addr(&nif)) : 0;

@@ -105,6 +105,10 @@ struct platform {
 	bool (*display_flush)(int y0, int y1); /* false: not now, again later */
 	u32 (*rtc_time)(void);        /* Unix time, or 0 */
 	void (*tick)(void);           /* every 1/100 s, interrupts off */
+	/* tickless idle (AArch64): the ticks from now until tick() needs to
+	 * run again (its polls, the watchdog), 0xffffffff: only after an
+	 * interrupt; without it, a platform with a tick() is ticked always */
+	u32 (*next_tick)(void);
 	void (*panic_hook)(void);     /* after the panic's text is on the screen */
 	bool cached_data;             /* D-cache on */
 };
@@ -146,6 +150,8 @@ struct modem_hw;
 void kmodem_start(const struct modem_hw *hw);
 void kmodem_fake(void);
 void kmodem_tick(void);
+u32 kmodem_next(void);          /* ticks until it needs kmodem_tick (power.h) */
+void kmodem_irq(void);          /* the modem's GLINK interrupt: wired, and now */
 struct callaudio_hw;
 void kcallaudio_start(const struct callaudio_hw *hw);
 

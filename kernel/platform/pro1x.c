@@ -18,12 +18,17 @@
  *    (the RAM console), a screenshot at 0x5cc00000 (a PPM, at the end of
  *    the lifetime and at a panic): the spare part of the splash memory,
  *    which nobody else writes and which survives a reset;
- *  - the APSS watchdog, fed every second; kolibri.lifetime=N on the
- *    command line stops that after N s, so that an unattended test ends
- *    in the boot menu again;
+ *  - the APSS watchdog, fed every third of its bark time (10 s with
+ *    pro1x-kexec.sh's 32 s); kolibri.lifetime=N on the command line
+ *    stops that after N s, so that an unattended test ends in the boot
+ *    menu again;
  *  - the keyboard: an 8x8 matrix behind an AW9523B GPIO expander on a GENI
  *    I2C engine (polled, its FIFOs), the modifier keys as TLMM GPIOs;
- *  - the touch screen, a Goodix GT9286 on bit-banged GPIO I2C, as the mouse.
+ *  - the touch screen, a Goodix GT9286 on bit-banged GPIO I2C, as the mouse;
+ *  - their interrupts (the expander's INT, the modifier keys, the touch
+ *    screen's INT) through the TLMM's summary interrupt, so that an idle
+ *    kernel sleeps until a key (tickless idle, power.h); polled while keys
+ *    are held, and every 50 ms (250 ms the touch screen) without it.
  *
  * kolibri.noinput leaves the keyboard and the touch screen alone. The
  * clock (the PMIC's RTC, over SPMI) is not driven: the time starts at 0. */
@@ -34,6 +39,7 @@
 #include "../modem/callaudio.h"
 #include "../modem/rpm.h"
 #include "rng.h"
+#include "power.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -54,6 +60,10 @@ static int nstreams;
 static addr_t fb_pa;
 static int fb_w, fb_h, fb_stride;      /* the panel, portrait; stride in bytes */
 static u32 lifetime;                   /* s, 0: forever */
+static u32 powertest;                  /* kolibri.powertest=N: min */
+static u32 tlmm_irq, modem_irq;        /* the TLMM's summary interrupt, the modem's GLINK edge's */
+static u32 reserved[8][2];             /* the TLMM's gpio-reserved-ranges: not ours to touch */
+static int nreserved;
 static bool noinput;
 /* the modem (docs/pro1x-modem.md): SMEM, the rmtfs buffer, the APCS IPC
  * register and the bit that kicks its GLINK edge, the EFS images (initrd) */
@@ -118,6 +128,7 @@ static void p_putc(char ch)
 #define WDT_MAX 0xfffff                /* about 32 s */
 
 static bool wdt_feeding = true, wdt_was_running;
+static u32 wdt_every = 100, wdt_next;  /* ticks: the feeding interval, the next one */
 
 /* first thing (the probe, MMU off): kept running, or started */
 static void wdt_start(void)
@@ -131,6 +142,9 @@ static void wdt_start(void)
 		wr32(w + WDT_BITE, WDT_MAX);
 		wr32(w + WDT_EN, 1);
 	}
+	/* fed every third of the bark time (32768 Hz counts), 1-10 s */
+	u32 bark = rd32(w + WDT_BARK) & WDT_MAX;
+	wdt_every = MAX(100u, MIN(1000u, bark / 3 * 100 / 32768));
 }
 
 /* --- the display ----------------------------------------------------- */
@@ -439,6 +453,12 @@ static int kerrors;
 static u8 rep_sc;
 static u32 rep_tick;
 static bool fn;
+static bool input_irq;                 /* the TLMM interrupts are on (tlmm_irq_init) */
+/* the next polls: when, and whether at all (else: at an interrupt) */
+static u32 kbd_due, ts_due;
+static bool kbd_sched = true, ts_sched = true;
+#define KBD_IDLE_POLL 5                /* without the interrupt: 50 ms */
+#define TS_IDLE_POLL 25
 
 static struct { int pin; u16 code; bool low; bool down, last; } gkey[8];
 static int ngkeys;
@@ -582,6 +602,28 @@ static void kbd_init(void)
 		kbd_addr, kbd_int, ngkeys);
 }
 
+/* ticks from now until t */
+static u32 until(u32 t)
+{
+	s32 d = (s32)(t - ticks);
+	return d > 0 ? (u32)d : 0;
+}
+
+static void kbd_scan_now(void);
+
+/* the next poll: while something is changing or held, by the tick */
+static void kbd_plan(bool held)
+{
+	u32 n = input_irq || (!kbd_ok && !ngkeys) ? 0xffffffffu : KBD_IDLE_POLL;
+	for (int i = 0; i < ngkeys; i++)
+		if (gkey[i].last != gkey[i].down) n = 1;       /* not stable yet */
+	if (kconfirm) n = 1;
+	if (held) n = MIN(n, 3u);
+	if (rep_sc) n = MIN(n, MAX(until(rep_tick), 1u));
+	kbd_sched = n != 0xffffffffu;
+	kbd_due = ticks + n;
+}
+
 static void kbd_poll(void)
 {
 	/* the modifiers, debounced over two ticks */
@@ -598,36 +640,54 @@ static void kbd_poll(void)
 		input_key(rep_sc, false);
 		rep_tick = ticks + 3;
 	}
-	if (!kbd_ok) return;
 	bool held = false;
 	for (int c = 0; c < 8; c++) held |= kdown[c] != 0;
+	if (!kbd_ok) {
+		kbd_plan(false);
+		return;
+	}
 	bool changed;
 	if (gpio_ok(kbd_int)) {
 		changed = !gpio_in(kbd_int);
 	} else {
 		u8 rows = 0xff;
-		changed = !(ticks & 1) && aw_rd(AW_IN_P0, &rows) && rows != 0xff;
+		changed = aw_rd(AW_IN_P0, &rows) && rows != 0xff;
 	}
 	/* a held key hides others on its lines from INT: polled meanwhile */
-	if (!changed && !kconfirm && !(held && ticks % 3 == 0)) return;
+	if (!changed && !kconfirm && !held) {
+		kbd_plan(false);
+		return;
+	}
+	kbd_scan_now();
+}
+
+static void kbd_scan_now(void)
+{
 	u8 st[8];
 	bool ok = kbd_scan(st);
 	kbd_idle();
+	bool held = false;
+	for (int c = 0; c < 8; c++) held |= kdown[c] != 0;
 	if (!ok) {
 		if (++kerrors == 50) {
 			kprintf("pro1x: keyboard: I2C errors, given up\n");
 			kbd_ok = false;
 		}
+		kbd_plan(held);
 		return;
 	}
 	/* taken when two scans in a row agree */
 	if (memcmp(st, kraw, 8)) {
 		memcpy(kraw, st, 8);
 		kconfirm = true;
+		kbd_plan(held);
 		return;
 	}
 	kconfirm = false;
 	kbd_report(st);
+	held = false;
+	for (int c = 0; c < 8; c++) held |= kdown[c] != 0;
+	kbd_plan(held);
 }
 
 /* --- the touch screen: Goodix on bit-banged I2C ---------------------- */
@@ -777,8 +837,11 @@ static void ts_poll(void)
 		latched = rd32(gpio_reg(ts_irq, TLMM_INTR_STATUS)) & 1;
 		if (latched) wr32(gpio_reg(ts_irq, TLMM_INTR_STATUS), 0);
 	}
-	/* without a pulse: every 50 ms while touched, every 250 ms else */
-	if (!latched && ticks % (ts_down ? 5 : 25)) return;
+	/* without a pulse: every 50 ms while touched, every 250 ms else
+	 * (with the interrupt: only while touched) */
+	if (!latched && (!ts_sched || (s32)(ts_due - ticks) > 0)) return;
+	ts_sched = ts_down || !input_irq;
+	ts_due = ticks + (ts_down ? 5 : TS_IDLE_POLL);
 	u8 b[9];
 	if (!gt_read(GT_COOR, b, sizeof(b)) || !(b[0] & 0x80)) return;
 	gt_write(GT_COOR, 0);
@@ -794,6 +857,8 @@ static void ts_poll(void)
 		ts_y = MAX(0, MIN((fb_w - 1 - px) / 2, lh - 1));
 		input_mouse_abs(ts_x, ts_y, 1);
 		ts_down = true;
+		ts_sched = true;
+		ts_due = ticks + 5;
 	} else if (ts_down) {
 		input_mouse_abs(ts_x, ts_y, 0);
 		ts_down = false;
@@ -914,6 +979,11 @@ static void modem_init(void)
 		smem_pa, smem_size >> 10, rmtfs_pa, apcs_pa, apcs_bit, efs_pa, efs_size >> 10);
 	kmodem_start(&hw);
 	callaudio_start();
+	/* its GLINK edge's interrupt: what it sends wakes the kernel */
+	if (modem_irq && modem_present()) {
+		gic3_enable_spi_edge(modem_irq, true);
+		kprintf("pro1x: modem: its interrupt INTID %u\n", modem_irq);
+	}
 }
 
 /* the PRNG (qcom,prng-ee: the firmware set it up): its AHB clock voted on
@@ -981,9 +1051,12 @@ static void wifi_power(void)
 	for (u32 i = 0; i < ARRAY_SIZE(rails); i++) rpm_ldo(rails[i], 0, true);
 }
 
+static void p_other_irq(u32 id);
+static void tlmm_irq_init(void);
+
 static void p_init(void)
 {
-	gic3_init(gicd, gicr, NULL);
+	gic3_init(gicd, gicr, p_other_irq);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
 	prng_init();
 	if (wifi) wifi_power();
@@ -994,6 +1067,7 @@ static void p_init(void)
 	}
 	kbd_init();
 	ts_init();
+	tlmm_irq_init();
 }
 
 static void p_irq(void)
@@ -1001,21 +1075,145 @@ static void p_irq(void)
 	gic3_irq();
 }
 
+static bool due(bool sched, u32 at)
+{
+	return sched && (s32)(ticks - at) >= 0;
+}
+
 static void p_tick(void)
 {
-	if (wdt_feeding && ticks % 100 == 0) {
+	if (wdt_feeding && (s32)(ticks - wdt_next) >= 0) {
 		if (lifetime && ticks >= lifetime * 100) {
 			shot();
 			kprintf("pro1x: lifetime over: the watchdog resets the phone\n");
 			wdt_feeding = false;
-		} else if (wdt) {
-			wr32(io_va(wdt) + WDT_RST, 1);
+		} else {
+			if (wdt) wr32(io_va(wdt) + WDT_RST, 1);
+			wdt_next = ticks + wdt_every;
+			if (lifetime && (s32)(wdt_next - lifetime * 100) > 0) wdt_next = lifetime * 100;
 		}
 	}
 	if (!noinput) {
-		kbd_poll();
-		ts_poll();
+		if (due(kbd_sched, kbd_due)) kbd_poll();
+		if (due(ts_sched, ts_due)) ts_poll();
 	}
+}
+
+/* tickless idle: the watchdog, the lifetime, the input's polls */
+static u32 p_next_tick(void)
+{
+	u32 n = wdt_feeding ? until(wdt_next) : 0xffffffffu;
+	if (!noinput) {
+		if (kbd_sched) n = MIN(n, until(kbd_due));
+		if (ts_sched && ts_ok) n = MIN(n, until(ts_due));
+	}
+	return n;
+}
+
+/* --- the TLMM's interrupts: the keyboard's, the touch screen's -------- */
+
+#define INTR_ENABLE (1u << 0)
+#define INTR_POL_HIGH (1u << 1)
+#define INTR_DETECT_SHIFT 2            /* 0 level, 1 rising, 2 falling, 3 both */
+#define INTR_RAW_STATUS (1u << 4)
+#define INTR_TARGET_SHIFT 5
+#define INTR_TARGET_KPSS 3u            /* (Linux's pinctrl-sm6115.c) */
+
+static bool pin_reserved(int pin)
+{
+	for (int i = 0; i < nreserved; i++)
+		if ((u32)pin >= reserved[i][0] && (u32)pin < reserved[i][0] + reserved[i][1]) return true;
+	return false;
+}
+
+static bool pin_ours(int pin)
+{
+	if (pin == kbd_int || pin == ts_irq) return true;
+	for (int i = 0; i < ngkeys; i++)
+		if (gkey[i].pin == pin) return true;
+	return false;
+}
+
+/* an edge interrupt to this processor (pinctrl-msm.c's
+ * msm_gpio_irq_set_type with intr_detection_width 2), unmasked */
+static void pin_irq(int pin, u32 detect)
+{
+	addr_t c = gpio_reg(pin, TLMM_INTR_CFG);
+	u32 v = rd32(c) & ~(0x7u << INTR_TARGET_SHIFT | 3u << INTR_DETECT_SHIFT | INTR_POL_HIGH);
+	v |= INTR_TARGET_KPSS << INTR_TARGET_SHIFT | detect << INTR_DETECT_SHIFT | INTR_POL_HIGH |
+	     INTR_RAW_STATUS;
+	wr32(c, v);
+	wr32(gpio_reg(pin, TLMM_INTR_STATUS), 0);
+	wr32(c, v | INTR_ENABLE);
+}
+
+/* every GPIO interrupt Linux left on masked but ours (an unknown one
+ * would hold the summary interrupt for ever), ours on: the expander's
+ * INT falling, the modifiers' and the touch screen's either way */
+static void tlmm_irq_init(void)
+{
+	if (noinput || !tlmm_irq || !timer_tickless()) return;
+	int off = 0;
+	for (int pin = 0; pin < NPINS; pin++) {
+		if (!gpio_ok(pin) || pin_reserved(pin) || pin_ours(pin)) continue;
+		addr_t c = gpio_reg(pin, TLMM_INTR_CFG);
+		u32 v = rd32(c);
+		if (!(v & INTR_ENABLE)) continue;
+		wr32(c, v & ~INTR_ENABLE);
+		wr32(gpio_reg(pin, TLMM_INTR_STATUS), 0);
+		off++;
+	}
+	int on = 0;
+	if (kbd_ok && gpio_ok(kbd_int) && !pin_reserved(kbd_int)) {
+		pin_irq(kbd_int, 2);
+		on++;
+	}
+	for (int i = 0; i < ngkeys; i++)
+		if (!pin_reserved(gkey[i].pin)) {
+			pin_irq(gkey[i].pin, 3);
+			on++;
+		}
+	if (ts_ok && gpio_ok(ts_irq) && !pin_reserved(ts_irq)) {
+		pin_irq(ts_irq, 3);
+		on++;
+	}
+	/* without the keyboard's INT a key is only seen by polling */
+	if (!kbd_ok || !gpio_ok(kbd_int)) {
+		kprintf("pro1x: input interrupts: not without the keyboard's INT\n");
+		return;
+	}
+	gic3_enable_spi(tlmm_irq);
+	input_irq = true;
+	kbd_sched = ts_sched = true;           /* a first look, then by interrupt */
+	kbd_due = ts_due = ticks;
+	kprintf("pro1x: input interrupts: %d GPIOs through INTID %u (%d of Linux's masked)\n", on, tlmm_irq, off);
+}
+
+static void tlmm_isr(void)
+{
+	for (int pin = 0; pin < NPINS; pin++) {
+		if (!gpio_ok(pin) || pin_reserved(pin)) continue;
+		if (!(rd32(gpio_reg(pin, TLMM_INTR_STATUS)) & 1)) continue;
+		wr32(gpio_reg(pin, TLMM_INTR_STATUS), 0);
+		if (pin == ts_irq) {
+			ts_sched = true;
+			ts_due = ticks;
+		} else if (pin_ours(pin)) {
+			kbd_sched = true;
+			kbd_due = ticks;
+		} else {
+			addr_t c = gpio_reg(pin, TLMM_INTR_CFG);
+			wr32(c, rd32(c) & ~INTR_ENABLE);
+		}
+	}
+	if (due(kbd_sched, kbd_due)) kbd_poll();
+	if (due(ts_sched, ts_due)) ts_poll();
+}
+
+static void p_other_irq(u32 id)
+{
+	if (id == tlmm_irq && input_irq) tlmm_isr();
+	else if (id == modem_irq && modem_irq) kmodem_irq();
 }
 
 static void p_panic(void)
@@ -1040,6 +1238,7 @@ struct platform platform_pro1x = {
 	.display_flush = p_display_flush,
 	.rtc_time = p_rtc_time,
 	.tick = p_tick,
+	.next_tick = p_next_tick,
 	.panic_hook = p_panic,
 	.cached_data = true,
 };
@@ -1157,6 +1356,14 @@ bool pro1x_probe(const void *fdt)
 	int t = fdt_find_compatible(fdt, "qcom,sm6115-tlmm", -1, &ac, &sc);
 	u32 tlmm_ph = t >= 0 ? fdt_u32(fdt, t, "phandle", 0) : 0;
 	for (int i = 0; i < 3; i++) reg_io(fdt, t, ac, sc, i, &tlmm[i], MAP_DEVICE);
+	/* its summary interrupt (an SPI), the GPIOs that are not Linux's */
+	p = t >= 0 ? fdt_prop(fdt, t, "interrupts", &len) : NULL;
+	if (p && len >= 12 && cell(p, 0) == 0) tlmm_irq = 32 + cell(p, 1);
+	p = t >= 0 ? fdt_prop(fdt, t, "gpio-reserved-ranges", &len) : NULL;
+	for (int i = 0; p && i + 1 < len / 4 && nreserved < (int)ARRAY_SIZE(reserved); i += 2) {
+		reserved[nreserved][0] = cell(p, i);
+		reserved[nreserved++][1] = cell(p, i + 1);
+	}
 
 	/* the keyboard: its I2C engine (the expander's parent), its map */
 	for (int i2c = -1; (i2c = fdt_find_compatible(fdt, "qcom,geni-i2c", i2c, &ac, &sc)) >= 0; ) {
@@ -1230,6 +1437,8 @@ bool pro1x_probe(const void *fdt)
 	int edge = mp >= 0 ? fdt_next_child(fdt, mp, -1) : -1;
 	while (edge >= 0 && strcmp(fdt_node_name(fdt, edge), "glink-edge"))
 		edge = fdt_next_child(fdt, mp, edge);
+	p = edge >= 0 ? fdt_prop(fdt, edge, "interrupts", &len) : NULL;
+	if (p && len >= 12 && cell(p, 0) == 0) modem_irq = 32 + cell(p, 1);
 	p = edge >= 0 ? fdt_prop(fdt, edge, "mboxes", &len) : NULL;
 	if (p && len >= 8) {
 		int mb = fdt_find_phandle(fdt, cell(p, 0));
@@ -1258,6 +1467,13 @@ bool pro1x_probe(const void *fdt)
 	const char *args = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
 	if (args) {
 		word(args, len, "kolibri.lifetime=", &lifetime);
+		/* a power test ends with a reset into the boot menu (as a
+		 * lifetime), half a minute after its last line */
+		if (word(args, len, "kolibri.powertest", NULL)) {
+			word(args, len, "kolibri.powertest=", &powertest);
+			if (!powertest) powertest = 10;
+			if (!lifetime) lifetime = powertest * 60 + 30;
+		}
 		noinput = word(args, len, "kolibri.noinput", NULL);
 		nomodem = word(args, len, "kolibri.nomodem", NULL);
 		fakemodem = word(args, len, "kolibri.fakemodem", NULL);

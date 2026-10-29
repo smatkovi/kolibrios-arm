@@ -151,10 +151,15 @@ arch_enter:
 	mov	sp, x0
 	b	trap_return
 
-/* nothing to run: interrupts on, no stack in use */
+/* nothing to run: arch_idle (timer.c) with interrupts masked waits for
+ * the next work or an interrupt, which is taken here once they are open
+ * again: its frame on an empty stack, as from the old "wfi; b ." */
 	.global idle_loop
 idle_loop:
-	wfi
+	msr	daifset, #2
+	bl	arch_idle
+	msr	daifclr, #2
+	isb
 	b	idle_loop
 
 	.section .bss

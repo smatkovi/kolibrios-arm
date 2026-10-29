@@ -26,6 +26,7 @@ struct modem_hw {
 void modem_start(const struct modem_hw *hw);
 /* the work: every tick, ms the time since boot */
 void modem_poll(u32 ms);
+u32 modem_next_ms(u32 ms);        /* when it has work of its own again */
 bool modem_present(void);
 bool modem_ipcrtr_adopted(void);  /* Linux's channel taken over (tests) */
 

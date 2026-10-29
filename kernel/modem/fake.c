@@ -625,6 +625,18 @@ void fake_ring(const char *number)
 	if (voice_client) call_ind(voice_client);
 }
 
+/* when its next timed event is due (ms from ms), 0xffffffff: none */
+u32 fake_next_ms(u32 ms)
+{
+	u32 n = 0xffffffffu;
+	for (int i = 0; i < 8; i++) {
+		if (!todo[i].what) continue;
+		s32 d = (s32)(todo[i].at - ms);
+		n = MIN(n, d > 0 ? (u32)d : 0u);
+	}
+	return n;
+}
+
 void fake_poll(u32 ms)
 {
 	now = ms;

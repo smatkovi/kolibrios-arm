@@ -3,6 +3,7 @@
  * lr in x13 and x14, its pc in ELR and its CPSR in SPSR. */
 #include "task.h"
 #include "frame.h"
+#include "power.h"
 
 extern void arch_enter(struct frame64 *f) __attribute__((noreturn));
 extern char stack_top[];
@@ -85,12 +86,20 @@ extern int fdt_root_compatible(const void *fdt, const char *compat);
 extern bool virt_probe(const void *fdt), pro1x_probe(const void *fdt);
 extern addr_t boot_args[3];
 
+/* the platform, and what the architecture reads from the device tree
+ * while the MMU is off (the kernel does not map it): the timers, PSCI */
 const struct platform *arch_platform(void)
 {
 	const void *fdt = (const void *)boot_args[0];
+	const struct platform *p;
 	if ((fdt_root_compatible(fdt, "qcom,sm6115") || fdt_root_compatible(fdt, "fxtec,pro1x")) &&
-	    pro1x_probe(fdt))
-		return &platform_pro1x;
-	virt_probe(fdt);
-	return &platform_virt;
+	    pro1x_probe(fdt)) {
+		p = &platform_pro1x;
+	} else {
+		virt_probe(fdt);
+		p = &platform_virt;
+	}
+	timer_probe(fdt);
+	psci_probe(fdt);
+	return p;
 }

@@ -38,6 +38,8 @@ The command line:
 | `kolibri.fakemodem` | a modem in RAM instead (QEMU with the phone's device tree) |
 | `kolibri.ipcrtr=adopt` | Linux's `IPCRTR` channel taken over as it is (`pro1x-kexec.sh -m` passes it; `docs/pro1x-modem.md`) |
 | `kolibri.wifi` | the WLAN part's rails on through the RPM, the WLAN firmware's QMI service asked what it is (with `-m`; `docs/pro1x-network.md`) |
+| `kolibri.powertest=N` | N minutes of power measurement, a console line a minute, then the reset (as a lifetime of N minutes and 30 s); `docs/power.md` |
+| `kolibri.tick=periodic` | the 100 Hz tick also in idle (no tickless idle), the input polled as before |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.
@@ -81,9 +83,9 @@ tools/pro1x-read.py --shot /tmp/kolibri.ppm     # as root; --clear wipes it afte
 | RAM | `/memory` without `/reserved-memory` (and the device tree), cut at 2 MiB: about 7.8 GiB in some ten banks. Only these are mapped; the firmware's memory must not even be read speculatively |
 | display | the pipes VIG0 and DMA0 pointed at `/chosen`'s simple-framebuffer, the display's SMMU context banks bypassed (`SCTLR = 0`), a flush of the control path. A blue stripe on the panel's top (the left edge in landscape) when this worked |
 | screen | 1080x540 XRGB in RAM; the flush doubles each pixel and turns it clockwise, panel line by panel line, 64-bit stores into the framebuffer (Device-GRE) |
-| interrupts, timer | GICv3 (what Linux left enabled turned off), the virtual timer at 100 Hz |
-| watchdog | the APSS watchdog (`qcom,kpss-wdt`), fed every second from the timer tick |
-| keyboard | an 8x8 matrix behind an AW9523B on the GENI I2C engine at 0x4a84000, polled through its FIFOs; scanned when the expander's INT (TLMM GPIO 107) is low and every 30 ms while keys are held, two scans in a row agreeing; the key map from the device tree; Shift, Ctrl, Alt, Fn and Home as TLMM GPIOs (gpio-keys). Fn with 1-0 gives F1-F10, with the arrows Page Up/Down, Home, End |
+| interrupts, timer | GICv3 (what Linux left enabled turned off), the virtual timer at the device tree's PPI (INTID 19 on the SM6115, `/timer`'s third interrupt), 100 Hz while tasks run, one interrupt at the next deadline when idle (`docs/power.md`) |
+| watchdog | the APSS watchdog (`qcom,kpss-wdt`), fed every third of its bark time (10 s) from the timer tick |
+| keyboard | an 8x8 matrix behind an AW9523B on the GENI I2C engine at 0x4a84000, polled through its FIFOs; scanned when the expander's INT (TLMM GPIO 107) is low and every 30 ms while keys are held, two scans in a row agreeing; INT, the modifier keys and the touch screen's INT as TLMM interrupts (the summary interrupt, SPI 227), so that an idle kernel sleeps until a key; the key map from the device tree; Shift, Ctrl, Alt, Fn and Home as TLMM GPIOs (gpio-keys). Fn with 1-0 gives F1-F10, with the arrows Page Up/Down, Home, End |
 | touch screen | a Goodix GT9286 on bit-banged I2C (TLMM GPIOs 6 and 7), its interrupt pulses latched by the TLMM, as the mouse (a touch is the left button) |
 | clock | not driven (the PMIC's RTC is behind SPMI): the time starts at 0 |
 
