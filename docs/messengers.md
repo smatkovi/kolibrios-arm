@@ -122,28 +122,38 @@ memory between processes, `ptrace`.
 
 ## Telegram: the purple host
 
-`purple-host` is a C program of its own (`tools/purple-host/`), linked
-statically with musl: libpurple's core (no UI), tdlib-purple registered
-as a static protocol plugin, GLib's main loop, the JSON-lines protocol on
-stdin/stdout. libpurple's UI operations (request fields, the account's
-connection, conversations) become the protocol's signals.
+`purple-host` (`tools/purple-host/`) is a C program of its own, linked
+statically with musl: libpurple's core (no UI), tdlib-purple as a static
+protocol (`purple_init_telegram_tdlib_plugin()`), GLib's main loop, the
+JSON lines of `yappari-wa -stdio` on stdin/stdout. Methods `Status`,
+`Login(phone)` (tdlib-purple's account name is the phone number),
+`InputReply(id, text)`, `InputCancel(id)`, `SendText(who, text)`, `Logout`;
+signals `StateChanged`, `Input` (what the plugin asks: the login code, the
+password), `Notice`, `Message`, `Error`.
 
-The build (`tools/purple-host/build.sh`, not run yet):
+The protocol is [UnitedMarsupials' tdlib-purple](https://github.com/UnitedMarsupials/tdlib-purple)
+0.9.4 (2026-10-27), the maintained fork of ars3niy's tdlib-purple (which
+stopped at TDLib 1.7.9: Telegram refuses that one now with
+`UPDATE_APP_TO_LOGIN`, tried). Its licence: GPL 2 or later, as upstream
+(the `LICENSE` file; GitHub shows NOASSERTION only because it does not
+recognise the file). TDLib is 1.8.67 (commit `bc9c263e2`); the fork
+detects the version and probes the API.
 
-| step | what | notes |
-| --- | --- | --- |
-| toolchain | `zig cc -target aarch64-linux-musl` (Arch's `zig`), or a musl cross GCC | the host has no musl or AArch64 Linux compiler today |
-| zlib, OpenSSL 3, libxml2 | static, `no-shared`, `--disable-shared` | TDLib needs OpenSSL and zlib; libpurple needs libxml2 |
-| GLib 2.8x | meson, `-Ddefault_library=static`, a cross file | libpurple's main loop and its types |
-| libpurple 2.14.x | `--disable-gtkui --disable-consoleui --disable-perl --disable-tcl --disable-gstreamer --disable-vv --disable-idn --disable-avahi --disable-dbus --disable-nm --disable-plugins --with-static-prpls=` (none of its own) | only `libpurple.a` |
-| TDLib 1.8.x | first natively: `cmake --build . --target prepare_cross_compiling` (generates the sources with gperf and its own generators), then cross: `tdjson_static` | the largest part: about 1.5 h on 2 cores and up to 4 GB RAM per compile job; some 3 GB on disk |
-| tdlib-purple | cmake with `-DNoVoip=True -DNoLottie=True -DNoWebp=True -DNoTranslations=True`, as a static library | its `purple_init_plugin` called from purple-host |
-| purple-host | some 800 lines of C | links all of the above into one static ELF |
+`tools/purple-host/build.sh WORKDIR` builds all of it with `zig cc -target
+aarch64-linux-musl` (Arch's `zig`), the sources pinned by SHA-256 and
+commit: zlib 1.3.1, OpenSSL 3.0.15 (the CPU's features from `AT_HWCAP` with
+musl too: else it probes with instructions and SIGILL, which the Linux
+personality does not deliver), GLib 2.80.5 (meson, static), libxml2
+2.12.9, libpurple 2.14.14 (no UI, no protocols of its own, no D-Bus, no
+NLS), fmt 11.0.2, TDLib (its code generators natively first; its `tdjson`
+static, which zig's linker needs), tdlib-purple without calls, animated
+stickers and translations. TDLib takes some 1.5 h on 2 cores; the work
+directory some 5 GB. The result: one static program of 35 MB.
 
-Its Linux needs beyond Go's: musl's threads (`clone` with
-`CLONE_SETTLS`, `CLONE_CHILD_CLEARTID`, whose wake on thread exit
-`pthread_join` waits for), `poll`, `pipe2`, `brk`, `membarrier` (may fail),
-`timerfd` if TDLib uses it (to measure under `qemu-aarch64 -strace`).
+`make run-telegram PURPLE_HOST=WORKDIR/build/host/purple-host
+TG_NUMBER=+...`: QEMU with the messenger in Telegram mode (`kolibri.args=
+telegram,NUMBER`), logging in with that number at once.
+
 TDLib's database (the login) is in the RAM file system, the same
 persistence question as WhatsApp's.
 
@@ -158,7 +168,8 @@ persistence question as WhatsApp's.
   QR code (`lib/qr.h`, checked with zbarimg against the daemon's code)
 - [ ] the chats in `messenger`: the conversation list, a conversation, sending (the daemon has
   all of it: `GetContacts`, `Message`, `SendText`, ...)
-- [ ] the purple host's build and program
+- [x] the purple host's build and program (`tools/purple-host/`, on the host under qemu-aarch64:
+  Telegram's servers answer and ask for the login code)
 - [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), randomness, persistence
 
 In QEMU (`make run-messenger YAPPARI_WA=<yappari-wa for linux/arm64>`): `messenger` starts the

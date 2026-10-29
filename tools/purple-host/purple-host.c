@@ -23,7 +23,7 @@
 #define UI_ID "kolibri"
 #define PRPL "telegram-tdlib"
 
-gboolean purple_host_init_telegram(void);   /* tdshim.cpp */
+gboolean purple_init_telegram_tdlib_plugin(void);   /* tdlib-purple, a static protocol */
 
 static PurpleAccount *account;
 static const char *state = "logged-out";
@@ -411,7 +411,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "purple-host: libpurple did not start\n");
 		return 1;
 	}
-	if (!purple_host_init_telegram()) {
+	if (!purple_init_telegram_tdlib_plugin()) {
 		fprintf(stderr, "purple-host: tdlib-purple did not register\n");
 		return 1;
 	}
