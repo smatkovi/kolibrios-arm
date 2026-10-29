@@ -121,7 +121,13 @@ void kmain(void)
 		while (run[n] && run[n] != ' ' && at + n + 1 < sizeof(path)) n++;
 		memcpy(path + at, run, n);
 		path[at + n] = 0;
-		if (load_program(path, NULL, NULL) < 0) kprintf("kolibri.run: %s not started\n", run);
+		/* kolibri.args=a,b: its parameters, "a b" */
+		char params[96] = "";
+		const char *pa = boot_arg("kolibri.args");
+		for (u32 i = 0; pa && pa[i] && pa[i] != ' ' && i + 1 < sizeof(params); i++)
+			params[i] = pa[i] == ',' ? ' ' : pa[i], params[i + 1] = 0;
+		if (load_program(path, params[0] ? params : NULL, NULL) < 0)
+			kprintf("kolibri.run: %s not started\n", run);
 	}
 #endif
 	gfx_flush();

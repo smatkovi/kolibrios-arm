@@ -181,8 +181,18 @@ run-messenger:
 	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/yappari-wa=$(YAPPARI_WA) etc/ssl/certs/ca-certificates.crt=$(CA_BUNDLE)" all
 	$(QEMU64) -kernel build/arm64/kernel.bin -append "kolibri.run=/sys/messenger"
 
+# the messenger with Telegram: PURPLE_HOST, tools/purple-host/build.sh's
+# purple-host; TG_NUMBER: a phone number to log in with at once (tests)
+PURPLE_HOST ?=
+TG_NUMBER ?=
+run-telegram:
+	@[ -f "$(PURPLE_HOST)" ] || { echo "PURPLE_HOST=<tools/purple-host/build.sh's purple-host>"; exit 1; }
+	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/purple-host=$(PURPLE_HOST) etc/ssl/certs/ca-certificates.crt=$(CA_BUNDLE)" all
+	$(QEMU64) -kernel build/arm64/kernel.bin \
+		-append "kolibri.run=/sys/messenger kolibri.args=telegram$(if $(TG_NUMBER),$(comma)$(TG_NUMBER))"
+
 clean:
 	rm -rf build
 
-.PHONY: all run run-net run-linux run-messenger clean dirs FORCE
+.PHONY: all run run-net run-linux run-messenger run-telegram clean dirs FORCE
 .SECONDARY:

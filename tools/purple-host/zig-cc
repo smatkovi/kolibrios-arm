@@ -1,0 +1,3 @@
+#!/bin/sh
+# the C compiler for static AArch64 Linux programs with musl (zig's)
+exec zig cc -target aarch64-linux-musl "$@"
