@@ -37,30 +37,35 @@ its SIM unlocked and its network registration from Linux's time.
 GLINK has no notion of the apps processor starting again while the modem
 runs on. A channel Linux left open stays open on the modem's side, with
 Linux's channel ids and receive buffers (intents), which KolibriOS does
-not know. So `pro1x-kexec.sh -m` closes Linux's `IPCRTR` cleanly before
-the jump, the way unloading `qrtr-smd` does:
+not know. `pro1x-kexec.sh -m` therefore leaves `IPCRTR` open and
+KolibriOS takes it over (`kolibri.ipcrtr=adopt`), as it does with the
+ADSP's APR channel (`docs/pro1x-audio.md`):
 
 1. `ofonod` is stopped: its QMI clients go away, and QRTR tells the
    modem so.
 2. The EFS partitions are copied into a file (`efs.img`, below) that goes
    along as the kexec "initrd".
-3. `/sys/bus/rpmsg/drivers_autoprobe` set to 0, then `IPCRTR` (of
-   `6080000.remoteproc:glink-edge`) unbound from `qcom_smd_qrtr`: GLINK
-   sends CLOSE, the modem answers and closes its side; the modem reopens
-   it later, and the 0 keeps Linux from taking it again.
-4. `kexec -e`, rmtfs still running (it no longer reaches the modem).
+3. `kexec -e`, rmtfs still running (it no longer reaches the modem).
+   Linux's shutdown on the way switches the WLAN firmware off cleanly
+   over this same QRTR (ath10k's shutdown hook).
 
-The GLINK link itself (version and features, negotiated when the modem
-started) stays up. KolibriOS opens `IPCRTR` anew; the modem's QRTR then
-says HELLO, as to any new peer.
+KolibriOS finds the channel's ids in what the FIFOs still hold behind
+their heads: Linux's lcid in the newest QRTR packet from node 1 in the
+transmit ring, the modem's in the newest one to node 1 in the receive
+ring. It sends no OPEN, advertises receive buffers of its own, asks the
+modem for intents as it needs them, and then says HELLO on QRTR, as a
+peer that started again. If no QRTR packets are found it opens `IPCRTR`
+anew. `tests/modem` tries that (`./test adopted`).
 
-The modem is likely to reopen its side of `IPCRTR` at once after Linux
-closed it. Linux reads that OPEN before the jump and leaves it unanswered
-(no driver binds with autoprobe off), so it never reaches KolibriOS. The
-receive FIFO is a ring, though, and keeps the bytes behind its tail: when
-the modem acknowledges KolibriOS's OPEN but does not send its own within
-3 s, `glink.c` answers the modem's last OPEN of `IPCRTR` it finds in the
-ring's past (its channel id). `tests/modem` tries both cases.
+The way before (until 2026-10-29) was to unbind `IPCRTR` from
+`qcom_smd_qrtr` so that GLINK closes it. On Linux 7.1 that unbind hangs
+in the kernel for good (D state): `qcom_glink_destroy_ept()`, called from
+the rpmsg device's own remove, unregisters that same device, and
+`device_del()` then waits for the device lock the unbind holds. The WLAN
+firmware also crashed when QRTR went away under it. The old fallbacks
+(KolibriOS opening `IPCRTR` anew, answering the modem's OPEN from the
+ring's past, `./test preopened`) stay for a kernel where the channel was
+closed.
 
 ## KolibriOS's side
 

@@ -62,7 +62,7 @@ static u32 smem_size, rmtfs_size, apcs_bit, efs_size;
 /* the ADSP's GLINK edge: its IPC bit (the call's sound, callaudio.c) */
 static u32 adsp_bit = 0xffffffffu;
 static bool callaudio;                 /* kolibri.callaudio: Linux left the voice path running */
-static bool nomodem, fakemodem;
+static bool nomodem, fakemodem, adopt_ipcrtr;
 static bool wifi;                       /* kolibri.wifi: the WLAN's rails, the WLFW service */
 static addr_t prng_pa, gcc_pa, rpmram_pa;
 static u32 rpmram_size, rpm_bit = 32;
@@ -908,6 +908,7 @@ static void modem_init(void)
 		.smem = (volatile u8 *)smem_pa, .smem_size = smem_size, .kick = modem_kick,
 		.rmtfs_mem = (volatile u8 *)rmtfs_pa, .rmtfs_pa = rmtfs_pa, .rmtfs_size = rmtfs_size,
 		.efs = (u8 *)efs_pa, .efs_size = efs_size, .wlfw = wifi,
+		.adopt_ipcrtr = adopt_ipcrtr,
 	};
 	kprintf("pro1x: modem: SMEM %p (%u KiB), rmtfs %p, IPC %p bit %u, EFS images %p (%u KiB)\n",
 		smem_pa, smem_size >> 10, rmtfs_pa, apcs_pa, apcs_bit, efs_pa, efs_size >> 10);
@@ -1262,6 +1263,7 @@ bool pro1x_probe(const void *fdt)
 		fakemodem = word(args, len, "kolibri.fakemodem", NULL);
 		callaudio = word(args, len, "kolibri.callaudio", NULL);
 		wifi = word(args, len, "kolibri.wifi", NULL);
+		adopt_ipcrtr = word(args, len, "kolibri.ipcrtr=adopt", NULL);
 	}
 	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of
 	 * the programs' memory, mapped as RAM */

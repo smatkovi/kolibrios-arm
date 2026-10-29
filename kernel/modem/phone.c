@@ -42,6 +42,7 @@ static struct glink glink;
 static struct qrtr qrtr;
 static struct rmtfs rmtfs;
 static struct glink_chan *ipcrtr;
+static bool adopted;
 
 static int st = ST_OFF;
 static u32 now, st_at, next_poll;
@@ -588,6 +589,23 @@ static void qrtr_event(void *arg, int ev, const struct qrtr_server *s, u32 node,
 
 /* --- the link and the work ------------------------------------------------- */
 
+/* a QRTR packet (version 1) of the apps processor's, or to it */
+static bool qrtr_packet(const u8 *d, u32 len)
+{
+	return len >= QRTR_HDR_V1 && get32(d) == 1 && get32(d + 4) >= QRTR_TYPE_DATA &&
+	       get32(d + 4) <= QRTR_TYPE_DEL_LOOKUP;
+}
+
+static bool qrtr_from_apps(const u8 *d, u32 len)
+{
+	return qrtr_packet(d, len) && get32(d + 8) == QRTR_NODE_APPS;
+}
+
+static bool qrtr_to_apps(const u8 *d, u32 len)
+{
+	return qrtr_packet(d, len) && (get32(d + 24) == QRTR_NODE_APPS || get32(d + 24) == QRTR_NODE_BCAST);
+}
+
 static void kick(void)
 {
 	if (hw->kick) hw->kick();
@@ -605,7 +623,19 @@ void modem_start(const struct modem_hw *h)
 		set_status("no GLINK FIFOs in SMEM");
 		return;
 	}
-	ipcrtr = glink_open(&glink, "IPCRTR", LCID_IPCRTR, qrtr_glink_rx, &qrtr);
+	/* Linux's IPCRTR left open (tools/pro1x-kexec.sh -m: unbinding
+	 * qrtr-smd from it hangs Linux 7.1): its ids from the QRTR packets
+	 * still in the FIFOs, the channel taken over; else opened anew */
+	ipcrtr = 0;
+	adopted = false;
+	if (h->adopt_ipcrtr) {
+		s32 l = glink_scan_data(&glink, true, qrtr_from_apps), r = glink_scan_data(&glink, false, qrtr_to_apps);
+		if (l >= 0 && r >= 0) ipcrtr = glink_adopt(&glink, "IPCRTR", l, r, qrtr_glink_rx, &qrtr);
+		adopted = ipcrtr != 0;
+		if (adopted) mlog("modem: Linux's IPCRTR taken over (lcid %d, rcid %d)\n", l, r);
+		else mlog("modem: Linux's IPCRTR not in the FIFOs: opened anew\n");
+	}
+	if (!ipcrtr) ipcrtr = glink_open(&glink, "IPCRTR", LCID_IPCRTR, qrtr_glink_rx, &qrtr);
 	qrtr_init(&qrtr, ipcrtr, QRTR_NODE_APPS, qrtr_event, 0);
 	for (int i = 0; i < NSVC; i++) qrtr_bind(&qrtr, PORT_BASE + i, svc_rx, (void *)(long)i);
 	rmtfs_init(&rmtfs, &qrtr, h->rmtfs_mem, h->rmtfs_pa, h->rmtfs_size, h->efs, h->efs_size);
@@ -613,6 +643,11 @@ void modem_start(const struct modem_hw *h)
 	st = ST_OPEN;
 	st_at = now;
 	set_status("opening the modem's IPC router channel");
+}
+
+bool modem_ipcrtr_adopted(void)
+{
+	return adopted;
 }
 
 bool modem_present(void)

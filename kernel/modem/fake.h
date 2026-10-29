@@ -17,6 +17,9 @@ extern struct fake_stats fake_stats;
 /* the modem opened IPCRTR before and Linux read that (the kexec case):
  * set before fake_init() */
 extern bool fake_preopened;
+/* the channel open from Linux's time (pro1x-kexec.sh -m, no unbind):
+ * taken over (modem_hw.adopt_ipcrtr); set before fake_init() */
+extern bool fake_adopted;
 /* a call from number, now */
 void fake_ring(const char *number);
 

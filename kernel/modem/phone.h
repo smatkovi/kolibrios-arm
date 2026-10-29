@@ -20,12 +20,14 @@ struct modem_hw {
 	void (*set_clock)(u32 t);      /* the network's time (Unix) */
 	bool fake;
 	bool wlfw;                     /* talk to the WLAN firmware's service (wlfw.c) */
+	bool adopt_ipcrtr;             /* Linux's IPCRTR channel left open: taken over */
 };
 
 void modem_start(const struct modem_hw *hw);
 /* the work: every tick, ms the time since boot */
 void modem_poll(u32 ms);
 bool modem_present(void);
+bool modem_ipcrtr_adopted(void);  /* Linux's channel taken over (tests) */
 
 void modem_status(struct kos_modem *m);
 int modem_sms(u32 index, struct kos_sms *s);

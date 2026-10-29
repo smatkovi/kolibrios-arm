@@ -18,6 +18,7 @@
 
 struct fake_stats fake_stats;
 bool fake_preopened;
+bool fake_adopted;
 
 static volatile u8 *desc, *f0, *f1;       /* f0: ours to read, f1: ours to write */
 static u8 *rmem;
@@ -683,6 +684,32 @@ void fake_init(struct modem_hw *hw, u8 *smem, u8 *rmtfs, u32 (*clock)(void), voi
 		out(m, 15, 0, 0);
 		out_cmd(GLINK_CMD_SIGNALS, 5, 0);
 		sm_wr32(desc + 8, sm_rd32(desc + 12));
+	}
+	if (fake_adopted) {
+		/* the channel open on both sides from Linux's time, QRTR packets
+		 * of both in the FIFOs' past (all read), no OPEN anywhere */
+		u8 m[16 + 64], q[64];
+		u32 n = qrtr_pack(q, QRTR_TYPE_NEW_SERVER, F_NODE, QRTR_PORT_CTRL, 1, QRTR_PORT_CTRL, false,
+				  "\x04\0\0\0\x02\0\0\0\x01\0\0\0\0\0\0\0\x33\0\0\0", 20);
+		mzero(m, sizeof(m));
+		put16(m, GLINK_CMD_TX_DATA);
+		put16(m + 2, F_LCID);
+		put32(m + 4, 1);
+		put32(m + 8, n);
+		mcopy(m + 16, q, n);
+		out(m, 16 + n, 0, 0);
+		sm_wr32(desc + 8, sm_rd32(desc + 12));
+		n = qrtr_pack(q, QRTR_TYPE_DATA, 1, 0x4000, F_NODE, 51, false, "\0\x01\0\x2d\0\0\0", 7);
+		mzero(m, sizeof(m));
+		put16(m, GLINK_CMD_TX_DATA);
+		put16(m + 2, 3);                       /* Linux's lcid */
+		put32(m + 4, 1);
+		put32(m + 8, n);
+		mcopy(m + 16, q, n);
+		u32 head = glink_fifo_write(f0, FIFO_SIZE, sm_rd32(desc + 4), m, M_ALIGN(16 + n, 8));
+		sm_wr32(desc + 4, head);
+		sm_wr32(desc, head);
+		ch_open = ap_acked = true;
 	}
 	rmem = rmtfs;
 	clk = clock;

@@ -36,6 +36,7 @@ The command line:
 | `kolibri.look=classic` | KolibriOS's own panel and movable windows instead of the Hildon shell (`kolibri.look=hildon`, the default) |
 | `kolibri.nomodem` | leave the modem alone |
 | `kolibri.fakemodem` | a modem in RAM instead (QEMU with the phone's device tree) |
+| `kolibri.ipcrtr=adopt` | Linux's `IPCRTR` channel taken over as it is (`pro1x-kexec.sh -m` passes it; `docs/pro1x-modem.md`) |
 | `kolibri.wifi` | the WLAN part's rails on through the RPM, the WLAN firmware's QMI service asked what it is (with `-m`; `docs/pro1x-network.md`) |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;

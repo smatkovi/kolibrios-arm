@@ -306,8 +306,30 @@ static void test_preopened(void)
 	      "ready with the OPEN from the FIFO's past (state %u: %s)", m.state, m.status);
 }
 
+static void test_adopted(void)
+{
+	struct modem_hw hw;
+	struct kos_modem m;
+	memset(&fake_stats, 0, sizeof(fake_stats));
+	fake_adopted = true;
+	fake_init(&hw, smem, rmem, test_clock, test_set_clock);
+	hw.adopt_ipcrtr = true;
+	modem_start(&hw);
+	run(20000);
+	modem_status(&m);
+	CHECK(modem_ipcrtr_adopted(), "Linux's IPCRTR taken over");
+	CHECK(m.state == KOS_MODEM_READY && m.registration == KOS_REG_HOME,
+	      "ready on the adopted channel (state %u: %s)", m.state, m.status);
+	CHECK(fake_stats.rmtfs_ok == 1, "rmtfs on the adopted channel (%u)", fake_stats.rmtfs_ok);
+}
+
 int main(int argc, char **argv)
 {
+	if (argc > 1 && !strcmp(argv[1], "adopted")) {
+		test_adopted();
+		printf("%d passed, %d failed\n", passed, failed);
+		return failed != 0;
+	}
 	if (argc > 1 && !strcmp(argv[1], "preopened")) {
 		test_preopened();
 		printf("%d passed, %d failed\n", passed, failed);

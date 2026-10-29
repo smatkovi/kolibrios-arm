@@ -13,9 +13,10 @@
 #
 # -m: the modem goes along (docs/pro1x-modem.md). It keeps running through
 # the kexec; its EFS partitions go along as the initrd (tools/mkefs.py,
-# for KolibriOS's rmtfs service), ofono is stopped and Linux's IPCRTR
-# channel to the modem closed, so that KolibriOS can open it anew. rmtfs
-# keeps running until the jump: stopped normally it would stop the modem.
+# for KolibriOS's rmtfs service), ofono is stopped, and Linux's IPCRTR
+# channel to the modem stays open for KolibriOS to take over
+# (kolibri.ipcrtr=adopt). rmtfs keeps running until the jump: stopped
+# normally it would stop the modem.
 #
 # -a (with -m): the sound of calls goes along (docs/pro1x-audio.md).
 # PulseAudio's devices are suspended, the routes of UCM's Earpiece and Mic
@@ -63,6 +64,7 @@ if [ -n "$modem" ]; then
 	done
 	python3 "$here/mkefs.py" "$efs" "$@" || exit 1
 	initrd="--initrd=$efs"
+	args="$args kolibri.ipcrtr=adopt"
 fi
 
 # the sound card and PulseAudio's user (its devices are suspended for the
@@ -119,25 +121,17 @@ for d in 4a84000.i2c; do
 	[ ! -e "$pm" ] || echo on > "$pm"
 done
 
-# The modem: its clients gone (ofono), Linux's IPCRTR channel closed
-# (unbound from qrtr-smd; autoprobe off, so that Linux does not take it
-# again when the modem reopens it). rmtfs stays: its SIGTERM would stop
-# the modem.
-ch=6080000.remoteproc:glink-edge.IPCRTR.-1.-1
-# (an abort after this gives Linux its channel and ofono back)
+# The modem: its clients gone (ofono). Linux's IPCRTR channel stays open
+# and KolibriOS takes it over (kolibri.ipcrtr=adopt, docs/pro1x-modem.md):
+# unbinding qrtr-smd from it hangs Linux 7.1 for good. rmtfs stays: its
+# SIGTERM would stop the modem.
+# (an abort after this gives ofono back)
 restore_modem() {
-	echo 1 > /sys/bus/rpmsg/drivers_autoprobe
-	[ -e /sys/bus/rpmsg/devices/$ch/driver ] ||
-	    echo -n "$ch" > /sys/bus/rpmsg/drivers/qcom_smd_qrtr/bind 2> /dev/null
 	rc-service ofono start > /dev/null 2>&1 || true
 }
 if [ -n "$modem" ]; then
 	trap 'kexec -u; restore_modem' EXIT
 	rc-service ofono stop > /dev/null 2>&1 || true
-	echo 0 > /sys/bus/rpmsg/drivers_autoprobe
-	if [ -e /sys/bus/rpmsg/devices/$ch/driver ]; then
-		echo -n "$ch" > /sys/bus/rpmsg/drivers/qcom_smd_qrtr/unbind
-	fi
 	sleep 1
 fi
 

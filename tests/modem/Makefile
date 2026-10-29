@@ -8,6 +8,7 @@ test: test.c $(SRC) $(M)/*.h ../../lib/kos_modem.h
 	$(CC) $(CFLAGS) test.c $(SRC) -o $@
 	./test | grep -v "^modem:\|^rmtfs:\|^glink:\|^fake:"
 	./test preopened | grep -v "^modem:\|^rmtfs:\|^fake:"
+	./test adopted | grep -v "^rmtfs:\|^fake:"
 
 clean:
 	rm -f test
