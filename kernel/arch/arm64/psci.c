@@ -92,17 +92,19 @@ void psci_init(void)
 	bool want_cluster = false;
 	for (int i = 0; i < pdt.nstates; i++) want_cluster |= pdt.st[i].cluster;
 	want_cluster &= pdt.hierarchical && !core_only;
-	if (feat >= 0 && (feat & 1) && want_cluster) {
+	usable = pdt.nstates > 0 && !(arg && !strncmp(arg, "off", 3));
+	/* the mode: left as it is with kolibri.psci=off */
+	if (usable && feat >= 0 && (feat & 1) && want_cluster) {
 		long r = psci_call(PSCI_SET_SUSPEND_MODE, 1, 0, 0);
 		osi = r == 0;
 		if (r) kprintf("psci: OS-initiated mode refused (%d)\n", (int)r);
-	} else if (feat >= 0 && (feat & 1)) {
+	} else if (usable && feat >= 0 && (feat & 1)) {
 		psci_call(PSCI_SET_SUSPEND_MODE, 0, 0, 0);
 	}
 	cluster_ok = (osi || (pc_cluster && want_cluster)) && !others_on;
-	usable = pdt.nstates > 0 && !(arg && !strncmp(arg, "off", 3));
-	kprintf("psci: %u.%u over %s, %s mode, %s state ids; CPUs off: %x of %u%s\n", major, minor,
-		pdt.hvc ? "hvc" : "smc", mode_name(), extended ? "extended" : "original", off, pdt.ncpus,
+	kprintf("psci: %u.%u over %s, %s mode%s, %s state ids; CPUs off: %x of %u%s\n", major, minor,
+		pdt.hvc ? "hvc" : "smc", usable ? mode_name() : "the firmware's",
+		feat >= 0 && (feat & 1) ? " (OSI there)" : "", extended ? "extended" : "original", off, pdt.ncpus,
 		others_on ? " (others on: no cluster state)" : "");
 	for (int i = 0; i < pdt.nstates; i++) {
 		const struct idle_state *s = &pdt.st[i];

@@ -1488,6 +1488,13 @@ static bool pin_reserved(int pin)
 	return false;
 }
 
+/* routed to this processor (the KPSS): other pins' interrupts belong to
+ * the modem's or the DSPs' side and are not touched */
+static bool pin_kpss(int pin)
+{
+	return (rd32(gpio_reg(pin, TLMM_INTR_CFG)) >> INTR_TARGET_SHIFT & 7) == INTR_TARGET_KPSS;
+}
+
 static bool pin_ours(int pin)
 {
 	if (pin == kbd_int || pin == ts_irq) return true;
@@ -1509,9 +1516,10 @@ static void pin_irq(int pin, u32 detect)
 	wr32(c, v | INTR_ENABLE);
 }
 
-/* every GPIO interrupt Linux left on masked but ours (an unknown one
- * would hold the summary interrupt for ever), ours on: the expander's
- * INT falling, the modifiers' and the touch screen's either way */
+/* every GPIO interrupt Linux left on for this processor masked but ours
+ * (an unknown one would hold the summary interrupt for ever), ours on:
+ * the expander's INT falling, the modifiers' and the touch screen's
+ * either way */
 static void tlmm_irq_init(void)
 {
 	if (noinput || !tlmm_irq || !timer_tickless()) return;
@@ -1520,7 +1528,7 @@ static void tlmm_irq_init(void)
 		if (!gpio_ok(pin) || pin_reserved(pin) || pin_ours(pin)) continue;
 		addr_t c = gpio_reg(pin, TLMM_INTR_CFG);
 		u32 v = rd32(c);
-		if (!(v & INTR_ENABLE)) continue;
+		if (!(v & INTR_ENABLE) || (v >> INTR_TARGET_SHIFT & 7) != INTR_TARGET_KPSS) continue;
 		wr32(c, v & ~INTR_ENABLE);
 		wr32(gpio_reg(pin, TLMM_INTR_STATUS), 0);
 		off++;
@@ -1555,7 +1563,7 @@ static void tlmm_isr(void)
 {
 	for (int pin = 0; pin < NPINS; pin++) {
 		if (!gpio_ok(pin) || pin_reserved(pin)) continue;
-		if (!(rd32(gpio_reg(pin, TLMM_INTR_STATUS)) & 1)) continue;
+		if (!(rd32(gpio_reg(pin, TLMM_INTR_STATUS)) & 1) || !pin_kpss(pin)) continue;
 		wr32(gpio_reg(pin, TLMM_INTR_STATUS), 0);
 		if (pin == ts_irq) {
 			ts_sched = true;

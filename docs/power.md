@@ -97,8 +97,9 @@ either edge) and the touch screen's INT (GPIO 80, either edge) are TLMM
 interrupts (pinctrl-msm.c's register layout: `INTR_CFG` with the
 detection, the polarity, `RAW_STATUS_EN` and the target KPSS 3, Linux's
 `pinctrl-sm6115.c`), forwarded through the TLMM's summary interrupt
-(SPI 227). Every GPIO interrupt Linux left enabled is masked first (an
-unknown one would hold the summary interrupt), the reserved GPIOs
+(SPI 227). Every GPIO interrupt Linux left enabled for this processor (the
+target KPSS) is masked first (an unknown one would hold the summary
+interrupt); those routed to the modem or the DSPs and the reserved GPIOs
 (`gpio-reserved-ranges`, 0-3 and 14-17) are not touched. Polled still:
 every tick while the modifiers settle and a scan waits for its
 confirmation, every 30 ms while keys are held, every 50 ms while the
@@ -294,15 +295,18 @@ the boot menu, then `tools/pro1x-read.py` for the console:
    tick (INTID 19), tickless idle, the input by interrupt. Expected:
    `timer: 19200000 Hz, INTID 19, tickless idle`, `timer: broadcast:
    frame 0 at ...f121000, INTID 40, 19200000 Hz`, `psci: 1.x over smc,
-   OS-initiated mode, extended state ids; CPUs off: fe of 8`, the three
-   states, `psci: off (kolibri.psci=off): wfi`, `pro1x: input
+   the firmware's mode (OSI there), extended state ids; CPUs off: fe of
+   8`, the three states, `psci: off (kolibri.psci=off): wfi`, `rpm: left
+   by Linux: vmin ...` (the RPM's counts readable), `pro1x: input
    interrupts: N GPIOs through INTID 259 (...)`, keys and touch working,
    `pro1x: lifetime over` after 60 s. A console that ends after
    `running` and a reset after about 32 s: no tick (the timer's
    interrupt), the watchdog not fed.
-2. `... "kolibri.nomodem kolibri.powertest=3 kolibri.displayon"` (PSCI on): `power:`
-   lines with `core`/`cluster` counts above 0 and `resumed` equal to
-   them, the battery's lines. A hang after the first idle (a reset at
+2. `... "kolibri.nomodem kolibri.powertest=3 kolibri.displayon"` (PSCI on):
+   `psci: ... OS-initiated mode (OSI there) ...`, `power:` lines with
+   `core`/`cluster` counts above 0 and `resumed` close to them, `pro1x:
+   SPMI: arbiter 5.x, EE 0, ...`, `pro1x: battery: gauge at 2:4800 (5 A),
+   ADC at 2:3100, channel 84 (1/3)`, the battery's lines. A hang after the first idle (a reset at
    about 32 s, the console ending at `running`): the way back from the
    power-down (cpu_resume) or the broadcast timer; then once more with
    `kolibri.psci=core`.
