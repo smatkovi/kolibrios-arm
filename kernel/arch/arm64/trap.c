@@ -2,13 +2,7 @@
  * SPSR; a program (AArch32 at EL0) has its r0-r12 in x0-x12, its sp and
  * lr in x13 and x14, its pc in ELR and its CPSR in SPSR. */
 #include "task.h"
-
-struct frame64 {
-	u64 x[31];
-	u64 elr, spsr, pad;
-};
-
-enum { K_SYNC_EL1 = 1, K_IRQ_EL1 = 2, K_SYNC_A32 = 3, K_IRQ_A32 = 4, K_SERROR = 5, K_A64 = 6 };
+#include "frame.h"
 
 extern void arch_enter(struct frame64 *f) __attribute__((noreturn));
 extern char stack_top[];
@@ -16,7 +10,9 @@ extern char stack_top[];
 /* to the task the dispatch chose, or the idle loop (EL1, interrupts on) */
 static void back_to(struct frame64 *f, struct task *c)
 {
-	if (c) {
+	if (c && c->lx) {
+		lx_restore(f, c);              /* a Linux program's thread */
+	} else if (c) {
 		for (int i = 0; i < 13; i++) f->x[i] = c->tf.r[i];
 		f->x[13] = c->tf.usr_sp;
 		f->x[14] = c->tf.usr_lr;
@@ -53,8 +49,12 @@ void trap64(struct frame64 *f, int kind)
 		      (u32)esr, (u32)(esr >> 26), (addr_t)f->elr, (addr_t)far);
 	case K_SERROR:
 		panic("SError: ESR %x at %p", (u32)esr, (addr_t)f->elr);
+	case K_SYNC_A64:
+	case K_IRQ_A64:
+		back_to(f, lx_trap(f, kind == K_IRQ_A64, esr, far));
+		return;
 	default:
-		panic("exception from AArch64 EL0 (none run here): ESR %x", (u32)esr);
+		panic("exception kind %d: ESR %x", kind, (u32)esr);
 	}
 	if (from_user) {
 		for (int i = 0; i < 13; i++) tf.r[i] = f->x[i];

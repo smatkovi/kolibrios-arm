@@ -18,6 +18,16 @@ int load_program(const char *path, const char *params, struct task **out)
 	const struct rd_file *f = fs_find(path);
 	if (!f) return -5;                         /* file not found */
 	const struct kex_header *h = (const void *)f->data;
+#ifdef __aarch64__
+	/* a Linux program (kernel/linux): its path as Linux sees it */
+	if (f->size >= 4 && !memcmp(f->data, "\177ELF", 4)) {
+		extern int lx_exec(const char *path, const struct rd_file *f, const char *args, struct task *starter);
+		const char *lp = path;
+		for (const char *c = path; *c; c++)
+			if (!strncmp(c, "linux/", 6)) { lp = c + 5; break; }
+		return lx_exec(lp, f, params, NULL);
+	}
+#endif
 	if (f->size < sizeof(*h) || memcmp(h->magic, "MENUETA1", 8)) {
 		kprintf("%s: not an ARM KolibriOS program\n", path);
 		return -31;                        /* not an executable */

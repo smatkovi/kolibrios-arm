@@ -111,9 +111,9 @@ vectors:
 	VECTOR	2	/* irq: in the idle loop */
 	VECTOR	2	/* fiq */
 	VECTOR	5	/* serror */
-	VECTOR	6	/* EL0, AArch64: sync (no such programs) */
-	VECTOR	6	/* irq */
-	VECTOR	6	/* fiq */
+	VECTOR	6	/* EL0, AArch64 (Linux programs): sync: svc, aborts */
+	VECTOR	7	/* irq */
+	VECTOR	7	/* fiq */
 	VECTOR	5	/* serror */
 	VECTOR	3	/* EL0, AArch32: sync: svc, aborts, undefined */
 	VECTOR	4	/* irq */

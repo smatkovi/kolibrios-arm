@@ -7,6 +7,9 @@
  * that frame when it wakes. Round robin, preempted by the 100 Hz tick. */
 #include "gui.h"
 #include "net.h"
+#ifdef __aarch64__
+#include "../linux/lx.h"
+#endif
 
 struct task tasks[MAX_TASKS];
 struct task *current;
@@ -40,6 +43,9 @@ struct task *task_alloc(void)
 void task_exit(struct task *t)
 {
 	if (t->state == T_FREE) return;
+#ifdef __aarch64__
+	if (t->lx) lx_thread_gone(t);
+#endif
 	wm_remove(t);
 	if (t->mem_pa) mm_free_mb(t->mem_pa, t->mem_size >> 20);
 	if (t->l1) mmu_free_user_table(t->l1);
@@ -96,6 +102,11 @@ void wake_waiters(void)
 		case T_SLEEP:
 			if ((s32)(ticks - t->wake_tick) >= 0) t->state = T_READY;
 			break;
+#ifdef __aarch64__
+		case T_LX_WAIT:
+			lx_retry(t);
+			break;
+#endif
 		default:
 			break;
 		}

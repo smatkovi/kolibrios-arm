@@ -127,6 +127,12 @@ void *mmu_new_user_table(void)
 	return root;
 }
 
+/* the kernel's L1 table, for the Linux personality's tables */
+const u64 *mmu_kernel_table(void)
+{
+	return kroot;
+}
+
 void mmu_free_user_table(void *root)
 {
 	if (nfree < (int)ARRAY_SIZE(free_roots))

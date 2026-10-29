@@ -2,3 +2,4 @@ build/
 tests/modem/test
 tests/audio/test
 third_party/
+tests/linux/hello/hello

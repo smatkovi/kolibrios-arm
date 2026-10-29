@@ -23,7 +23,10 @@ enum task_state {
 	T_WAIT_TIMEOUT,   /* function 23 */
 	T_SLEEP,          /* function 5 */
 	T_ZOMBIE,
+	T_LX_WAIT,        /* a Linux thread in a system call (kernel/linux) */
 };
+
+struct lx_thread;
 
 struct button {
 	int x, y, w, h;   /* screen coordinates */
@@ -67,6 +70,7 @@ struct task {
 	int btn_head, btn_tail;
 	struct window win;
 	u32 heap_start, heap_end, heap_brk; /* function 68 */
+	struct lx_thread *lx;   /* a Linux program's thread (AArch64), or NULL */
 };
 
 extern struct task tasks[MAX_TASKS];

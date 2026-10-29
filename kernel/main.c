@@ -8,6 +8,7 @@ void input_init(void);
 
 #ifdef __aarch64__
 #include "fdt.h"
+#include "net.h"
 #endif
 
 /* the look the command line asks for (kolibri.look=classic or hildon, on
@@ -102,7 +103,26 @@ void kmain(void)
 #else
 	if (plat == &platform_realview) kmodem_fake();
 #endif
+#ifdef __aarch64__
+	/* the Linux personality (kernel/linux); kolibri.lxtrace: its system
+	 * calls on the console */
+	extern void lx_init(void), lx_trace_on(void);
+	lx_init();
+	if (boot_arg("kolibri.lxtrace")) lx_trace_on();
+#endif
 	autorun();
+#ifdef __aarch64__
+	/* kolibri.run=/bin/x: a Linux program from the ramdisk too (tests) */
+	const char *run = boot_arg("kolibri.run");
+	if (run && *run) {
+		char path[64] = "/sys/linux";
+		u32 n = 0;
+		while (run[n] && run[n] != ' ' && 10 + n + 1 < sizeof(path)) n++;
+		memcpy(path + 10, run, n);
+		path[10 + n] = 0;
+		if (load_program(path, NULL, NULL) < 0) kprintf("kolibri.run: %s not started\n", path + 10);
+	}
+#endif
 	gfx_flush();
 	kprintf("running\n");
 	/* to the first task (or the idle loop) through the trap return */

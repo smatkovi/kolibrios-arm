@@ -517,6 +517,13 @@ void syscall(struct task *t)
 		sys_modem(t, r);
 		return;
 	}
+#ifdef __aarch64__
+	case 101: {                            /* KolibriOS for ARM: Linux programs */
+		extern void sys_linux(struct task *t, u32 *r);
+		sys_linux(t, r);
+		return;
+	}
+#endif
 	case 72:                               /* a message to the active window */
 		EAX = EBX == 1 ? wm_message(ECX, EDX) : -1;
 		return;

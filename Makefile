@@ -39,7 +39,8 @@ KCC := clang --target=aarch64-none-elf -mcpu=cortex-a53
 KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgeneral-regs-only -mstrict-align \
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
-	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c
+	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c \
+	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
 LWIP := third_party/lwip/src
 LWIPSRC := core/init.c core/def.c core/dns.c core/inet_chksum.c core/ip.c core/mem.c core/memp.c \
@@ -88,6 +89,10 @@ $(B)/%.o: kernel/%.S | dirs
 
 $(LWIP)/core/init.c:
 	tools/fetch-lwip.sh
+$(B)/linux/%.o: kernel/linux/%.c kernel/linux/*.h kernel/include/*.h kernel/arch/arm64/frame.h $(LWIP)/core/init.c | dirs
+	$(KCC) $(KCFLAGS) -c $< -o $@
+$(B)/linux/%.o: kernel/linux/%.S | dirs
+	$(KCC) $(KCFLAGS) -c $< -o $@
 $(B)/net/%.o: kernel/net/%.c kernel/net/*.h kernel/net/arch/cc.h kernel/include/*.h $(LWIP)/core/init.c | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
 $(B)/lwip/%.o: $(LWIP)/%.c kernel/net/lwipopts.h kernel/net/arch/cc.h | dirs
@@ -116,11 +121,22 @@ $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
 $(A)/%.kex: $(A)/%.elf
 	$(OBJCOPY) -O binary $< $@
 
+# Linux programs and files for the AArch64 kernel's Linux personality,
+# NAME=FILE with NAME the path under / (bin/hello=tests/linux/hello/hello):
+# on the ramdisk as linux/NAME
+LINUX_FILES ?=
+LINUX_DEPS := $(foreach f,$(LINUX_FILES),$(lastword $(subst =, ,$(f))))
+
 comma := ,
-$(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile
+$(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile $(LINUX_DEPS) $(A)/linux-files
 	python3 tools/mkrd.py $@ autorun=$(AUTORUN) \
 		autorun.classic=apps/autorun.classic autorun.hildon=apps/autorun \
-		$(foreach a,$(APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex)
+		$(foreach a,$(APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex) \
+		$(foreach f,$(LINUX_FILES),linux/$(f))
+
+# the list in a file, written when it changes: the ramdisk follows it
+$(A)/linux-files: FORCE | dirs
+	@[ "$$(cat $@ 2> /dev/null)" = "$(LINUX_FILES)" ] || echo "$(LINUX_FILES)" > $@
 
 # the look in a file, written when it changes: the ramdisk follows it
 $(A)/look: FORCE | dirs
@@ -128,7 +144,7 @@ $(A)/look: FORCE | dirs
 FORCE:
 
 dirs:
-	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/net $(B)/arch/$(ARCH) $(A)/lib
+	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/net $(B)/linux $(B)/arch/$(ARCH) $(A)/lib
 
 QEMU := qemu-system-arm -M realview-pb-a8 -m 256 -rtc base=localtime -serial stdio
 run: all
@@ -145,8 +161,16 @@ run-net: all
 	@echo "the host's test server: python3 -m http.server --bind 127.0.0.1 $(NETTEST_PORT)"
 	$(QEMU64) -kernel $(B)/kernel.bin -append "kolibri.nettest=$(NETTEST_PORT)"
 
+# the Linux personality's test: a static Go program (tests/linux/hello,
+# built by Go for linux/arm64) started by the kernel
+tests/linux/hello/hello: tests/linux/hello/hello.go
+	cd tests/linux/hello && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags=-s -o hello .
+run-linux: tests/linux/hello/hello
+	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/hello=tests/linux/hello/hello" all
+	$(QEMU64) -kernel build/arm64/kernel.bin -append "kolibri.run=/bin/hello"
+
 clean:
 	rm -rf build
 
-.PHONY: all run run-net clean dirs FORCE
+.PHONY: all run run-net run-linux clean dirs FORCE
 .SECONDARY:
