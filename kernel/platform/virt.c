@@ -23,6 +23,7 @@ void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
 void gic3_enable_spi(u32 id);
 bool virtio_net_probe(addr_t va);
+bool virtio_rng_probe(addr_t va);
 void virtio_net_irq(void);
 
 /* the virtio-mmio slots of the device tree (read before the MMU is on) */
@@ -54,8 +55,10 @@ static void v_init(void)
 {
 	gic3_init(gicd, gicr, v_other_irq);
 	net_init();
-	for (int i = 0; i < nvslot && !net_irq; i++) {
-		if (!virtio_net_probe(mmu_io_va(vslot[i].pa))) continue;
+	for (int i = 0; i < nvslot; i++) {
+		addr_t va = mmu_io_va(vslot[i].pa);
+		if (virtio_rng_probe(va)) continue;
+		if (net_irq || !virtio_net_probe(va)) continue;
 		net_irq = vslot[i].irq;
 		gic3_enable_spi(net_irq);
 	}

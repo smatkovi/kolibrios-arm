@@ -5,14 +5,16 @@
  * delivered) and the rest. */
 #include "lx.h"
 #include "net.h"
+#include "rng.h"
 
 extern void sched_yield(void);
 
 static bool trace;
 
-/* random numbers: ChaCha20 over a key from the counter and the clock.
- * Not good enough for keys yet: no hardware source is read (QEMU's
- * virtio-rng, the SoC's PRNG on the phone: docs/messengers.md). */
+/* random numbers: ChaCha20, its key from the hardware (rng.h: QEMU's
+ * virtio-rng, the Pro1X's PRNG), mixed anew from it every 16 requests.
+ * Without a hardware source the key comes from the counter and the clock
+ * only: not good enough for keys, and said so. */
 static u32 cc_key[8], cc_ctr;
 static bool cc_seeded;
 
@@ -43,10 +45,17 @@ static void chacha_block(u32 out[16])
 void lx_random(void *buf, u32 len)
 {
 	u32 b[16];
+	static u32 requests;
 	if (!cc_seeded) {
 		for (int i = 0; i < 8; i++) cc_key[i] = net_rand() ^ (u32)(SYSREG_R(cntvct_el0) << i);
 		cc_key[0] ^= rtc_seconds();
 		cc_seeded = true;
+		if (!rng_name()) kprintf("lx: no hardware random numbers: getrandom is weak\n");
+	}
+	if (requests++ % 16 == 0) {
+		u32 hw[8];
+		if (rng_hw(hw, sizeof(hw)) == sizeof(hw))
+			for (int i = 0; i < 8; i++) cc_key[i] ^= hw[i];
 	}
 	/* the key moves on with every request */
 	chacha_block(b);

@@ -29,7 +29,7 @@ LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 KCOMMON := lib.c mm.c sched.c syscall.c gfx.c wm.c input.c fs.c loader.c main.c \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
-	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c
+	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c
 
 ifeq ($(PLATFORM),arm64)
 # the AArch64 kernel (QEMU's virt, the Pro1X: chosen by the device tree),
@@ -39,7 +39,7 @@ KCC := clang --target=aarch64-none-elf -mcpu=cortex-a53
 KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgeneral-regs-only -mstrict-align \
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
-	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c \
+	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c rng.c modem/rpm.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
 LWIP := third_party/lwip/src
@@ -156,6 +156,7 @@ run: all
 # answered by a small HTTP server on the host (NETTEST_PORT)
 QEMU64 := qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 1024 -device ramfb \
 	-global virtio-mmio.force-legacy=false -device virtio-net-device,netdev=n0 -netdev user,id=n0 \
+	-device virtio-rng-device \
 	-serial stdio
 NETTEST_PORT ?= 18765
 run-net: all

@@ -36,6 +36,7 @@ The command line:
 | `kolibri.look=classic` | KolibriOS's own panel and movable windows instead of the Hildon shell (`kolibri.look=hildon`, the default) |
 | `kolibri.nomodem` | leave the modem alone |
 | `kolibri.fakemodem` | a modem in RAM instead (QEMU with the phone's device tree) |
+| `kolibri.wifi` | the WLAN part's rails on through the RPM, the WLAN firmware's QMI service asked what it is (with `-m`; `docs/pro1x-network.md`) |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.

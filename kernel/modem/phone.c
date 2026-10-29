@@ -11,6 +11,7 @@
  * from the timer tick: requests go out, responses and indications come
  * back through QRTR's ports, one per service. */
 #include "phone.h"
+#include "wlfw.h"
 
 #define LCID_IPCRTR 0x100         /* far from the ids Linux's channels hold */
 #define PORT_BASE 0x4000
@@ -566,6 +567,7 @@ static void qrtr_event(void *arg, int ev, const struct qrtr_server *s, u32 node,
 		st = ST_FAILED;
 		break;
 	case QRTR_EV_NEW_SERVER:
+		if (s->service == WLFW_SVC && hw->wlfw) wlfw_server(s->node, s->port);
 		for (int i = 0; i < NSVC; i++)
 			if (s->service == svc_id[i] && !cl[i].have) {
 				cl[i].have = true;
@@ -607,6 +609,7 @@ void modem_start(const struct modem_hw *h)
 	qrtr_init(&qrtr, ipcrtr, QRTR_NODE_APPS, qrtr_event, 0);
 	for (int i = 0; i < NSVC; i++) qrtr_bind(&qrtr, PORT_BASE + i, svc_rx, (void *)(long)i);
 	rmtfs_init(&rmtfs, &qrtr, h->rmtfs_mem, h->rmtfs_pa, h->rmtfs_size, h->efs, h->efs_size);
+	if (h->wlfw) wlfw_init(&qrtr);
 	st = ST_OPEN;
 	st_at = now;
 	set_status("opening the modem's IPC router channel");

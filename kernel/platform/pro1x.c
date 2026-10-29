@@ -32,6 +32,8 @@
 #include "../modem/phone.h"
 #include "../modem/glink.h"
 #include "../modem/callaudio.h"
+#include "../modem/rpm.h"
+#include "rng.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -45,7 +47,7 @@ extern addr_t boot_args[3];
 #define SHOT (SPLASH + 0xc00000)
 #define SHOT_SIZE (3u << 20)
 
-static struct mem_region io[24];
+static struct mem_region io[32];
 static addr_t gicd, gicr, wdt, mdp, smmu, geni, tlmm[3];
 static u32 streams[8][2];              /* the display's SMMU stream ids, masks */
 static int nstreams;
@@ -61,6 +63,9 @@ static u32 smem_size, rmtfs_size, apcs_bit, efs_size;
 static u32 adsp_bit = 0xffffffffu;
 static bool callaudio;                 /* kolibri.callaudio: Linux left the voice path running */
 static bool nomodem, fakemodem;
+static bool wifi;                       /* kolibri.wifi: the WLAN's rails, the WLFW service */
+static addr_t prng_pa, gcc_pa, rpmram_pa;
+static u32 rpmram_size, rpm_bit = 32;
 
 static addr_t io_va(addr_t pa)
 {
@@ -902,7 +907,7 @@ static void modem_init(void)
 	struct modem_hw hw = {
 		.smem = (volatile u8 *)smem_pa, .smem_size = smem_size, .kick = modem_kick,
 		.rmtfs_mem = (volatile u8 *)rmtfs_pa, .rmtfs_pa = rmtfs_pa, .rmtfs_size = rmtfs_size,
-		.efs = (u8 *)efs_pa, .efs_size = efs_size,
+		.efs = (u8 *)efs_pa, .efs_size = efs_size, .wlfw = wifi,
 	};
 	kprintf("pro1x: modem: SMEM %p (%u KiB), rmtfs %p, IPC %p bit %u, EFS images %p (%u KiB)\n",
 		smem_pa, smem_size >> 10, rmtfs_pa, apcs_pa, apcs_bit, efs_pa, efs_size >> 10);
@@ -910,10 +915,77 @@ static void modem_init(void)
 	callaudio_start();
 }
 
+/* the PRNG (qcom,prng-ee: the firmware set it up): its AHB clock voted on
+ * in the GCC, then a word whenever its status says one is there */
+#define GCC_VOTE 0x79004                /* APCS clock branch enable vote */
+#define GCC_PRNG_BIT 13
+#define GCC_PRNG_CBCR 0x21004           /* bit 31: the clock is off */
+
+static u32 prng_read(void *out, u32 len)
+{
+	addr_t p = io_va(prng_pa);
+	u32 done = 0;
+	while (done < len) {
+		u32 i;
+		for (i = 0; i < 100000 && !(rd32(p + 4) & 1); i++)
+			;
+		if (!(rd32(p + 4) & 1)) break;
+		u32 v = rd32(p), n = MIN(4u, len - done);
+		memcpy((u8 *)out + done, &v, n);
+		done += n;
+	}
+	return done;
+}
+
+static void prng_init(void)
+{
+	if (!prng_pa || !gcc_pa) return;
+	addr_t g = io_va(gcc_pa);
+	wr32(g + GCC_VOTE, rd32(g + GCC_VOTE) | 1u << GCC_PRNG_BIT);
+	for (int i = 0; i < 100000 && (rd32(g + GCC_PRNG_CBCR) & 1u << 31); i++)
+		;
+	if (rd32(g + GCC_PRNG_CBCR) & 1u << 31) {
+		kprintf("pro1x: the PRNG's clock does not come on\n");
+		return;
+	}
+	rng_register("the SoC's PRNG", prng_read);
+}
+
+/* the RPM: kicked through the IPC register, waited for by the counter */
+static void rpm_kick(void)
+{
+	wr32(io_va(apcs_pa) + 8, 1u << rpm_bit);
+}
+
+static void delay_us(u32 us)
+{
+	u64 end = SYSREG_R(cntvct_el0) + SYSREG_R(cntfrq_el0) / 1000000 * us;
+	while (SYSREG_R(cntvct_el0) < end)
+		;
+}
+
+/* kolibri.wifi: the rails of the WLAN part (the device tree's wifi node:
+ * vdd-0.8-cx-mx L8, vdd-1.8-xo L16, vdd-1.3-rfa L17, vdd-3.3-ch0 L23 of
+ * the PM6125), which Linux's ath10k switched off on its way out, on
+ * again; their voltages as the RPM has them from Linux */
+static void wifi_power(void)
+{
+	static const u32 rails[] = { 8, 16, 17, 23 };
+	if (!rpmram_pa || !apcs_pa || rpm_bit >= 32) {
+		kprintf("pro1x: kolibri.wifi without the RPM's edge in the device tree\n");
+		return;
+	}
+	kprintf("pro1x: RPM: message RAM %p (%u KiB), IPC bit %u\n", rpmram_pa, rpmram_size >> 10, rpm_bit);
+	if (rpm_init((volatile u8 *)io_va(rpmram_pa), rpmram_size, rpm_kick, delay_us) < 0) return;
+	for (u32 i = 0; i < ARRAY_SIZE(rails); i++) rpm_ldo(rails[i], 0, true);
+}
+
 static void p_init(void)
 {
 	gic3_init(gicd, gicr, NULL);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
+	prng_init();
+	if (wifi) wifi_power();
 	modem_init();
 	if (noinput) {
 		kprintf("pro1x: no input (kolibri.noinput)\n");
@@ -1166,6 +1238,20 @@ bool pro1x_probe(const void *fdt)
 			reg_io(fdt, mb, mac, msc, 0, &apcs_pa, MAP_DEVICE);
 	}
 
+	/* the PRNG and its clock (in the GCC); the RPM's GLINK edge: its
+	 * message RAM, its bit in the IPC register */
+	reg_io(fdt, fdt_find_compatible(fdt, "qcom,prng-ee", -1, &ac, &sc), ac, sc, 0, &prng_pa, MAP_DEVICE);
+	reg_io(fdt, fdt_find_compatible(fdt, "qcom,gcc-sm6115", -1, &ac, &sc), ac, sc, 0, &gcc_pa, MAP_DEVICE);
+	int rr = fdt_find_compatible(fdt, "qcom,rpm-msg-ram", -1, &ac, &sc);
+	if (rr >= 0 && fdt_reg(fdt, rr, ac, sc, 0, &a, &s) && s <= 0x10000) {
+		rpmram_pa = a;
+		rpmram_size = s;
+		add_io(a, s, MAP_DEVICE);              /* below 1 GiB: moved up, 32-bit accesses */
+	}
+	int gr = fdt_find_compatible(fdt, "qcom,glink-rpm", -1, &ac, &sc);
+	p = gr >= 0 ? fdt_prop(fdt, gr, "mboxes", &len) : NULL;
+	if (p && len >= 8) rpm_bit = cell(p, 1);
+
 	/* the command line: kolibri.lifetime=N, kolibri.noinput */
 	int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
 	const char *args = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
@@ -1175,6 +1261,7 @@ bool pro1x_probe(const void *fdt)
 		nomodem = word(args, len, "kolibri.nomodem", NULL);
 		fakemodem = word(args, len, "kolibri.fakemodem", NULL);
 		callaudio = word(args, len, "kolibri.callaudio", NULL);
+		wifi = word(args, len, "kolibri.wifi", NULL);
 	}
 	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of
 	 * the programs' memory, mapped as RAM */

@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../kernel/modem/fake.h"
+#include "../../kernel/modem/wlfw.h"
+#include "../../kernel/modem/rpm.h"
 
 static int failed, passed;
 #define CHECK(c, ...) do { if (c) passed++; else { failed++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -108,6 +110,80 @@ static int find_sms(const char *text_start, struct kos_sms *s)
 	return -1;
 }
 
+
+/* the RPM's edge: a message RAM of our own, the RPM answering on the kick */
+static u32 rpm_ram[0x7000 / 4];
+static u32 rpm_got_type, rpm_got_id, rpm_got_uv, rpm_got_swen, rpm_got_lcid, rpm_requests;
+#define RAM(o) rpm_ram[(o) / 4]
+#define TXF 0x100
+#define RXF 0x600
+#define FL 1024
+
+static void fake_rpm(void)
+{
+	u32 t = RAM(TXF), h = RAM(TXF + 4);
+	while (t != h) {
+		u32 w = RAM(TXF + 8 + t), chunk = RAM(TXF + 8 + (t + 8) % FL);
+		u32 m[64];
+		for (u32 i = 0; i < chunk / 4 && i < 64; i++) m[i] = RAM(TXF + 8 + (t + 16 + 4 * i) % FL);
+		rpm_got_lcid = w >> 16;
+		rpm_got_type = m[4];
+		rpm_got_id = m[5];
+		rpm_got_uv = rpm_got_swen = ~0u;
+		for (u32 i = 0; i < m[6] / 12; i++) {
+			if (m[7 + 3 * i] == RPM_KEY_UV) rpm_got_uv = m[9 + 3 * i];
+			if (m[7 + 3 * i] == RPM_KEY_SWEN) rpm_got_swen = m[9 + 3 * i];
+		}
+		rpm_requests++;
+		t = (t + M_ALIGN(16 + chunk, 8)) % FL;
+		/* the answer: msg# with the id, err for a resource that is not there */
+		u32 a[16], n = 0;
+		a[n++] = 0x00716572;
+		a[n++] = 0;
+		a[n++] = 0x2367736d;
+		a[n++] = 4;
+		a[n++] = m[2];
+		if (m[5] == 99) {
+			a[n++] = 0x00727265;
+			a[n++] = 24;
+			memcpy(&a[n], "resource does not exist", 24);
+			n += 6;
+		}
+		a[1] = 4 * (n - 2);
+		u32 rh = RAM(RXF + 4), hdr[4] = { 9 | 5 << 16, 0, 4 * n, 0 };
+		for (u32 i = 0; i < 4; i++) RAM(RXF + 8 + (rh + 4 * i) % FL) = hdr[i];
+		for (u32 i = 0; i < n; i++) RAM(RXF + 8 + (rh + 16 + 4 * i) % FL) = a[i];
+		RAM(RXF + 4) = (rh + M_ALIGN(16 + 4 * n, 8)) % FL;
+	}
+	RAM(TXF) = t;
+}
+
+static void test_rpm(void)
+{
+	memset(rpm_ram, 0, sizeof(rpm_ram));
+	u32 toc = sizeof(rpm_ram) - 256;
+	RAM(toc) = 0x67727430;
+	RAM(toc + 4) = 2;
+	RAM(toc + 8) = 0x61703272, RAM(toc + 12) = TXF, RAM(toc + 16) = FL;
+	RAM(toc + 20) = 0x72326170, RAM(toc + 24) = RXF, RAM(toc + 28) = FL;
+	/* Linux's last request, on its channel 3, still in the FIFO near the end */
+	u32 at = FL - 16;
+	RAM(TXF + 8 + at) = 9 | 3 << 16;
+	RAM(TXF + 8 + (at + 8) % FL) = 40;
+	RAM(TXF + 8 + (at + 16) % FL) = 0x00716572;
+	RAM(TXF) = RAM(TXF + 4) = (at + 56) % FL;
+	RAM(RXF) = 8, RAM(RXF + 4) = 24;                 /* something old, unread */
+	CHECK(rpm_init((volatile u8 *)rpm_ram, sizeof(rpm_ram), fake_rpm, 0) == 0, "RPM: the table of contents");
+	CHECK(rpm_lcid() == 3, "RPM: Linux's channel id (%u)", rpm_lcid());
+	CHECK(rpm_ldo(8, 400000, true) == 0, "RPM: L8 acknowledged");
+	CHECK(rpm_got_lcid == 3 && rpm_got_type == RPM_LDOA && rpm_got_id == 8 && rpm_got_uv == 400000 &&
+	      rpm_got_swen == 1, "RPM: the request (lcid %u type %x id %u uV %u swen %u)",
+	      rpm_got_lcid, rpm_got_type, rpm_got_id, rpm_got_uv, rpm_got_swen);
+	for (int i = 0; i < 60; i++) rpm_ldo(23, 3200000, true);     /* round the FIFOs */
+	CHECK(rpm_requests == 61 && rpm_got_id == 23, "RPM: 61 requests through (%u)", rpm_requests);
+	CHECK(rpm_ldo(99, 0, false) == -2, "RPM: a refusal");
+}
+
 static void test_stack(void)
 {
 	struct modem_hw hw;
@@ -115,9 +191,18 @@ static void test_stack(void)
 	struct kos_sms s;
 	struct kos_call c;
 	fake_init(&hw, smem, rmem, test_clock, test_set_clock);
+	hw.wlfw = true;
 	modem_start(&hw);
 	run(20000);
 	modem_status(&m);
+	const struct wlfw_info *wi = wlfw_info();
+	CHECK(wi->found && wi->registered && wi->fw_ready && !wi->failed, "WLFW registered, firmware ready");
+	CHECK(wi->have_cap && wi->chip_id == 0x120 && wi->chip_family == 0x4007 && wi->board_id == 0xff &&
+	      wi->soc_id == 0x40670000 && wi->fw_version == 0x324103d6, "WLFW capabilities (chip %x, fw %x)",
+	      wi->chip_id, wi->fw_version);
+	CHECK(!strcmp(wi->timestamp, "2021-12-02 08:20") && !strcmp(wi->build + 24, "WLAN.HL.3.2.4"),
+	      "WLFW strings '%s' '%s'", wi->timestamp, wi->build);
+	CHECK(fake_stats.wlfw == 2, "the fake WLFW answered twice (%u)", fake_stats.wlfw);
 	CHECK(m.state == KOS_MODEM_READY, "ready (state %u: %s)", m.state, m.status);
 	CHECK(m.online, "online");
 	CHECK(m.registration == KOS_REG_HOME, "registered (%u)", m.registration);
@@ -229,6 +314,7 @@ int main(int argc, char **argv)
 		return failed != 0;
 	}
 	test_sms();
+	test_rpm();
 	test_stack();
 	printf("%d passed, %d failed\n", passed, failed);
 	return failed != 0;

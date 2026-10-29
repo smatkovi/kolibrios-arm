@@ -4,6 +4,7 @@
  * lookup, an HTTP request to the gateway (QEMU's host: make run-net
  * serves it). */
 #include "net.h"
+#include "rng.h"
 #include "lwip/init.h"
 #include "lwip/netif.h"
 #include "lwip/dhcp.h"
@@ -28,6 +29,11 @@ u32 sys_now(void)
 u32 net_rand(void)
 {
 	static u64 s;
+	static bool seeded;
+	if (!seeded) {
+		rng_hw(&s, sizeof(s));
+		seeded = true;
+	}
 	s += SYSREG_R(cntvct_el0) | 1;
 	u64 z = s * 0x9e3779b97f4a7c15ull;
 	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;

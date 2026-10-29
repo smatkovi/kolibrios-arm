@@ -42,7 +42,8 @@ static u32 rm_caller;
 static struct { u32 at; int what; char number[32]; char text[160]; } todo[8];
 
 /* the services: QMI service, port */
-static const u32 svcs[][3] = { { 2, 1, 51 }, { 3, 1, 39 }, { 5, 1, 55 }, { 9, 2, 38 }, { 11, 1, 48 } };
+static const u32 svcs[][3] = { { 2, 1, 51 }, { 3, 1, 39 }, { 5, 1, 55 }, { 9, 2, 38 }, { 11, 1, 48 },
+				{ 69, 1, 77 } };
 
 /* --- SMEM -------------------------------------------------------------- */
 
@@ -384,6 +385,28 @@ static void svc_request(u32 port, u32 sport, const struct qmi_msg *m)
 		qmi_put_u8(&qo, 0x10, fcall.id);
 		later(200, 5, fcall.number, 0);
 		break;
+	case 77 << 16 | 0x20:                      /* WLFW: indication register */
+		v = qmi_tlv(m, 0x15, &n);
+		qmi_put_result(&qo, v && n == 4 && get32(v) == 0x4b4e454c ? 0 : 1, 0);
+		qmi_put_u64(&qo, 0x10, 2);             /* fw_status: FW_READY */
+		fake_stats.wlfw++;
+		break;
+	case 77 << 16 | 0x24: {                    /* WLFW: capabilities, the Pro1X's */
+		u8 b[64];
+		qmi_put_result(&qo, 0, 0);
+		put32(b, 0x120);
+		put32(b + 4, 0x4007);
+		qmi_put(&qo, 0x10, b, 8);
+		qmi_put_u32(&qo, 0x11, 0xff);
+		qmi_put_u32(&qo, 0x12, 0x40670000);
+		put32(b, 0x324103d6);
+		b[4] = 16;
+		mcopy(b + 5, "2021-12-02 08:20", 16);
+		qmi_put(&qo, 0x13, b, 21);
+		qmi_put(&qo, 0x14, "QC_IMAGE_VERSION_STRING=WLAN.HL.3.2.4", 37);
+		fake_stats.wlfw++;
+		break;
+	}
 	default:
 		qmi_put_result(&qo, 1, 0x47);          /* not supported */
 		break;

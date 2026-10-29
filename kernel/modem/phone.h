@@ -19,6 +19,7 @@ struct modem_hw {
 	u32 (*clock)(void);            /* Unix time now, 0: not known */
 	void (*set_clock)(u32 t);      /* the network's time (Unix) */
 	bool fake;
+	bool wlfw;                     /* talk to the WLAN firmware's service (wlfw.c) */
 };
 
 void modem_start(const struct modem_hw *hw);

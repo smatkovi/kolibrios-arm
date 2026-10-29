@@ -48,8 +48,8 @@ stream of whatever device does DMA (Wi-Fi `0x1a0`).
 **Chosen:** the network stack goes into the kernel now (below), tested in
 QEMU. On the phone, Wi-Fi is the target, mobile data comes after it, and
 the USB gadget is the optional first step if a cable network is wanted
-for testing the messengers on the phone before the Wi-Fi exists. Nothing
-of the three is written yet.
+for testing the messengers on the phone before the Wi-Fi exists. The
+Wi-Fi's first stages are written (below).
 
 The Wi-Fi in steps, each testable on the phone by its log:
 
@@ -70,6 +70,33 @@ The Wi-Fi in steps, each testable on the phone by its log:
 The passphrase comes from the kernel command line or a ramdisk file
 written by `tools/pro1x-kexec.sh` from Leste's own connection (the user's
 choice; never in the repository).
+
+## The Wi-Fi so far: stages
+
+| Stage | What | Where | Tested |
+| --- | --- | --- | --- |
+| 0 | random numbers from the hardware: the SoC's PRNG (`qcom,prng-ee` at 0x1b53000; its AHB clock voted on in the GCC, bit 13 of 0x79004, on when bit 31 of 0x21004 clears), QEMU's virtio-rng; getrandom's ChaCha20 key and lwIP's numbers from it | `kernel/rng.c`, `kernel/platform/pro1x.c`, `kernel/net/virtio_rng.c` | QEMU (virtio-rng, `nettest` with TLS); the PRNG needs the phone |
+| 1 | the RPM: its GLINK edge in the message RAM (`qcom,rpm-msg-ram`, 0x45f0000, 28 KiB: a table of contents, the FIFOs `ap2r` and `r2ap`), the channel `rpm_requests` Linux left open (its id read from Linux's requests still in the FIFO), SMD-RPM requests; `kolibri.wifi` switches on (`swen`) the PM6125's L8, L16, L17 and L23, the rails of the WLAN part, at the voltages the RPM has from Linux | `kernel/modem/rpm.c` | `tests/modem` against an RPM in RAM (Linux's channel id found, acknowledgements, a refusal, the FIFOs wrapped); the phone next |
+| 2 | WLFW (service 69 on the modem, node 0 port 77) over the existing QRTR: the indication register (ath10k's client id; the answer says whether the firmware is ready, which it is after a kexec: Linux's re-probe path), the capabilities (chip, board, SoC, firmware version and build) | `kernel/modem/wlfw.c` | `tests/modem` against a WLFW service in the fake modem; the phone next |
+| 3 | the copy engines (12 pipes in RAM, `membase` 0xc800000, 32 KiB), the SMMU's context bank of stream 0x1a0 bypassed as the display's, then WLFW's `WLAN_CFG` (the pipes, the service map, the shadow registers: ath10k's `snoc.c` tables) and `WLAN_MODE` (mission) | to do | |
+| 4 | HTC (its services: WMI control, HTT data), WMI-TLV (init, the ready event with the MAC address, service ready) | to do | |
+| 5 | scan, a station vdev, authentication and association (management frames through WMI), WPA2-PSK (PBKDF2, the 4-way handshake, the keys installed through WMI) | to do | |
+| 6 | HTT: Ethernet frames both ways into lwIP's netif, DHCP | to do | |
+
+`kolibri.wifi` (with `tools/pro1x-kexec.sh -m`: the modem, so QRTR) runs
+stages 0-2 on the phone; stage 2 switches nothing on in the firmware.
+What the RAM console should show:
+
+```
+rng: the SoC's PRNG
+pro1x: RPM: message RAM ...45f0000 (28 KiB), IPC bit 0
+rpm: Linux's channel id N (M of its requests seen)
+rpm: FIFOs of ... and ... bytes
+rpm: L8 on at 0 uV: done          (and L16, L17, L23)
+wlfw: the WLAN firmware's service at 0:77
+wlfw: registered, the firmware is ready
+wlfw: chip 120 family 4007 board ff soc 40670000, firmware 324103d6 (...) ...WLAN.HL.3.2.4...
+```
 
 ## The stack: lwIP in the kernel
 
