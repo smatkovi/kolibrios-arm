@@ -244,8 +244,8 @@ messenger in Signal mode (`kolibri.args=signal`). No CA bundle is needed:
 the host trusts only the certificates it carries for Signal.
 
 **What it needed of the Linux personality** (measured with
-`qemu-aarch64 -strace` on the PC, then in QEMU): 46 system calls, all
-there before but two:
+`qemu-aarch64 -strace` on the PC, then in QEMU): 47 system calls, all
+there before but `pwritev2`; and one answered wrongly:
 
 - `pwritev2` (287): musl 1.2.5's `pwrite` tries it first with
   `RWF_NOAPPEND` (POSIX's pwrite on an `O_APPEND` file), and falls back to
