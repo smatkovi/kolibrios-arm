@@ -19,6 +19,12 @@ int rpm_init(volatile u8 *ram, u32 size, void (*kick)(void), void (*delay_us)(u3
 /* a request for the active state: key/value pairs of 32-bit values;
  * 0 acknowledged, -1 no answer, -2 refused */
 int rpm_write(u32 type, u32 id, const u32 *keys, const u32 *values, int n);
+/* ... for a set: what the RPM keeps while this processor is awake, or
+ * asleep (QCOM_SMD_RPM_ACTIVE_STATE, _SLEEP_STATE of Linux's smd-rpm.h) */
+#define RPM_ACTIVE 0
+#define RPM_SLEEP 1
+int rpm_write_set(u32 set, u32 type, u32 id, const u32 *keys, const u32 *values, int n);
+bool rpm_ready(void);
 int rpm_ldo(u32 ldo, u32 microvolts, bool on);
 u32 rpm_lcid(void);
 

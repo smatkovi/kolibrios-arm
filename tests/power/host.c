@@ -73,6 +73,14 @@ static void sm6115(const void *fdt, const char *what)
 	CHECK(power_dt_powerdown(0x40000003, true) && power_dt_powerdown(0x41000044, true) &&
 	      !power_dt_powerdown(0x00000003, true), "%s: extended power-down bit", what);
 
+	/* the RPM: the message RAM, the vMPM in it, the statistics */
+	printf("%s: message RAM %#llx (%#x), vMPM %#llx (%#x bytes, %u pins, IPC bit %u, INTID %u), stats %#llx\n",
+	       what, d.msgram_pa, d.msgram_size, d.vmpm_pa, d.vmpm_size, d.mpm_pins, d.mpm_bit, d.mpm_irq, d.stats_pa);
+	CHECK(d.msgram_pa == 0x45f0000 && d.msgram_size == 0x7000, "%s: the RPM's message RAM", what);
+	CHECK(d.mpm && d.vmpm_pa == 0x45f01b8 && d.vmpm_size == 0x48 && d.mpm_pins == 96 && d.mpm_bit == 1 &&
+	      d.mpm_irq == 229, "%s: the vMPM at 0x45f01b8, 96 pins, IPC bit 1, SPI 197", what);
+	CHECK(d.stats_pa == 0x4690000 && d.stats_size == 0x10000, "%s: the RPM's statistics", what);
+
 	/* the gold cluster's first core */
 	struct power_dt g;
 	power_dt_parse(fdt, 0x100, &g);

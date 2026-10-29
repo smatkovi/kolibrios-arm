@@ -5,7 +5,7 @@
  * data. GLINK commands in them are 8-byte aligned; data goes as TX_DATA
  * (16-byte header: command 9, the channel id, intent 0, the chunk's size,
  * what is left). A request: "req\0", its length, then the message id,
- * the state (0: active), the resource's type and id, the size of the
+ * the set (0: active, 1: sleep; smd-rpm.h), the resource's type and id, the size of the
  * key/value pairs, the pairs (key, 4, value). The answer: "req\0", then
  * "msg#" with the id, and "err\0" with a text when refused. */
 #include "rpm.h"
@@ -38,6 +38,11 @@ static void wr(struct fifo *f, u32 off, u32 v)
 u32 rpm_lcid(void)
 {
 	return lcid;
+}
+
+bool rpm_ready(void)
+{
+	return ready;
 }
 
 /* the channel id Linux sent its requests with: the TX_DATA records
@@ -140,13 +145,18 @@ static int answer(u32 id)
 
 int rpm_write(u32 type, u32 id, const u32 *keys, const u32 *values, int n)
 {
+	return rpm_write_set(RPM_ACTIVE, type, id, keys, values, n);
+}
+
+int rpm_write_set(u32 set, u32 type, u32 id, const u32 *keys, const u32 *values, int n)
+{
 	if (!ready || n > 8) return -1;
 	u32 m[7 + 3 * 8];
 	u32 dlen = 4 * (7 + 3 * n);
 	m[0] = REQ;
 	m[1] = dlen - 8;
 	m[2] = ++msg_id;
-	m[3] = 0;                                         /* the active state */
+	m[3] = set;                                       /* the active set (0) or the sleep set (1) */
 	m[4] = type;
 	m[5] = id;
 	m[6] = 12 * n;

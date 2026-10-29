@@ -38,8 +38,10 @@
 #include "../modem/glink.h"
 #include "../modem/callaudio.h"
 #include "../modem/rpm.h"
+#include "../modem/rpmsleep.h"
 #include "rng.h"
 #include "power.h"
+#include "powerdt.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -61,6 +63,7 @@ static addr_t fb_pa;
 static int fb_w, fb_h, fb_stride;      /* the panel, portrait; stride in bytes */
 static u32 lifetime;                   /* s, 0: forever */
 static u32 powertest;                  /* kolibri.powertest=N: min */
+static bool rpmsleep;                  /* kolibri.rpmsleep: the sleep set, the MPM */
 static u32 tlmm_irq, modem_irq;        /* the TLMM's summary interrupt, the modem's GLINK edge's */
 static u32 reserved[8][2];             /* the TLMM's gpio-reserved-ranges: not ours to touch */
 static int nreserved;
@@ -1039,16 +1042,106 @@ static void delay_us(u32 us)
  * vdd-0.8-cx-mx L8, vdd-1.8-xo L16, vdd-1.3-rfa L17, vdd-3.3-ch0 L23 of
  * the PM6125), which Linux's ath10k switched off on its way out, on
  * again; their voltages as the RPM has them from Linux */
+/* the RPM's GLINK channel, once (the WLAN's rails, the sleep set) */
+static bool rpm_up(void)
+{
+	static bool tried;
+	if (tried) return rpm_ready();
+	tried = true;
+	if (!rpmram_pa || !apcs_pa || rpm_bit >= 32) {
+		kprintf("pro1x: no RPM edge in the device tree\n");
+		return false;
+	}
+	kprintf("pro1x: RPM: message RAM %p (%u KiB), IPC bit %u\n", rpmram_pa, rpmram_size >> 10, rpm_bit);
+	return rpm_init((volatile u8 *)io_va(rpmram_pa), rpmram_size, rpm_kick, delay_us) == 0;
+}
+
 static void wifi_power(void)
 {
 	static const u32 rails[] = { 8, 16, 17, 23 };
-	if (!rpmram_pa || !apcs_pa || rpm_bit >= 32) {
-		kprintf("pro1x: kolibri.wifi without the RPM's edge in the device tree\n");
+	if (!rpm_up()) return;
+	for (u32 i = 0; i < ARRAY_SIZE(rails); i++) rpm_ldo(rails[i], 0, true);
+}
+
+/* --- the SoC's sleep (docs/power.md, stage 3) ------------------------ *
+ *
+ * kolibri.rpmsleep (and the power test with the display off): the sleep
+ * set at 0 (rpmsleep.c), and before the cluster's power collapse the
+ * vMPM (its timer: the next deadline, no pin) handed to the RPM through
+ * the MPM's IPC bit, as pro1x-maemo-leste's Linux patch 0011 does when
+ * the last CPU goes down. The RPM's statistics (vmin, vlow) in the power
+ * test's lines. */
+static bool soc_sleep_on;
+static addr_t vmpm_pa, stats_pa;
+static u32 vmpm_pins, mpm_bit, stats_size, handovers;
+
+static void mpm_setup(void)
+{
+	stats_pa = pdt.stats_pa;
+	stats_size = pdt.stats_size;
+	if (pdt.mpm && pdt.msgram_pa == rpmram_pa) {
+		vmpm_pa = pdt.vmpm_pa;
+		vmpm_pins = pdt.mpm_pins;
+		mpm_bit = pdt.mpm_bit;
+	} else if (rpmram_pa && rpmram_size >= 0x1b8 + 0x48) {
+		/* a tree without the MPM (mainline's sm6115.dtsi has none):
+		 * pro1x-maemo-leste's patch 0006, after QCM2290's and
+		 * downstream bengal's: 0x1b8 in the message RAM, 96 pins,
+		 * the APCS IPC bit 1 */
+		vmpm_pa = rpmram_pa + 0x1b8;
+		vmpm_pins = 96;
+		mpm_bit = 1;
+		kprintf("pro1x: MPM: not in the device tree, patch 0006's place (%p)\n", vmpm_pa);
+	}
+}
+
+/* psci.c, before the cluster's power collapse: wake at that virtual count */
+static void p_soc_sleep(u64 wake)
+{
+	if (!soc_sleep_on || !vmpm_pa || !apcs_pa) return;
+	mpm_prepare((volatile u8 *)io_va(vmpm_pa), vmpm_pins, wake, NULL);
+	wr32(io_va(apcs_pa) + 8, 1u << mpm_bit);
+	handovers++;
+}
+
+static void soc_sleep_start(void)
+{
+	mpm_setup();
+	if (!rpm_up()) {
+		kprintf("pro1x: the SoC's sleep: no RPM\n");
 		return;
 	}
-	kprintf("pro1x: RPM: message RAM %p (%u KiB), IPC bit %u\n", rpmram_pa, rpmram_size >> 10, rpm_bit);
-	if (rpm_init((volatile u8 *)io_va(rpmram_pa), rpmram_size, rpm_kick, delay_us) < 0) return;
-	for (u32 i = 0; i < ARRAY_SIZE(rails); i++) rpm_ldo(rails[i], 0, true);
+	rpm_sleep_votes(wifi);
+	soc_sleep_on = vmpm_pa != 0;
+	kprintf("pro1x: the SoC's sleep: the sleep set voted, %s\n",
+		soc_sleep_on ? "the MPM handed over before the cluster's collapse" : "no MPM");
+}
+
+static void rpm_stats_line(const char *what)
+{
+	static u32 last[2];
+	static bool have;
+	struct rpm_stat st[2];
+	if (!stats_pa) return;
+	int n = rpm_stats_read((const volatile u8 *)io_va(stats_pa), stats_size, st);
+	if (n < 2) {
+		kprintf("rpm: %s: no statistics at %p\n", what, stats_pa);
+		return;
+	}
+	u64 f = timer_freq() ? timer_freq() : 19200000;
+	kprintf("rpm: %s: %s %u (+%u, %u s in all), %s %u (+%u, %u s), votes %x %x; MPM hand-overs %u\n", what,
+		st[0].name, st[0].count, have ? st[0].count - last[0] : 0, (u32)(st[0].accumulated / f),
+		st[1].name, st[1].count, have ? st[1].count - last[1] : 0, (u32)(st[1].accumulated / f),
+		st[0].votes, st[1].votes, handovers);
+	last[0] = st[0].count;
+	last[1] = st[1].count;
+	have = true;
+}
+
+/* the power test's lines (power.c): 0 the start, 1 a minute, 2 the end */
+static void p_power_report(int when)
+{
+	rpm_stats_line(when == 0 ? "at the start" : when == 2 ? "at the end" : "this minute");
 }
 
 static void p_other_irq(u32 id);
@@ -1056,10 +1149,15 @@ static void tlmm_irq_init(void);
 
 static void p_init(void)
 {
+	extern void (*plat_power_report)(int when);
+	if (!stats_pa) stats_pa = pdt.stats_pa, stats_size = pdt.stats_size;
+	plat_power_report = p_power_report;
 	gic3_init(gicd, gicr, p_other_irq);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
 	prng_init();
 	if (wifi) wifi_power();
+	if (rpmsleep) soc_sleep_start();
+	else if (stats_pa) rpm_stats_line("left by Linux");
 	modem_init();
 	if (noinput) {
 		kprintf("pro1x: no input (kolibri.noinput)\n");
@@ -1239,6 +1337,7 @@ struct platform platform_pro1x = {
 	.rtc_time = p_rtc_time,
 	.tick = p_tick,
 	.next_tick = p_next_tick,
+	.soc_sleep = p_soc_sleep,
 	.panic_hook = p_panic,
 	.cached_data = true,
 };
@@ -1479,6 +1578,7 @@ bool pro1x_probe(const void *fdt)
 		fakemodem = word(args, len, "kolibri.fakemodem", NULL);
 		callaudio = word(args, len, "kolibri.callaudio", NULL);
 		wifi = word(args, len, "kolibri.wifi", NULL);
+		rpmsleep = word(args, len, "kolibri.rpmsleep", NULL);
 		adopt_ipcrtr = word(args, len, "kolibri.ipcrtr=adopt", NULL);
 	}
 	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of

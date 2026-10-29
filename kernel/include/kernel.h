@@ -109,6 +109,9 @@ struct platform {
 	 * run again (its polls, the watchdog), 0xffffffff: only after an
 	 * interrupt; without it, a platform with a tick() is ticked always */
 	u32 (*next_tick)(void);
+	/* the CPU's deepest idle state next (its cluster down): the SoC may
+	 * sleep, to wake at that count of the virtual counter (AArch64) */
+	void (*soc_sleep)(u64 wake);
 	void (*panic_hook)(void);     /* after the panic's text is on the screen */
 	bool cached_data;             /* D-cache on */
 };

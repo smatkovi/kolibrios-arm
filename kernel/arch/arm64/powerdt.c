@@ -135,12 +135,65 @@ static void psci(const void *fdt, u64 my_mpidr, struct power_dt *d)
 	add_states(fdt, phandle_at(fdt, pd, "power-domains"), "domain-idle-states", true, d);
 }
 
+/* the RPM's parts for the SoC's sleep: the vMPM is a child of the
+ * message RAM's node (sm6115.dtsi with pro1x-maemo-leste's patch 0006:
+ * sram@1b8, 0x48 bytes, through the message RAM's ranges) */
+static void rpm(const void *fdt, struct power_dt *d)
+{
+	int ac, sc, len;
+	u64 a, s;
+	int r = fdt_find_compatible(fdt, "qcom,rpm-msg-ram", -1, &ac, &sc);
+	if (r >= 0 && fdt_reg(fdt, r, ac, sc, 0, &a, &s)) {
+		d->msgram_pa = a;
+		d->msgram_size = (u32)s;
+	}
+	int st = fdt_find_compatible(fdt, "qcom,rpm-stats", -1, &ac, &sc);
+	if (st >= 0 && enabled(fdt, st) && fdt_reg(fdt, st, ac, sc, 0, &a, &s)) {
+		d->stats_pa = a;
+		d->stats_size = (u32)s;
+	}
+	int m = fdt_find_compatible(fdt, "qcom,mpm", -1, &ac, &sc);
+	if (m < 0 || !enabled(fdt, m) || r < 0) return;
+	int v = phandle_at(fdt, m, "qcom,rpm-msg-ram");
+	const u8 *mb = fdt_prop(fdt, m, "mboxes", &len);
+	if (v < 0 || !mb || len < 8) return;
+	/* v below the message RAM: its reg in the RAM's cells, translated
+	 * by the RAM's ranges (child address, parent address, size) */
+	int rac = fdt_u32(fdt, r, "#address-cells", 1), rsc = fdt_u32(fdt, r, "#size-cells", 1);
+	bool child = false;
+	for (int c = fdt_next_child(fdt, r, -1); c >= 0; c = fdt_next_child(fdt, r, c))
+		if (c == v) child = true;
+	if (!child || !fdt_reg(fdt, v, rac, rsc, 0, &a, &s)) return;
+	const u8 *rg = fdt_prop(fdt, r, "ranges", &len);
+	int step = 4 * (rac + ac + rsc);
+	u64 pa = 0;
+	bool found = false;
+	for (int o = 0; rg && o + step <= len; o += step) {
+		u64 cb = fdt_cells(rg + o, rac), pb = fdt_cells(rg + o + 4 * rac, ac);
+		u64 sz = fdt_cells(rg + o + 4 * (rac + ac), rsc);
+		if (a >= cb && a + s <= cb + sz) {
+			pa = pb + (a - cb);
+			found = true;
+			break;
+		}
+	}
+	if (!found) return;
+	d->vmpm_pa = pa;
+	d->vmpm_size = (u32)s;
+	d->mpm_bit = (u32)fdt_cells(mb + 4, 1);
+	d->mpm_pins = fdt_u32(fdt, m, "qcom,mpm-pin-count", 0);
+	const u8 *ip = fdt_prop(fdt, m, "interrupts", &len);
+	if (ip && len >= 12 && fdt_cells(ip, 1) == 0) d->mpm_irq = intid_of(ip);
+	d->mpm = d->mpm_pins && d->mpm_pins <= 96 && 4 * (2 + 5 * ((d->mpm_pins + 31) / 32)) <= d->vmpm_size;
+}
+
 void power_dt_parse(const void *fdt, u64 my_mpidr, struct power_dt *d)
 {
 	*d = (struct power_dt){ .vtimer_id = 27, .self = -1 };
 	if (!fdt_ok(fdt)) return;
 	timers(fdt, d);
 	psci(fdt, my_mpidr, d);
+	rpm(fdt, d);
 }
 
 bool power_dt_powerdown(u32 param, bool extended)

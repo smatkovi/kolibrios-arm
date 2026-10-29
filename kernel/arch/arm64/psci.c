@@ -55,7 +55,9 @@ static long psci_call(u64 fid, u64 a1, u64 a2, u64 a3)
 void psci_probe(void)
 {
 	/* the device tree is read (powerdt.c); the firmware is asked once
-	 * the MMU is on (psci_init) */
+	 * the MMU is on (psci_init). The RPM's statistics mapped (read by
+	 * the platform) */
+	if (pdt.stats_pa && pdt.stats_size) mmu_add_io(pdt.stats_pa, pdt.stats_size);
 }
 
 static const char *mode_name(void)
@@ -138,6 +140,11 @@ bool psci_idle(u64 idle_ticks)
 		if (!pdt.st[j].cluster && pdt.st[j].timer_stop) tstop = true;
 	u64 now = timer_count();
 	if (tstop) timer_bcast_set(now + idle_ticks);
+	/* the cluster's deepest state: the SoC may sleep (the RPM told) */
+	bool deepest = s->cluster;
+	for (int j = 0; deepest && j < pdt.nstates; j++)
+		if (pdt.st[j].cluster && pdt.st[j].min_us > s->min_us) deepest = false;
+	if (deepest && plat->soc_sleep) plat->soc_sleep(now + idle_ticks);
 	bool down = power_dt_powerdown(s->param, extended);
 	u32 before = resumed;
 	long r = psci_suspend(PSCI_CPU_SUSPEND, s->param, pdt.hvc, simulate && down);

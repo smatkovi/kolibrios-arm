@@ -13,7 +13,7 @@ timer, through the MPM). The steps:
 | --- | --- | --- | --- |
 | 1 | tickless idle: the timer at the next deadline instead of 100 Hz; the Pro1X's input and modem by interrupt | `kernel/arch/arm64/timer.c`, `kernel/sched.c`, `kernel/power.c`, `kernel/platform/pro1x.c`, `kernel/modem/kmodem.c` | QEMU (`make -C tests/power`) |
 | 2 | CPU idle through PSCI: the core's and the cluster's power-down states, the context kept across them, the memory-mapped timer as the wake-up | `kernel/arch/arm64/psci.c`, `suspend.S`, `powerdt.c`, `timer.c` | the device tree on the PC against the phone's (`make -C tests/power host`); QEMU's CPU_SUSPEND, the way back played (`kolibri.psci=simulate`) under Go, TLS and the network |
-| 3 | the RPM's sleep set, the MPM | | |
+| 3 | the RPM's sleep set, the MPM's timer before the cluster's collapse, the RPM's sleep counts | `kernel/modem/rpmsleep.c`, `rpm.c`, `kernel/platform/pro1x.c`, `powerdt.c` | `make -C tests/modem` (the requests against an RPM in RAM, the vMPM's layout, the statistics), `make -C tests/power host` (the addresses in the phone's tree) |
 | 4 | the display off, the battery's current in the log | | |
 
 ## Measuring: `kolibri.powertest=N`
@@ -167,3 +167,62 @@ in 10 s.
 
 Not testable in QEMU: the firmware's own power-down and warm boot, OSI
 on the SM6115, the memory-mapped timer as the wake-up.
+
+## Stage 3: the RPM's sleep set and the MPM
+
+On the RPM-based SM6115 the SoC's sleep states (vlow: XO shutdown; vmin:
+CX and MX at retention as well) are the RPM's to enter, when every
+master (the apps processor, the modem, the ADSP, the CDSP) sleeps and
+none of them needs the shared resources then. Each master's votes come
+in two sets: the active set while it runs, the sleep set while it
+sleeps. Three things on the apps processor's side, as Linux does them:
+
+**The sleep set** (`kolibri.rpmsleep`; `rpm_sleep_votes`,
+`kernel/modem/rpmsleep.c`): after a kexec it is what Linux left, its
+consumers' votes and its maxima from the boot (rpmpd and clk-smd-rpm
+clamp to the highest until `sync_state`). KolibriOS sends what Linux
+sends when nothing uses a resource, 0, in the sleep set (state 1 of an
+SMD-RPM request, `include/linux/soc/qcom/smd-rpm.h`), the active set as
+it is:
+
+| resource | RPM type, id, key | Linux |
+| --- | --- | --- |
+| the XO | `clk0` 0 `Enab` | `clk-smd-rpm.c` bi_tcxo |
+| its buffers | `clka` 1-3 (LN_BB), 4-5 (RF, not with `kolibri.wifi`) `swen` | XO_BUFFER |
+| CX, MX | `rwcx` 0, `rwmx` 0 `vlvl` | `rpmpd.c`, sm6115 |
+| the bus clocks | `clk2` 0 bimc, `clk1` 1 cnoc, `clk1` 2 snoc, `mmxi` 0-1, `qup` 0 `KHz` | `sm_qnoc_icc_clks` |
+
+Not voted: the interconnect's per-node bandwidth (`icc-rpm.c`'s master
+and slave requests), the regulators (Linux votes them in the active set,
+which the RPM keeps in sleep too).
+
+**The MPM** (`mpm_prepare`): while the SoC sleeps the GIC is off and the
+MPM, in the always-on domain, wakes it: by one of its pins or by its
+timer. Its registers are mirrored in the RPM's message RAM (the vMPM,
+Linux's `irq-qcom-mpm.c`: TIMER0/1, then ENABLE, FALLING_EDGE,
+RISING_EDGE, POLARITY and STATUS, three words each for 96 pins), at
+0x45f01b8 (the device tree's `qcom,mpm` node, from pro1x-maemo-leste's
+patch 0006; without it the same place, 96 pins and IPC bit 1, said on
+the console). Before the cluster's deepest state (its power collapse)
+the next deadline goes into TIMER0/1 as a count of the virtual counter,
+no pin is enabled, the status is cleared, and the RPM is told through
+the MPM's bit in the APCS IPC register (`mboxes = <&apcs_glb 1>`), as
+the Linux patch 0011 does when the last CPU goes down. The keyboard's
+GPIOs are not among the MPM's pins (106, 107, 112), so in vmin only the
+timer (and what the RPM itself wakes for) wakes the phone.
+
+**The RPM's statistics** (`rpm_stats_read`, Linux's `qcom_stats.c` for
+`qcom,rpm-stats` at 0x4690000: the records' offset in the word at 0x14,
+two records of 48 bytes, the name, the count, the times, the masters'
+votes): at the start, every minute of a power test and at its end:
+
+```
+rpm: left by Linux: vmin 0 (+0, 0 s in all), vlow 0 (+0, 0 s), votes 0 0; MPM hand-overs 0
+rpm: the sleep set: 12 of 12 resources at 0
+pro1x: the SoC's sleep: the sleep set voted, the MPM handed over before the cluster's collapse
+...
+rpm: this minute: vmin 0 (+0, ...), vlow 3 (+3, 41 s), ...; MPM hand-overs 120
+```
+
+A count that does not move while the hand-overs do: another master or a
+vote still holds the SoC up (the display is the first: stage 4).

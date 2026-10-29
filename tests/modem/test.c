@@ -8,6 +8,7 @@
 #include "../../kernel/modem/fake.h"
 #include "../../kernel/modem/wlfw.h"
 #include "../../kernel/modem/rpm.h"
+#include "../../kernel/modem/rpmsleep.h"
 
 static int failed, passed;
 #define CHECK(c, ...) do { if (c) passed++; else { failed++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -114,6 +115,7 @@ static int find_sms(const char *text_start, struct kos_sms *s)
 /* the RPM's edge: a message RAM of our own, the RPM answering on the kick */
 static u32 rpm_ram[0x7000 / 4];
 static u32 rpm_got_type, rpm_got_id, rpm_got_uv, rpm_got_swen, rpm_got_lcid, rpm_requests;
+static u32 rpm_got_set, rpm_got_key, rpm_got_value, rpm_sleep_reqs, rpm_refuse_type;
 #define RAM(o) rpm_ram[(o) / 4]
 #define TXF 0x100
 #define RXF 0x600
@@ -130,6 +132,10 @@ static void fake_rpm(void)
 		rpm_got_type = m[4];
 		rpm_got_id = m[5];
 		rpm_got_uv = rpm_got_swen = ~0u;
+		rpm_got_set = m[3];
+		rpm_got_key = m[7];
+		rpm_got_value = m[9];
+		if (m[3] == RPM_SLEEP) rpm_sleep_reqs++;
 		for (u32 i = 0; i < m[6] / 12; i++) {
 			if (m[7 + 3 * i] == RPM_KEY_UV) rpm_got_uv = m[9 + 3 * i];
 			if (m[7 + 3 * i] == RPM_KEY_SWEN) rpm_got_swen = m[9 + 3 * i];
@@ -143,7 +149,7 @@ static void fake_rpm(void)
 		a[n++] = 0x2367736d;
 		a[n++] = 4;
 		a[n++] = m[2];
-		if (m[5] == 99) {
+		if (m[5] == 99 || m[4] == rpm_refuse_type) {
 			a[n++] = 0x00727265;
 			a[n++] = 24;
 			memcpy(&a[n], "resource does not exist", 24);
@@ -182,6 +188,51 @@ static void test_rpm(void)
 	for (int i = 0; i < 60; i++) rpm_ldo(23, 3200000, true);     /* round the FIFOs */
 	CHECK(rpm_requests == 61 && rpm_got_id == 23, "RPM: 61 requests through (%u)", rpm_requests);
 	CHECK(rpm_ldo(99, 0, false) == -2, "RPM: a refusal");
+	CHECK(rpm_got_set == RPM_ACTIVE, "RPM: an LDO in the active set");
+
+	/* the sleep set: 12 resources at 0 (14 with the RF buffers), "mmxi"
+	 * (mmnrt, mmrt) refused here */
+	rpm_refuse_type = 0x69786d6du;
+	CHECK(rpm_sleep_votes(false) == 10, "RPM: the sleep set without RF: 10 of 12 taken");
+	CHECK(rpm_sleep_reqs == 12 && rpm_got_set == RPM_SLEEP && rpm_got_value == 0,
+	      "RPM: 12 sleep-set requests (%u), at 0", rpm_sleep_reqs);
+	CHECK(rpm_got_type == 0x00707571u && rpm_got_key == 0x007a484bu, "RPM: the last: qup's rate (%x %x)",
+	      rpm_got_type, rpm_got_key);
+	rpm_refuse_type = 0;
+	CHECK(rpm_sleep_votes(true) == 14, "RPM: the sleep set with RF: 14");
+
+	/* the vMPM (irq-qcom-mpm.c's layout, 96 pins: 3 words a register) */
+	u32 vmpm[18];
+	memset(vmpm, 0xa5, sizeof(vmpm));
+	u32 mask[3] = { 0, 0, 1u << (86 - 64) };          /* SPMI's pin 86 */
+	mpm_prepare((volatile u8 *)vmpm, 96, 0x123456789abull, mask);
+	CHECK(vmpm[0] == 0x456789ab && vmpm[1] == 0x123, "vMPM: TIMER0/1 (%x %x)", vmpm[0], vmpm[1]);
+	CHECK(vmpm[2] == 0 && vmpm[3] == 0 && vmpm[4] == 1u << 22, "vMPM: ENABLE");
+	CHECK(vmpm[5] == 0xa5a5a5a5u && vmpm[13] == 0xa5a5a5a5u, "vMPM: the edges and polarity untouched");
+	CHECK(vmpm[14] == 0 && vmpm[15] == 0 && vmpm[16] == 0, "vMPM: STATUS cleared");
+	vmpm[16] = 1u << 22;
+	u32 st[3];
+	mpm_status((volatile u8 *)vmpm, 96, st);
+	CHECK(st[0] == 0 && st[2] == 1u << 22, "vMPM: the status read back");
+
+	/* the RPM's statistics: the records' offset in the word at 0x14 */
+	static u32 stats[0x1000 / 4];
+	memset(stats, 0, sizeof(stats));
+	stats[0x14 / 4] = 0xabcd0000u | 0x200;
+	u32 *r = &stats[0x200 / 4];
+	r[0] = 0x6e696d76;                                /* "vmin" */
+	r[1] = 7;
+	r[6] = 0x1000, r[7] = 1;                          /* accumulated */
+	r[8] = 0x5;                                       /* the votes */
+	r[12] = 0x776f6c76;                               /* "vlow" */
+	r[13] = 9;
+	struct rpm_stat rs[2];
+	CHECK(rpm_stats_read((volatile u8 *)stats, sizeof(stats), rs) == 2, "RPM stats: two records");
+	CHECK(!strcmp(rs[0].name, "vmin") && rs[0].count == 7 && rs[0].accumulated == 0x100001000ull &&
+	      rs[0].votes == 5, "RPM stats: vmin (%s %u)", rs[0].name, rs[0].count);
+	CHECK(!strcmp(rs[1].name, "vlow") && rs[1].count == 9, "RPM stats: vlow (%s %u)", rs[1].name, rs[1].count);
+	stats[0x14 / 4] = 0xffe0;
+	CHECK(rpm_stats_read((volatile u8 *)stats, sizeof(stats), rs) == 0, "RPM stats: an offset outside");
 }
 
 static void test_stack(void)

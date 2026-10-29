@@ -41,6 +41,14 @@ struct power_dt {
 	int nstates;
 	struct idle_state st[PDT_STATES];
 	bool hierarchical;              /* from power domains (OSI), not cpu-idle-states */
+	/* the RPM (Qualcomm): its message RAM (qcom,rpm-msg-ram), the vMPM
+	 * in it (qcom,mpm's qcom,rpm-msg-ram), the MPM's IPC bit (its
+	 * mboxes), its pins, its interrupt; the sleep statistics
+	 * (qcom,rpm-stats) */
+	u64 msgram_pa, vmpm_pa, stats_pa;
+	u32 msgram_size, vmpm_size, stats_size;
+	u32 mpm_bit, mpm_pins, mpm_irq;
+	bool mpm;
 };
 
 /* my_mpidr: MPIDR_EL1's affinity (Aff3 in bits 32-39, Aff2-0) */

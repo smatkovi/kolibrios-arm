@@ -40,6 +40,7 @@ The command line:
 | `kolibri.wifi` | the WLAN part's rails on through the RPM, the WLAN firmware's QMI service asked what it is (with `-m`; `docs/pro1x-network.md`) |
 | `kolibri.powertest=N` | N minutes of power measurement, a console line a minute, then the reset (as a lifetime of N minutes and 30 s); `docs/power.md` |
 | `kolibri.tick=periodic` | the 100 Hz tick also in idle (no tickless idle), the input polled as before |
+| `kolibri.rpmsleep` | the RPM's sleep set at 0 and the MPM handed the next wake-up before the cluster's collapse: the SoC may sleep (vlow, vmin; `docs/power.md`) |
 | `kolibri.psci=off` | the CPU idles with `wfi` only, no PSCI power-down states (`core`: no cluster state; `docs/power.md`) |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;

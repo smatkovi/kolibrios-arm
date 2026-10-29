@@ -40,7 +40,7 @@ KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgenera
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
 	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S power.c \
-	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c rng.c modem/rpm.c \
+	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c rng.c modem/rpm.c modem/rpmsleep.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
 LWIP := third_party/lwip/src

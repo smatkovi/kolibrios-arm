@@ -203,6 +203,18 @@
 		};
 	};
 
+	mpm: interrupt-controller {
+		compatible = "qcom,mpm";
+		qcom,rpm-msg-ram = <&apss_mpm>;
+		interrupts = <0 197 1>;
+		mboxes = <&apcs_glb 1>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&intc>;
+		qcom,mpm-pin-count = <96>;
+		qcom,mpm-pin-map = <5 296>, <12 422>, <24 79>, <86 183>, <90 260>, <91 260>;
+	};
+
 	timer {
 		compatible = "arm,armv8-timer";
 		interrupts = <1 1 8>, <1 2 8>, <1 3 8>, <1 0 8>;
@@ -218,6 +230,23 @@
 			compatible = "qcom,sm6115-apcs-hmss-global", "qcom,msm8994-apcs-kpss-global";
 			reg = <0x0 0x0f111000 0x0 0x1000>;
 			#mbox-cells = <1>;
+		};
+
+		rpm_msg_ram: sram@45f0000 {
+			compatible = "qcom,rpm-msg-ram", "mmio-sram";
+			reg = <0x0 0x045f0000 0x0 0x7000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0 0x0 0x045f0000 0x7000>;
+
+			apss_mpm: sram@1b8 {
+				reg = <0x1b8 0x48>;
+			};
+		};
+
+		sram@4690000 {
+			compatible = "qcom,rpm-stats";
+			reg = <0x0 0x04690000 0x0 0x10000>;
 		};
 
 		timer@f120000 {
