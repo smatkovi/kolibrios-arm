@@ -27,7 +27,9 @@ LDFLAGS := -nostdlib -Wl,--no-warn-rwx-segments
 LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 
 KCOMMON := lib.c mm.c sched.c syscall.c gfx.c wm.c input.c fs.c loader.c main.c \
-	fonts/font8x16.c fonts/font6x10.c rd.S
+	fonts/font8x16.c fonts/font6x10.c rd.S \
+	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
+	modem/phone.c modem/fake.c modem/kmodem.c
 
 ifeq ($(PLATFORM),arm64)
 # the AArch64 kernel (QEMU's virt, the Pro1X: chosen by the device tree),
@@ -55,13 +57,14 @@ KLINK = $(CC32) $(LDFLAGS) -T kernel/arch/armv7/kernel.ld -Wl,--defsym,KERNEL_BA
 endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
-APPS := taskbar menu example clock board cpu hildon hstatus
+APPS := taskbar menu example clock board cpu hildon hstatus phone
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
 RDNAME_hildon := @hildon
 RDNAME_hstatus := @hstatus
 # memory beyond the default 1 MiB (the shell keeps the task switcher's pictures)
 MEM_hildon := 0x400000
+MEM_phone := 0x400000
 # the look the kernel starts with: hildon (the Hildon shell) or classic
 # (KolibriOS's panel and menu): apps/autorun or apps/autorun.classic
 LOOK ?= hildon
@@ -70,7 +73,7 @@ KEX := $(foreach a,$(APPS),$(A)/$(a).kex)
 
 all: $(B)/kernel.elf $(B)/kernel.bin
 
-$(B)/%.o: kernel/%.c kernel/include/*.h kernel/arch/$(ARCH)/arch.h | dirs
+$(B)/%.o: kernel/%.c kernel/include/*.h kernel/modem/*.h lib/kos_modem.h kernel/arch/$(ARCH)/arch.h | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
 $(B)/%.o: kernel/%.S | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
@@ -89,7 +92,7 @@ $(A)/lib/%.o: lib/%.c lib/kos.h | dirs
 	$(CC32) $(ACFLAGS) -c $< -o $@
 $(A)/lib/%.o: lib/%.S | dirs
 	$(CC32) $(ACFLAGS) -c $< -o $@
-$(A)/%.o: apps/%/*.c lib/kos.h | dirs
+$(A)/%.o: apps/%/*.c lib/kos.h lib/kos_modem.h | dirs
 	$(CC32) $(ACFLAGS) -c apps/$*/$*.c -o $@
 $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
 	$(CC32) $(LDFLAGS) $(if $(MEM_$*),-Wl$(comma)--defsym$(comma)MEMORY_SIZE=$(MEM_$*)) \
@@ -109,7 +112,7 @@ $(A)/look: FORCE | dirs
 FORCE:
 
 dirs:
-	@mkdir -p $(B)/platform $(B)/fonts $(B)/arch/$(ARCH) $(A)/lib
+	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/arch/$(ARCH) $(A)/lib
 
 QEMU := qemu-system-arm -M realview-pb-a8 -m 256 -rtc base=localtime -serial stdio
 run: all

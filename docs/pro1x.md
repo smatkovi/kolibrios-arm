@@ -18,6 +18,10 @@ tools/pro1x-kexec.sh -n                                  # check: kexec takes it
 tools/pro1x-kexec.sh /host/kolibri/kernel.bin "kolibri.lifetime=60"
 ```
 
+With `-m` the modem goes along (calls and SMS, `docs/pro1x-modem.md`):
+the EFS partitions as the initrd, ofono stopped, Linux's IPCRTR channel
+closed before the jump.
+
 `pro1x-kexec.sh` keeps the keyboard's I2C engine clocked (runtime PM
 off), writes out and remounts the filesystems read-only, arms the SoC's
 watchdog (about 32 s, as the boot menu does for FreeBSD) and jumps. Linux
@@ -30,6 +34,8 @@ The command line:
 | `kolibri.lifetime=N` | stop feeding the watchdog after N s, with a screenshot first: the phone resets about 32 s later, into the boot menu (an unattended test) |
 | `kolibri.noinput` | leave the keyboard and the touch screen alone |
 | `kolibri.look=classic` | KolibriOS's own panel and movable windows instead of the Hildon shell (`kolibri.look=hildon`, the default) |
+| `kolibri.nomodem` | leave the modem alone |
+| `kolibri.fakemodem` | a modem in RAM instead (QEMU with the phone's device tree) |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.

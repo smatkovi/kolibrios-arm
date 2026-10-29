@@ -3,7 +3,7 @@
 # running Linux (Maemo Leste), with kexec, the way pro1x-maemo-leste's
 # boot menu starts FreeBSD:
 #
-#   pro1x-kexec.sh [-n] [KERNEL] [COMMAND LINE]
+#   pro1x-kexec.sh [-n] [-m] [KERNEL] [COMMAND LINE]
 #
 # KERNEL is build/arm64/kernel.bin (default /host/kolibri/kernel.bin), the
 # command line e.g. "kolibri.lifetime=60": KolibriOS stops feeding the
@@ -11,13 +11,25 @@
 # the boot menu (Linux's default system). -n only loads the kernel and
 # unloads it again (a check that kexec takes it).
 #
+# -m: the modem goes along (docs/pro1x-modem.md). It keeps running through
+# the kexec; its EFS partitions go along as the initrd (tools/mkefs.py,
+# for KolibriOS's rmtfs service), ofono is stopped and Linux's IPCRTR
+# channel to the modem closed, so that KolibriOS can open it anew. rmtfs
+# keeps running until the jump: stopped normally it would stop the modem.
+#
 # Linux ends here: its filesystems are synced and remounted read-only, then
 # the watchdog is armed and kexec jumps. After the next boot,
 # pro1x-read.py shows what KolibriOS left in memory.
 set -eu
 
-check=
-[ "${1:-}" = -n ] && { check=1; shift; }
+check= modem=
+while [ $# -gt 0 ]; do
+	case $1 in
+	-n) check=1; shift ;;
+	-m) modem=1; shift ;;
+	*) break ;;
+	esac
+done
 kernel=${1:-/host/kolibri/kernel.bin}
 args=${2:-}
 
@@ -28,9 +40,25 @@ command -v kexec > /dev/null || { echo "pro1x-kexec: no kexec (kexec-tools)" >&2
 busybox devmem 0x0f017008 32 > /dev/null ||
     { echo "pro1x-kexec: no busybox devmem (for the watchdog)" >&2; exit 1; }
 
+# the modem's EFS images (read only), for the initrd
+initrd=
+if [ -n "$modem" ]; then
+	here=$(cd "$(dirname "$0")" && pwd)
+	efs=${EFS:-/host/kolibri/efs.img}
+	set --
+	for p in modemst1 modemst2 fsg fsc; do
+		d=/dev/disk/by-partlabel/$p
+		[ -e "$d" ] || { echo "pro1x-kexec: no $d" >&2; exit 1; }
+		set -- "$@" "$p=$d"
+	done
+	python3 "$here/mkefs.py" "$efs" "$@" || exit 1
+	initrd="--initrd=$efs"
+fi
+
 # kexec_file: the device tree this kernel booted with goes along; any
 # failure from here on unloads it again
-kexec -s -l "$kernel" --command-line="$args"
+# shellcheck disable=SC2086
+kexec -s -l "$kernel" $initrd --command-line="$args"
 trap 'kexec -u' EXIT
 if [ -n "$check" ]; then
 	echo "pro1x-kexec: $kernel loaded, unloaded again"
@@ -56,6 +84,28 @@ for d in 4a84000.i2c; do
 	pm=/sys/bus/platform/devices/$d/power/control
 	[ ! -e "$pm" ] || echo on > "$pm"
 done
+
+# The modem: its clients gone (ofono), Linux's IPCRTR channel closed
+# (unbound from qrtr-smd; autoprobe off, so that Linux does not take it
+# again when the modem reopens it). rmtfs stays: its SIGTERM would stop
+# the modem.
+ch=6080000.remoteproc:glink-edge.IPCRTR.-1.-1
+# (an abort after this gives Linux its channel and ofono back)
+restore_modem() {
+	echo 1 > /sys/bus/rpmsg/drivers_autoprobe
+	[ -e /sys/bus/rpmsg/devices/$ch/driver ] ||
+	    echo -n "$ch" > /sys/bus/rpmsg/drivers/qcom_smd_qrtr/bind 2> /dev/null
+	rc-service ofono start > /dev/null 2>&1 || true
+}
+if [ -n "$modem" ]; then
+	trap 'kexec -u; restore_modem' EXIT
+	rc-service ofono stop > /dev/null 2>&1 || true
+	echo 0 > /sys/bus/rpmsg/drivers_autoprobe
+	if [ -e /sys/bus/rpmsg/devices/$ch/driver ]; then
+		echo -n "$ch" > /sys/bus/rpmsg/drivers/qcom_smd_qrtr/unbind
+	fi
+	sleep 1
+fi
 
 sync
 # The APSS watchdog (0x0f017000, kpss layout, 32 kHz) armed for its

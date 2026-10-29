@@ -81,6 +81,12 @@ void kmain(void)
 	input_init();
 	fs_init();
 	plat->init();
+	/* the modem: the Pro1X's starts in its platform; in QEMU a fake one */
+#ifdef __aarch64__
+	if (plat == &platform_virt) kmodem_fake();
+#else
+	if (plat == &platform_realview) kmodem_fake();
+#endif
 	autorun();
 	gfx_flush();
 	kprintf("running\n");

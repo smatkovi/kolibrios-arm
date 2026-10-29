@@ -16,10 +16,12 @@
  *
  * The home view, the task switcher and the launcher cover the screen
  * (the shell's window grows, function 67); with an application in front
- * the window is the panel only. Everything is a finger wide; the arrow
+ * the window is the panel only. A call coming in starts the phone (or
+ * brings it to the front); unread messages show beside the clock. Everything is a finger wide; the arrow
  * keys, Enter and Escape work in the grids. The status area opens
  * @hstatus. The icons are drawn here, simple shapes. */
 #include "kos.h"
+#include "kos_modem.h"
 
 #define BAR 56
 #define NAVW 112
@@ -72,6 +74,10 @@ static int closing, closing_tick;
 
 static u32 shown_time;
 
+/* the modem (function 100): an incoming call starts the phone */
+static struct kos_modem modem;
+static u32 modem_tick, modem_unread_shown;
+
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
@@ -122,7 +128,7 @@ static const char *title_of(const char *name, char *buf)
 {
 	static const char *const known[][2] = {
 		{ "clock", "Clock" }, { "example", "Example" }, { "board", "Debug board" },
-		{ "cpu", "Processes" },
+		{ "cpu", "Processes" }, { "phone", "Phone" },
 	};
 	char n[24];
 	strcpy(n, name);
@@ -237,6 +243,16 @@ static void icon(const char *name, int x, int y, int n)
 		rounded(x, y, n, n, r, 0x101214);
 		for (int i = 0; i < 5; i++)
 			kos_rect(x + n / 6, y + n / 5 + i * n / 8, (i % 2 ? n / 2 : n * 2 / 3), n / 20 + 1, 0x58d068);
+	} else if (!strcmp(low, "phone")) {
+		rounded(x, y, n, n, r, 0x2e9e4a);
+		/* a handset: the receiver's arc, the two ends */
+		int cx = x + n / 2, cy = y + n / 2, R = n / 3;
+		for (int i = -R; i <= R; i++) {
+			int dy = isqrt(R * R - i * i) / 3;
+			kos_rect(cx + i, cy - dy, 1, dy / 2 + n / 14, 0xffffff);
+		}
+		kos_rect(cx - R, cy, n / 5, n / 7, 0xffffff);
+		kos_rect(cx + R - n / 5, cy, n / 5, n / 7, 0xffffff);
 	} else if (!strcmp(low, "cpu")) {
 		rounded(x, y, n, n, r, 0x2c3440);
 		static const int bars[5] = { 40, 70, 55, 85, 30 };
@@ -307,6 +323,16 @@ static void panel(const char *title, int launcher_icon, int with_close)
 	clock_text(clk);
 	kos_text_scaled(sx + 10, BAR / 2 - 16, clk, C_TEXT, 1, 2);
 	battery(sx + STATUSW - 46, BAR / 2 - 8);
+	if (modem.sms_unread) {
+		/* an envelope and the number of unread messages */
+		int ex = sx - 64, ey = BAR / 2 - 9;
+		kos_rect(ex, ey, 28, 18, C_TEXT);
+		kos_line(ex, ey, ex + 14, ey + 10, 0x303438);
+		kos_line(ex + 27, ey, ex + 13, ey + 10, 0x303438);
+		char u[8];
+		ksprintf(u, "%u", modem.sms_unread);
+		kos_text(ex + 32, BAR / 2 - 8, u, C_TEXT, 1);
+	}
 	if (with_close) {
 		kos_rect(right, 8, 1, BAR - 16, 0x505458);
 		kos_button_hidden(right, 0, CLOSEW, BAR, BTN_CLOSE);
@@ -520,9 +546,36 @@ static void close_app(int slot)
 /* what the system did meanwhile: an application came, one ended */
 static u8 seen[64];
 
+static void watch_modem(void)
+{
+	if (kos_uptime() - modem_tick < 100) return;
+	modem_tick = kos_uptime();
+	if (kos_call(100, KOS_MODEM_STATUS, (u32)&modem, 0, 0, 0) != 0) return;
+	struct kos_call c;
+	kos_call(100, KOS_MODEM_CALL, (u32)&c, 0, 0, 0);
+	static u32 rang_for;
+	if (c.state == KOS_CALL_INCOMING && rang_for != c.id + 1) {
+		rang_for = c.id + 1;
+		int running = 0;
+		for (int i = 0; i < napps; i++)
+			if (!strcmp(apps[i].name, "PHONE") || !strcmp(apps[i].name, "phone")) {
+				running = 1;
+				front = apps[i].slot;
+				go(APP);
+			}
+		if (!running) kos_run("/sys/phone", 0);
+	}
+	if (c.state != KOS_CALL_INCOMING) rang_for = 0;
+	if (modem.sms_unread != modem_unread_shown) {
+		modem_unread_shown = modem.sms_unread;
+		if (mode != SWITCHER && mode != LAUNCHER) draw();
+	}
+}
+
 static void follow(void)
 {
 	scan();
+	watch_modem();
 	int a = kos_active_slot();
 	if (closing && app_index(closing) < 0) closing = 0;
 	if (closing && kos_uptime() - closing_tick > 200) {

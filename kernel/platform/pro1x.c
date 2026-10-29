@@ -29,6 +29,7 @@
  * clock (the PMIC's RTC, over SPMI) is not driven: the time starts at 0. */
 #include "kernel.h"
 #include "fdt.h"
+#include "../modem/phone.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -42,7 +43,7 @@ extern addr_t boot_args[3];
 #define SHOT (SPLASH + 0xc00000)
 #define SHOT_SIZE (3u << 20)
 
-static struct mem_region io[12];
+static struct mem_region io[24];
 static addr_t gicd, gicr, wdt, mdp, smmu, geni, tlmm[3];
 static u32 streams[8][2];              /* the display's SMMU stream ids, masks */
 static int nstreams;
@@ -50,6 +51,11 @@ static addr_t fb_pa;
 static int fb_w, fb_h, fb_stride;      /* the panel, portrait; stride in bytes */
 static u32 lifetime;                   /* s, 0: forever */
 static bool noinput;
+/* the modem (docs/pro1x-modem.md): SMEM, the rmtfs buffer, the APCS IPC
+ * register and the bit that kicks its GLINK edge, the EFS images (initrd) */
+static addr_t smem_pa, rmtfs_pa, apcs_pa, efs_pa;
+static u32 smem_size, rmtfs_size, apcs_bit, efs_size;
+static bool nomodem, fakemodem;
 
 static addr_t io_va(addr_t pa)
 {
@@ -804,10 +810,49 @@ static void p_early_init(void)
 	}
 }
 
+static void modem_kick(void)
+{
+	asm volatile("dsb sy" ::: "memory");
+	wr32(io_va(apcs_pa) + 8, 1u << apcs_bit);
+}
+
+static void modem_init(void)
+{
+	if (efs_pa) {
+		/* written with the caches off (kexec): what the caches hold is stale */
+		for (addr_t p = efs_pa & ~63ul; p < efs_pa + efs_size; p += 64)
+			asm volatile("dc ivac, %0" :: "r"(p) : "memory");
+		asm volatile("dsb sy");
+		char magic[9];
+		memcpy(magic, (const void *)efs_pa, 8);
+		magic[8] = 0;
+		for (int i = 0; i < 8; i++)
+			if (magic[i] < 32 || magic[i] > 126) magic[i] = '.';
+		kprintf("pro1x: initrd at %p, %u KiB (%s)\n", efs_pa, efs_size >> 10, magic);
+	}
+	if (fakemodem) {
+		kmodem_fake();
+		return;
+	}
+	if (nomodem || !smem_pa || !apcs_pa) {
+		kprintf("pro1x: no modem%s\n", nomodem ? " (kolibri.nomodem)" : " in the device tree");
+		return;
+	}
+	struct modem_hw hw = {
+		.smem = (volatile u8 *)smem_pa, .smem_size = smem_size, .kick = modem_kick,
+		.rmtfs_mem = (volatile u8 *)rmtfs_pa, .rmtfs_pa = rmtfs_pa, .rmtfs_size = rmtfs_size,
+		.efs = (u8 *)efs_pa, .efs_size = efs_size,
+	};
+	kprintf("pro1x: modem: SMEM %p (%u KiB), rmtfs %p, IPC %p bit %u, EFS images %p (%u KiB)\n",
+		smem_pa, smem_size >> 10, rmtfs_pa, apcs_pa, apcs_bit, efs_pa, efs_size >> 10);
+	kmodem_start(&hw);
+}
+
 static void p_init(void)
 {
 	gic3_init(gicd, gicr, NULL);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
+	modem_init();
 	if (noinput) {
 		kprintf("pro1x: no input (kolibri.noinput)\n");
 		return;
@@ -892,6 +937,33 @@ static bool word(const char *s, int len, const char *w, u32 *val)
 		return true;
 	}
 	return false;
+}
+
+/* [lo, hi) out of the RAM banks (2 MiB aligned) */
+static void bank_cut(u64 lo, u64 hi)
+{
+	struct platform *pl = &platform_pro1x;
+	for (int i = 0; i < pl->nbank; i++) {
+		u64 b = pl->bank[i].base, e = b + pl->bank[i].size;
+		if (hi <= b || lo >= e) continue;
+		if (lo > b && hi < e && pl->nbank < MAX_BANKS) {   /* split */
+			for (int j = pl->nbank; j > i + 1; j--) pl->bank[j] = pl->bank[j - 1];
+			pl->nbank++;
+			pl->bank[i + 1].base = hi;
+			pl->bank[i + 1].size = e - hi;
+			pl->bank[i].size = lo - b;
+			i++;
+		} else if (lo <= b && hi >= e) {
+			for (int j = i; j + 1 < pl->nbank; j++) pl->bank[j] = pl->bank[j + 1];
+			pl->nbank--;
+			i--;
+		} else if (lo <= b) {
+			pl->bank[i].base = hi;
+			pl->bank[i].size = e - hi;
+		} else {
+			pl->bank[i].size = lo - b;
+		}
+	}
 }
 
 bool pro1x_probe(const void *fdt)
@@ -998,12 +1070,58 @@ bool pro1x_probe(const void *fdt)
 		break;
 	}
 
+	/* the modem: SMEM and the rmtfs buffer (reserved memory, not
+	 * cached, never read speculatively), the IPC register of the MPSS's
+	 * GLINK edge */
+	int sn = fdt_find_compatible(fdt, "qcom,smem", -1, &ac, &sc);
+	if (sn >= 0 && fdt_reg(fdt, sn, ac, sc, 0, &a, &s)) {
+		smem_pa = a;
+		smem_size = s;
+		add_io(a, s, MAP_UNCACHED);
+	}
+	int rn = fdt_find_compatible(fdt, "qcom,rmtfs-mem", -1, &ac, &sc);
+	if (rn >= 0 && fdt_reg(fdt, rn, ac, sc, 0, &a, &s)) {
+		rmtfs_pa = a;
+		rmtfs_size = s;
+		add_io(a, s, MAP_UNCACHED);
+	}
+	int mp = fdt_find_compatible(fdt, "qcom,sm6115-mpss-pas", -1, &ac, &sc);
+	int edge = mp >= 0 ? fdt_next_child(fdt, mp, -1) : -1;
+	while (edge >= 0 && strcmp(fdt_node_name(fdt, edge), "glink-edge"))
+		edge = fdt_next_child(fdt, mp, edge);
+	p = edge >= 0 ? fdt_prop(fdt, edge, "mboxes", &len) : NULL;
+	if (p && len >= 8) {
+		int mb = fdt_find_phandle(fdt, cell(p, 0));
+		int mac = 2, msc = 2;
+		apcs_bit = cell(p, 1);
+		if (mb >= 0 && fdt_find_compatible(fdt, "qcom,sm6115-apcs-hmss-global", mb - 1, &mac, &msc) == mb)
+			reg_io(fdt, mb, mac, msc, 0, &apcs_pa, MAP_DEVICE);
+	}
+
 	/* the command line: kolibri.lifetime=N, kolibri.noinput */
 	int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
 	const char *args = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
 	if (args) {
 		word(args, len, "kolibri.lifetime=", &lifetime);
 		noinput = word(args, len, "kolibri.noinput", NULL);
+		nomodem = word(args, len, "kolibri.nomodem", NULL);
+		fakemodem = word(args, len, "kolibri.fakemodem", NULL);
+	}
+	/* the initrd (pro1x-kexec.sh -m: the modem's EFS images): kept out of
+	 * the programs' memory, mapped as RAM */
+	if (ch >= 0) {
+		const void *st = fdt_prop(fdt, ch, "linux,initrd-start", &len);
+		int len2;
+		const void *en = fdt_prop(fdt, ch, "linux,initrd-end", &len2);
+		if (st && en && (len == 4 || len == 8) && (len2 == 4 || len2 == 8)) {
+			u64 b = fdt_cells(st, len / 4), e = fdt_cells(en, len2 / 4);
+			if (e > b && e - b < 64 * MB) {
+				efs_pa = b;
+				efs_size = e - b;
+				bank_cut(b & ~(2 * MB - 1), ALIGN_UP(e, 2 * MB));
+				add_io(b, e - b, MAP_NORMAL);
+			}
+		}
 	}
 	return true;
 }

@@ -139,6 +139,13 @@ void *kmalloc_aligned(u32 size, u32 align);
 extern volatile u32 ticks;     /* 1/100 s since boot */
 void timer_tick(void);         /* the platform's 100 Hz interrupt */
 u32 rtc_seconds(void);         /* Unix time */
+void rtc_set(u32 t);           /* the time (Unix) from elsewhere: the mobile network */
+
+/* the modem (kernel/modem/kmodem.c): the platform's or a fake one */
+struct modem_hw;
+void kmodem_start(const struct modem_hw *hw);
+void kmodem_fake(void);
+void kmodem_tick(void);
 
 /* input (input.c): what the platform's drivers report */
 void input_key_set2(u8 byte);  /* PS/2 scan code set 2 byte */

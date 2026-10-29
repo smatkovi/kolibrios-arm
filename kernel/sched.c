@@ -134,6 +134,7 @@ void timer_tick(void)
 {
 	ticks++;
 	if (plat->tick) plat->tick();
+	kmodem_tick();
 	if (++slice >= SLICE_TICKS) {
 		slice = 0;
 		need_resched = true;

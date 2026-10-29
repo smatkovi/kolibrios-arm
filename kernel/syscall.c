@@ -29,6 +29,12 @@ static void civil(u32 t, int *y, int *mo, int *d, int *h, int *mi, int *s)
 
 static u32 boot_rtc, boot_ticks;
 
+void rtc_set(u32 t)
+{
+	boot_rtc = t;
+	boot_ticks = ticks;
+}
+
 u32 rtc_seconds(void)
 {
 	if (!boot_rtc && plat->rtc_time) {
@@ -506,6 +512,11 @@ void syscall(struct task *t)
 	case 70:
 		file_system(t, r);
 		return;
+	case 100: {                            /* KolibriOS for ARM: the modem */
+		extern void sys_modem(struct task *t, u32 *r);
+		sys_modem(t, r);
+		return;
+	}
 	case 72:                               /* a message to the active window */
 		EAX = EBX == 1 ? wm_message(ECX, EDX) : -1;
 		return;

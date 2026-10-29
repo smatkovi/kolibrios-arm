@@ -9,7 +9,8 @@ STEP: wait:SECONDS | shot:NAME | key:QEMUKEY (e.g. key:a, key:ret) |
       mem:ADDR,SIZE,NAME (guest physical memory to OUTDIR/NAME)
 The serial output goes to OUTDIR/serial.log, screenshots to OUTDIR/NAME.png.
 QEMU_MACHINE=virt runs the AArch64 kernel on QEMU's virt, QEMU_MEM sets
-its memory (512M), QEMU_DTB a device tree of its own (a Pro1X test).
+its memory (512M), QEMU_DTB a device tree of its own (a Pro1X test),
+QEMU_INITRD an initrd (the Pro1X's EFS images, tools/mkefs.py).
 """
 import os
 import socket
@@ -28,6 +29,8 @@ if os.environ.get('QEMU_MACHINE') == 'virt':
                '-m', os.environ.get('QEMU_MEM', '512M'), '-device', 'ramfb']
     if os.environ.get('QEMU_DTB'):
         machine += ['-dtb', os.environ['QEMU_DTB']]
+    if os.environ.get('QEMU_INITRD'):
+        machine += ['-initrd', os.environ['QEMU_INITRD']]
 else:
     machine = ['qemu-system-arm', '-M', 'realview-pb-a8', '-m', '256']
 q = subprocess.Popen(machine + ['-rtc', 'base=localtime',

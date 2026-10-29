@@ -96,6 +96,8 @@ input there).
 | AArch64 kernel: EL1, AArch32 programs at EL0, GICv3, the RAM in banks (QEMU virt with 8 GiB) | runs (QEMU) |
 | Pro1X: display takeover, landscape screen, RAM console, screenshot, watchdog | runs in QEMU with the phone's device tree (no display controller there), **not tried on the device** |
 | Pro1X: keyboard (AW9523B on GENI I2C, modifier GPIOs), touch screen (Goodix on GPIO I2C) | written, **not tried on the device** |
+| Pro1X: the modem, calls and SMS (SMEM, GLINK, QRTR, QMI WMS/VOICE/NAS/DMS, rmtfs), function 100 | written, runs against a modem in RAM (QEMU, `tests/modem`), **not tried on the device**; calls without sound |
+| Pro1X: the clock from the mobile network (NAS) | written, **not tried on the device** |
 | Pro1X: clock (PMIC RTC), battery, everything else | not yet |
 
 The system functions done are in `kernel/syscall.c`; the others return
@@ -118,6 +120,7 @@ can be recompiled.
 | `clock` | an analog clock, drawn with lines, as large as its window |
 | `board` | the debug board: what the kernel and programs write (function 63) |
 | `cpu` | the process manager: the threads, their memory and state; ends one |
+| `phone` | calls and SMS (function 100): the dialler, the call screen, the conversations as bubbles, writing a message; `@hildon` starts it when a call comes in |
 
 `apps/autorun` lists what the kernel starts.
 
@@ -147,6 +150,11 @@ qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 8G \
 tests; with `QEMU_DTB` the AArch64 kernel gets a device tree of its own,
 such as the Pro1X's layout (`docs/pro1x.md`).
 
+The modem's code (`kernel/modem`) also builds on the PC: `make -C
+tests/modem` runs the SMS codec against known PDUs and the whole stack
+against a modem in RAM (`kernel/modem/fake.c`, which QEMU's kernels use
+too), with the address and undefined behaviour sanitizers.
+
 ## The N950
 
 `kernel/platform/n950.c` takes over the display from the boot loader:
@@ -174,7 +182,9 @@ bypassed). The kernel draws a landscape screen of 1080x540, which goes to
 the panel doubled and turned clockwise. The phone has no serial port, so
 the kernel leaves its output and a screenshot in the splash memory, where
 Linux reads them after the next boot, and the SoC's watchdog resets a hung
-system into the boot menu. `docs/pro1x.md` has the steps.
+system into the boot menu. `docs/pro1x.md` has the steps. Calls and SMS go
+through the modem, which keeps running from Linux's time through the
+kexec: `docs/pro1x-modem.md`.
 
 ## Licence
 
