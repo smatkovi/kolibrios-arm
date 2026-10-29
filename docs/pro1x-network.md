@@ -9,7 +9,7 @@ built on top of it: [messengers.md](messengers.md).
 
 | Piece | Linux on the Pro1X |
 | --- | --- |
-| Wi-Fi | `wifi@c800000`, `qcom,wcn3990-wifi` (the SM6115's WCN3990-class core, `chip_id 0x120`, calibration variant `Fxtec_QX1050`), driver `ath10k_snoc`: 12 copy-engine interrupts (SPI 358-369), one register window (`membase`, 32 KiB), stream `0x1a0` on the apps SMMU (`iommu@c600000`), a DMA-type IOMMU group, `qcom,msa-fixed-perm`. Rails `vdd-0.8-cx-mx`, `vdd-1.8-xo`, `vdd-1.3-rfa`, `vdd-3.3-ch0` from the PMIC through the RPM |
+| Wi-Fi | `wifi@c800000`, `qcom,wcn3990-wifi` (the SM6115's WCN3990-class core, `chip_id 0x120`, calibration variant `Fxtec_QX1050`), driver `ath10k_snoc`: 12 copy-engine interrupts (SPI 358-369), one register window (`membase`: `reg = <0 0xc800000 0 0x800000>`, 8 MiB; the copy engines at 0x240000-0x24c000 in it, after `hw.c`'s `wcn3990_regs`), stream `0x1a0` on the apps SMMU (`iommu@c600000`), a DMA-type IOMMU group, `qcom,msa-fixed-perm`. Rails `vdd-0.8-cx-mx`, `vdd-1.8-xo`, `vdd-1.3-rfa`, `vdd-3.3-ch0` from the PMIC through the RPM |
 | its firmware | not on the apps processor: `wlanmdsp.mbn` (WLAN.HL.3.2.4) runs on the modem's DSP, which fetches it from `/lib/firmware` through TFTP over QRTR (`tqftpserv`, service 4096). `firmware-5.bin` (60 bytes) and `board-2.bin` are what the host reads. The host talks to it through the QMI service WLFW (69), offered by the modem on node 0, port 77 |
 | mobile data | `ipa@5840000` (IPA with its GSI, `qcom,gsi-loader = "self"`: the apps processor loads `ipa_fws.mbn` through TrustZone), interface `rmnet_ipa0`; set up over QMI: WDS (1), the data port mapper (47), IPA control (49, offered by both sides) |
 | USB | `usb@4e00000` (DWC3, peripheral mode, `g_cdc`: RNDIS `usb0` = 172.16.42.1) |
@@ -78,13 +78,74 @@ choice; never in the repository).
 | 0 | random numbers from the hardware: the SoC's PRNG (`qcom,prng-ee` at 0x1b53000; its AHB clock voted on in the GCC, bit 13 of 0x79004, on when bit 31 of 0x21004 clears), QEMU's virtio-rng; getrandom's ChaCha20 key and lwIP's numbers from it | `kernel/rng.c`, `kernel/platform/pro1x.c`, `kernel/net/virtio_rng.c` | QEMU (virtio-rng, `nettest` with TLS); the PRNG needs the phone |
 | 1 | the RPM: its GLINK edge in the message RAM (`qcom,rpm-msg-ram`, 0x45f0000, 28 KiB: a table of contents, the FIFOs `ap2r` and `r2ap`), the channel `rpm_requests` Linux left open (its id read from Linux's requests still in the FIFO), SMD-RPM requests; `kolibri.wifi` switches on (`swen`) the PM6125's L8, L16, L17 and L23, the rails of the WLAN part, at the voltages the RPM has from Linux | `kernel/modem/rpm.c` | `tests/modem` against an RPM in RAM (Linux's channel id found, acknowledgements, a refusal, the FIFOs wrapped); the phone next |
 | 2 | WLFW (service 69 on the modem, node 0 port 77) over the existing QRTR: the indication register (ath10k's client id; the answer says whether the firmware is ready, which it is after a kexec: Linux's re-probe path), the capabilities (chip, board, SoC, firmware version and build) | `kernel/modem/wlfw.c` | `tests/modem` against a WLFW service in the fake modem; the phone next |
-| 3 | the copy engines (12 pipes in RAM, `membase` 0xc800000, 32 KiB), the SMMU's context bank of stream 0x1a0 bypassed as the display's, then WLFW's `WLAN_CFG` (the pipes, the service map, the shadow registers: ath10k's `snoc.c` tables) and `WLAN_MODE` (mission) | to do | |
-| 4 | HTC (its services: WMI control, HTT data), WMI-TLV (init, the ready event with the MAC address, service ready) | to do | |
+| 3 | the copy engines (12 engines at 0x240000 + 0x1000 * id of `membase`, their rings in RAM), the SMMU's context bank of stream 0x1a0 bypassed as the display's, then WLFW's `WLAN_CFG` (the pipes, the service map, the shadow registers: ath10k's `snoc.c` tables) and `WLAN_MODE` (mission) | `kernel/modem/ce.c`, `wlfw.c` (`wlfw_cfg_msg`, `wlfw_mode_msg`) | the rings and the messages: `make -C tests/wifi` (against a simulated engine block), `make -C tests/modem` (the QMI messages); not sent on the phone yet, nor the SMMU |
+| 4 | HTC (its services: WMI control, HTT data), WMI-TLV (init, the ready event with the MAC address, service ready) | `kernel/modem/htc.c`, `wmi.c` | `make -C tests/wifi`: READY, two services connected, SETUP_COMPLETE_EX, SERVICE_READY, INIT, READY with the MAC address, the credits, through the copy engines of the simulation |
 | 5 | scan, a station vdev, authentication and association (management frames through WMI), WPA2-PSK (PBKDF2, the 4-way handshake, the keys installed through WMI) | to do | |
 | 6 | HTT: Ethernet frames both ways into lwIP's netif, DHCP | to do | |
 
 `kolibri.wifi` (with `tools/pro1x-kexec.sh -m`: the modem, so QRTR) runs
 stages 0-2 on the phone; stage 2 switches nothing on in the firmware.
+
+### Stages 3 and 4, prepared on the PC
+
+What the host does with the WCN3990 above WLFW, after Linux's ath10k
+(`ce.c`, `snoc.c`, `htc.c`, `wmi-tlv.c` of the Pro1X's 7.1 kernel; the
+WCN3990's `hw_params` in `core.c`: `target_64bit`, `shadow_reg_support`,
+`rri_on_ddr`, `use_fw_tx_credits` false, 33 peers):
+
+- **The copy engines** (`kernel/modem/ce.c`, `ce.h`): the host's rings as
+  `host_ce_config_wlan` (CE0 16 source entries for HTC control, CE1 512
+  destination entries for HTT and HTC, CE2 64 for WMI, CE3 32 for WMI's
+  commands, CE4 2048 for HTT's frames without interrupts, CE5 and CE9-11
+  512, CE7 2 and 2, CE8 128; sizes powers of two), 16-byte descriptors
+  (`ce_desc_64`: the address in 35 bits, its high bits and the gather flag
+  in the second word, the length, the HTC endpoint as the transfer id in
+  bits 4-15 of the flags), each engine programmed as
+  `ath10k_ce_init_src_ring`/`init_dest_ring` do (base, size, the largest
+  transfer in CTRL1, no byte swap, the watermarks) from the indices the
+  engine has (after a kexec Linux's), the read indices in a word of RAM
+  per engine (`ath10k_ce_alloc_rri`: CE_WRAPPER + 4/8, CTRL1 bit 19), the
+  source rings' write index through the shadow registers (0x32000 + 4 *
+  id), copy-complete interrupts where Linux has a callback (not CE4, CE6-8).
+  As in Linux, a source ring's free entries count from the target's read
+  index in RAM, so completions are taken before the ring goes round again.
+- **WLAN_CFG and WLAN_MODE** (`wlfw_cfg_msg`, `wlfw_mode_msg`): the 12
+  target pipes (`target_ce_config_wlan`, five words each: QMI's structure
+  has no reserved word), the 21 service entries (`target_service_to_ce_map_wlan`
+  with its terminating zeros, as `ath10k_snoc_wlan_enable` counts them),
+  the 12 shadow registers (`target_shadow_reg_cfg_map`); no host version;
+  then the mission mode (0).
+- **HTC** (`kernel/modem/htc.c`): the 8-byte header, endpoint 0's control
+  messages (READY: credits and their size, the extended form by its
+  length; CONNECT_SERVICE with the credits for WMI control only, credit
+  flow off for every other service; its response hands out the endpoint
+  and the largest message; SETUP_COMPLETE_EX, 12 bytes), the credit
+  reports in a received trailer. The WCN3990 does not use the firmware's
+  credit count (`use_fw_tx_credits` false): WMI control has one credit,
+  given back in a trailer.
+- **WMI-TLV** (`kernel/modem/wmi.c`): the 4-byte command header, the TLV
+  walk with Linux's minimum lengths, SERVICE_READY (the firmware's build,
+  the ABI checked as Linux checks it, the channels, the service bitmap
+  with four services a word as `WMI_SERVICE_IS_ENABLED` reads it, the
+  memory requests), INIT (the ABI, the resource configuration's 44 words as
+  `ath10k_wmi_tlv_op_gen_init` fills them for the WCN3990, the host memory
+  chunks each with its TLV header), READY (the MAC address).
+
+`make -C tests/wifi` runs them against a simulated target: the engines'
+registers in RAM, written and read as the hardware does (a source ring's
+write index only through its shadow register, the read indices in the
+registers and the RAM word, the destination descriptors filled with their
+lengths), the host's memory above 16 GiB (so the address's high bits
+count), the firmware's HTC and WMI on top (READY, the connects, the
+credit back in READY's trailer, INIT decoded field by field). 96 checks.
+
+What the phone has to show next (needs the device): the engines'
+registers readable at all once WLAN_MODE is on (Linux sends WLAN_CFG and
+WLAN_MODE first, then sets the engines up: `ath10k_snoc_hif_power_up`),
+the SMMU bypass for stream 0x1a0, uncached DMA memory below 2^35 for the
+rings and buffers (and the `memory-region` the tree gives the Wi-Fi), the
+12 interrupts (SPI 358-369, one per engine), and then the firmware's
+real READY.
 What the RAM console should show:
 
 ```

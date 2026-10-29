@@ -9,6 +9,7 @@
 #include "../../kernel/modem/wlfw.h"
 #include "../../kernel/modem/rpm.h"
 #include "../../kernel/modem/rpmsleep.h"
+#include "../../kernel/modem/ce.h"
 
 static int failed, passed;
 #define CHECK(c, ...) do { if (c) passed++; else { failed++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -271,6 +272,33 @@ static void test_stack(void)
 	CHECK(!strcmp(wi->timestamp, "2021-12-02 08:20") && !strcmp(wi->build + 24, "WLAN.HL.3.2.4"),
 	      "WLFW strings '%s' '%s'", wi->timestamp, wi->build);
 	CHECK(fake_stats.wlfw == 2, "the fake WLFW answered twice (%u)", fake_stats.wlfw);
+	/* WLAN_CFG and WLAN_MODE, encoded from snoc.c's tables (stage 3) */
+	{
+		static struct qmi_buf b;
+		wlfw_cfg_msg(&b, 9, ce_target_cfg, CE_COUNT, ce_svc_map, ce_svc_map_n, ce_shadow_map, ce_shadow_map_n);
+		u32 bl = qmi_end(&b);
+		struct qmi_msg q;
+		u32 tn;
+		const u8 *t;
+		CHECK(qmi_parse(b.d, bl, &q) && q.id == WLFW_WLAN_CFG && q.txn == 9, "WLAN_CFG: a request (%u bytes)", bl);
+		CHECK(!qmi_tlv(&q, 0x10, &tn), "WLAN_CFG: no host version");
+		t = qmi_tlv(&q, 0x11, &tn);
+		CHECK(t && tn == 1 + 12 * 20 && t[0] == 12, "WLAN_CFG: 12 pipes of 5 words");
+		CHECK(t && get32(t + 1 + 20 * 4) == 4 && get32(t + 1 + 20 * 4 + 8) == 256 && get32(t + 1 + 20 * 4 + 16) == 8,
+		      "WLAN_CFG: CE4 256 entries, without interrupts");
+		CHECK(t && get32(t + 1 + 20 * 7 + 4) == 4, "WLAN_CFG: CE7's direction 4 (the host's only)");
+		t = qmi_tlv(&q, 0x12, &tn);
+		CHECK(t && t[0] == 21 && tn == 1 + 21 * 12, "WLAN_CFG: 21 service entries, the zeros at the end too (%u)", t ? t[0] : 0);
+		CHECK(t && get32(t + 1) == 0x104 && get32(t + 1 + 8) == 3 && get32(t + 1 + 12 * 20) == 0,
+		      "WLAN_CFG: WMI data VO out on CE3 first, the terminator last");
+		t = qmi_tlv(&q, 0x13, &tn);
+		CHECK(t && t[0] == 12 && tn == 1 + 12 * 4 && get16(t + 1 + 4 * 5) == 1 && get16(t + 1 + 4 * 5 + 2) == 0x40,
+		      "WLAN_CFG: 12 shadow registers, the sixth CE1's DST_WR_INDEX");
+		wlfw_mode_msg(&b, 10, WLFW_MODE_MISSION);
+		bl = qmi_end(&b);
+		CHECK(qmi_parse(b.d, bl, &q) && q.id == WLFW_WLAN_MODE && (t = qmi_tlv(&q, 0x01, &tn)) && tn == 4 &&
+		      get32(t) == 0 && !qmi_tlv(&q, 0x10, &tn), "WLAN_MODE: mission, no hw_debug");
+	}
 	CHECK(m.state == KOS_MODEM_READY, "ready (state %u: %s)", m.state, m.status);
 	CHECK(m.online, "online");
 	CHECK(m.registration == KOS_REG_HOME, "registered (%u)", m.registration);

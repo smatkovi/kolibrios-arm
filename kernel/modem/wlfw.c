@@ -3,6 +3,7 @@
  * the indication register (client id, FW_READY and MSA_READY wanted; the
  * answer says whether the firmware is ready), then its capabilities. */
 #include "wlfw.h"
+#include "ce.h"
 
 static struct qrtr *qr;
 static struct wlfw_info wi;
@@ -92,6 +93,51 @@ static void rx(void *arg, u32 node, u32 port, const u8 *d, u32 len)
 		     wi.chip_family, wi.board_id, wi.soc_id, wi.fw_version, wi.timestamp, wi.build);
 		return;
 	}
+}
+
+/* the QMI_WLFW_MAX_NUM_* limits of qmi_wlfw_v01.h */
+#define MAX_CE 12
+#define MAX_SVC 24
+#define MAX_SHADOW 24
+
+void wlfw_cfg_msg(struct qmi_buf *b, u16 txn, const struct ce_pipe_cfg *tgt, u32 ntgt,
+		  const struct ce_svc_pipe *svc, u32 nsvc, const struct ce_shadow_cfg *sh, u32 nsh)
+{
+	u8 v[1 + MAX_SVC * 12];
+	ntgt = MIN(ntgt, (u32)MAX_CE);
+	nsvc = MIN(nsvc, (u32)MAX_SVC);
+	nsh = MIN(nsh, (u32)MAX_SHADOW);
+	qmi_begin(b, QMI_REQUEST, txn, WLFW_WLAN_CFG);
+	v[0] = (u8)ntgt;
+	for (u32 i = 0; i < ntgt; i++) {
+		u8 *e = v + 1 + 20 * i;               /* wlfw_ce_tgt_pipe_cfg_s_v01: no reserved word */
+		put32(e, tgt[i].pipenum);
+		put32(e + 4, tgt[i].pipedir);
+		put32(e + 8, tgt[i].nentries);
+		put32(e + 12, tgt[i].nbytes_max);
+		put32(e + 16, tgt[i].flags);
+	}
+	qmi_put(b, 0x11, v, 1 + 20 * ntgt);
+	v[0] = (u8)nsvc;
+	for (u32 i = 0; i < nsvc; i++) {
+		u8 *e = v + 1 + 12 * i;
+		put32(e, svc[i].service_id);
+		put32(e + 4, svc[i].pipedir);
+		put32(e + 8, svc[i].pipenum);
+	}
+	qmi_put(b, 0x12, v, 1 + 12 * nsvc);
+	v[0] = (u8)nsh;
+	for (u32 i = 0; i < nsh; i++) {
+		put16(v + 1 + 4 * i, sh[i].ce_id);
+		put16(v + 1 + 4 * i + 2, sh[i].reg_offset);
+	}
+	qmi_put(b, 0x13, v, 1 + 4 * nsh);
+}
+
+void wlfw_mode_msg(struct qmi_buf *b, u16 txn, u32 mode)
+{
+	qmi_begin(b, QMI_REQUEST, txn, WLFW_WLAN_MODE);
+	qmi_put_u32(b, 0x01, mode);
 }
 
 void wlfw_init(struct qrtr *q)
