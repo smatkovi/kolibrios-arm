@@ -1,0 +1,105 @@
+/* A QEMU TCG plugin for KolibriOS for ARM's profiles: executed guest
+ * instructions per translation block, written out when QEMU ends.
+ *
+ *   qemu-system-aarch64 ... -plugin tools/qemu-prof/prof.so,out=FILE
+ *
+ * FILE gets one line per block: its start address (the guest's virtual
+ * address), its instruction count and how often it ran. report.py adds
+ * up the kernel's blocks by symbol. Instruction counts do not depend on
+ * how fast the host is (unlike TCG's wall clock); they do not see the
+ * memory system (caches, the bus), which the device's kolibri.bench
+ * measures. Built by tools/qemu-prof/Makefile. */
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <qemu-plugin.h>
+
+QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+
+struct block {
+	uint64_t vaddr;
+	uint32_t ninsn;
+	uint32_t used;
+	struct qemu_plugin_scoreboard *count;
+};
+
+static struct block *tab;
+static size_t cap = 1 << 16, nused;
+static char out_path[512] = "prof.out";
+
+static uint64_t hash(uint64_t v, uint32_t n)
+{
+	v ^= (uint64_t)n << 48;
+	v *= 0x9e3779b97f4a7c15ull;
+	return v ^ (v >> 29);
+}
+
+static struct block *lookup(uint64_t vaddr, uint32_t n);
+
+static void grow(void)
+{
+	struct block *old = tab;
+	size_t oc = cap;
+	cap *= 2;
+	tab = calloc(cap, sizeof(*tab));
+	nused = 0;
+	for (size_t i = 0; i < oc; i++)
+		if (old[i].used) {
+			struct block *b = lookup(old[i].vaddr, old[i].ninsn);
+			b->count = old[i].count;
+		}
+	free(old);
+}
+
+static struct block *lookup(uint64_t vaddr, uint32_t n)
+{
+	if (nused * 2 >= cap) grow();
+	for (size_t i = hash(vaddr, n) & (cap - 1);; i = (i + 1) & (cap - 1)) {
+		struct block *b = &tab[i];
+		if (!b->used) {
+			b->used = 1;
+			b->vaddr = vaddr;
+			b->ninsn = n;
+			b->count = NULL;
+			nused++;
+			return b;
+		}
+		if (b->vaddr == vaddr && b->ninsn == n) return b;
+	}
+}
+
+static void tb_trans(struct qemu_plugin_tb *tb, void *u)
+{
+	uint64_t va = qemu_plugin_tb_vaddr(tb);
+	uint32_t n = qemu_plugin_tb_n_insns(tb);
+	struct block *b = lookup(va, n);
+	if (!b->count) b->count = qemu_plugin_scoreboard_new(sizeof(uint64_t));
+	qemu_plugin_register_vcpu_tb_exec_inline_per_vcpu(tb, QEMU_PLUGIN_INLINE_ADD_U64,
+							  qemu_plugin_scoreboard_u64(b->count), 1);
+}
+
+static void at_exit(void *p)
+{
+	FILE *f = fopen(out_path, "w");
+	if (!f) return;
+	for (size_t i = 0; i < cap; i++) {
+		struct block *b = &tab[i];
+		if (!b->used || !b->count) continue;
+		uint64_t c = qemu_plugin_u64_sum(qemu_plugin_scoreboard_u64(b->count));
+		if (c) fprintf(f, "%" PRIx64 " %u %" PRIu64 "\n", b->vaddr, b->ninsn, c);
+	}
+	fclose(f);
+}
+
+QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
+					   int argc, char **argv)
+{
+	for (int i = 0; i < argc; i++)
+		if (!strncmp(argv[i], "out=", 4))
+			snprintf(out_path, sizeof(out_path), "%s", argv[i] + 4);
+	tab = calloc(cap, sizeof(*tab));
+	qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans, NULL);
+	qemu_plugin_register_atexit_cb(id, at_exit, NULL);
+	return 0;
+}

@@ -10,9 +10,12 @@ STEP: wait:SECONDS | shot:NAME | key:QEMUKEY (e.g. key:a, key:ret) |
 The serial output goes to OUTDIR/serial.log, screenshots to OUTDIR/NAME.png.
 QEMU_MACHINE=virt runs the AArch64 kernel on QEMU's virt, QEMU_MEM sets
 its memory (512M), QEMU_DTB a device tree of its own (a Pro1X test),
-QEMU_INITRD an initrd (the Pro1X's EFS images, tools/mkefs.py).
+QEMU_INITRD an initrd (the Pro1X's EFS images, tools/mkefs.py),
+QEMU_APPEND the kernel's command line, QEMU_EXTRA more of QEMU's arguments
+(e.g. a profile: -plugin tools/qemu-prof/prof.so,out=FILE).
 """
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -33,6 +36,9 @@ if os.environ.get('QEMU_MACHINE') == 'virt':
         machine += ['-initrd', os.environ['QEMU_INITRD']]
 else:
     machine = ['qemu-system-arm', '-M', 'realview-pb-a8', '-m', '256']
+if os.environ.get('QEMU_APPEND'):
+    machine += ['-append', os.environ['QEMU_APPEND']]
+machine += shlex.split(os.environ.get('QEMU_EXTRA', ''))
 q = subprocess.Popen(machine + ['-rtc', 'base=localtime',
                       '-display', 'none', '-serial', 'file:' + os.path.join(out, 'serial.log'),
                       '-monitor', 'unix:' + sock + ',server,nowait', '-kernel', kernel])
