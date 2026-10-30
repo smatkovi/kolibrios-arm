@@ -12,6 +12,7 @@
 #define LX_H
 
 #include "task.h"
+#include "rng.h"
 
 #define LX_BLOCK (-4096l)              /* not a result: wait, call again */
 
@@ -52,6 +53,8 @@ struct lx_proc {
 	struct lx_file *pipe_in, *pipe_out;
 	int exit_code;
 	bool exited;
+	char name[24];                  /* the program's file name, for messages */
+	u8 rnd_said;                    /* lx_random_used: said once each */
 };
 
 struct lx_thread {
@@ -101,7 +104,7 @@ bool lx_user_range(u64 va, u64 len);
 /* sys.c */
 long lx_syscall(struct task *t);
 void lx_futex_wake_all(struct lx_proc *p, u64 addr, int n);
-void lx_random(void *buf, u32 len);
+void lx_random_used(struct lx_proc *p, int how);  /* sys.c: 0 getrandom, 1 /dev/urandom */
 
 /* file.c */
 void lx_fs_init(void);

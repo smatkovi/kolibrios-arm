@@ -477,7 +477,10 @@ static long file_read(struct lx_file *f, void *buf, u64 len, u64 *pos)
 	switch (f->type) {
 	case F_NULL: case F_CONSOLE: return 0;
 	case F_ZERO: memset(buf, 0, len); return len;
-	case F_RANDOM: lx_random(buf, len); return len;
+	case F_RANDOM:                  /* both wait for the seed (rng.c), then never */
+		if (!rng_ready() && !rng_seed_step()) return nb ? -EAGAIN : LX_BLOCK;
+		rng_bytes_insecure(buf, len);
+		return len;
 	case F_RD: case F_TEXT: case F_RAM: {
 		long n = lx_file_pread(f, buf, len, *pos);
 		if (n > 0) *pos += n;
@@ -717,6 +720,7 @@ static long sys_openat(struct task *t, int dirfd, u64 upath, u32 flags)
 		return -EEXIST;
 	}
 	if (lk.special) {
+		if (lk.special == F_RANDOM) lx_random_used(p, 1);
 		f = file_new(lk.special);
 		if (f && lk.special == F_TEXT) make_text(f, path);
 	} else if (lk.node && lk.node->dir) {

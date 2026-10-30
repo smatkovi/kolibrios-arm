@@ -240,6 +240,15 @@ int main(int argc, char **argv)
 	kos_call(66, 1, 0, 0, 0, 0);
 	check(n == 1 && kos_call(66, 2, 0, 0, 0, 0) == 0, "66.1/66.2 scan codes and back", n, 0);
 
+	/* random numbers (102.1, docs/rng.md): two draws differ, too long refused */
+	static u8 r1[64], r2[64];
+	n = kos_call(102, 1, (u32)r1, sizeof(r1), 0, 0);
+	int n2 = kos_call(102, 1, (u32)r2, sizeof(r2), 0, 0);
+	check(n == 64 && n2 == 64 && memcmp(r1, r2, 64) != 0, "102.1 random bytes", n, n2);
+	n = kos_call(102, 1, (u32)r1, 4097, 0, 0);
+	check(n == -1, "102.1 more than 4096 refused", n, 0);
+	check(kos_random(r2, 16) == 0, "102.1 kos_random", 0, 0);
+
 	printf("fstest: done %d failed\n", failed);
 	return 0;
 }

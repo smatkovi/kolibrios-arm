@@ -18,9 +18,12 @@
  *   - the eMMC (MMC2, an OMAP3 HSMMC): its clocks and supply (VEMMC, GPIO
  *     157) on, the controller reset, the card started anew (sdhci.c,
  *     mmc.c); its partitions read only, the container (docs/storage.md)
+ *   - random numbers: the secure ROM's RNG through the PPA (below), the
+ *     timing jitter of the cycle counter against the 32 kHz clock (rng.c)
  * Not yet: the RTC (TWL4030), the battery. */
 #include "kernel.h"
 #include "blit.h"
+#include "rng.h"
 #include "../storage/storage.h"
 #include "../storage/sdhci.h"
 
@@ -118,6 +121,120 @@ static void emmc_init(void)
 	sdhci_start(&hs, "mmc0", storage_home_mode() == HOME_RW);
 }
 
+const char *boot_arg(const char *name);
+
+/* --- the secure ROM's random numbers -------------------------------------
+ * The OMAP3630's RNG module sits behind the secure side's firewall on the
+ * N950, an HS device (Linux's omap3-n950-n9.dtsi: "RNG not directly
+ * accessible on N950/N9", rng_target disabled). Harmattan's kernel read it
+ * through Nokia's PPA (arch/arm/mach-omap2/hs.c, sec_hal.c, sec_hal_entry.S:
+ * SEC_HAL_RNG_GENERATE, RNG_GEN_HW): smc #1 with the service (29) in r12,
+ * r6 0xff (a new call), the flag 4 (FLAG_START_HAL_CRITICAL) in r2 and in
+ * r3 the physical address of { 3, buffer, length, command }; the caches
+ * cleaned before and invalidated after, the interrupts masked (they are in
+ * the kernel). Linux's omap3-rom-rng reads the N900's PPA the same way
+ * (service 29, there with nargs + 1 and flag 0), with rng_ick on and
+ * RNG_GEN_PRNG_HW_INIT first; that is the second try here.
+ * NOT TRIED ON THE DEVICE: kolibri.romrng=off leaves the PPA alone. */
+#define CM_ICLKEN2_CORE 0x48004a14u     /* bit 2: EN_RNG (rng_ick) */
+#define PPA_RNG 29
+#define PPA_FLAG 4
+#define RNG_GEN_PRNG_HW_INIT 0x02
+#define RNG_GEN_HW 0x08
+
+u32 n950_smc(u32 service, u32 process, u32 flag, u32 params_pa);
+asm(".text\n.arm\n.arch_extension sec\n.balign 4\n"
+    ".global n950_smc\n.type n950_smc, %function\n"
+    "n950_smc:\n"
+    "	push	{r4-r12, lr}\n"
+    "	mov	r12, r0\n"
+    "	mov	r6, #0xff\n"
+    "	dsb\n"
+    "	smc	#1\n"
+    "	mov	r1, #0\n"
+    "	mcr	p15, 0, r1, c7, c5, 0\n"
+    "	pop	{r4-r12, pc}\n");
+
+/* the parameters and the buffer in cache lines of their own (the kernel's
+ * RAM is mapped at its physical address) */
+static struct {
+	u32 p[16];
+	u8 buf[64];
+} ppa __attribute__((aligned(64)));
+
+static void dcache_clean_inv(const void *a, u32 n)
+{
+	for (addr_t x = (addr_t)a & ~63u; x < (addr_t)a + n; x += 64)
+		asm volatile("mcr p15, 0, %0, c7, c14, 1" :: "r"(x));  /* DCCIMVAC */
+	asm volatile("dsb" ::: "memory");
+}
+
+static void dcache_inv(const void *a, u32 n)
+{
+	for (addr_t x = (addr_t)a & ~63u; x < (addr_t)a + n; x += 64)
+		asm volatile("mcr p15, 0, %0, c7, c6, 1" :: "r"(x));   /* DCIMVAC */
+	asm volatile("dsb" ::: "memory");
+}
+
+static u32 ppa_rng(u32 cmd, u32 len)
+{
+	ppa.p[0] = 3;
+	ppa.p[1] = cmd == RNG_GEN_HW ? (u32)(addr_t)ppa.buf : 0;
+	ppa.p[2] = len;
+	ppa.p[3] = cmd;
+	memset(ppa.buf, 0, sizeof(ppa.buf));
+	dcache_clean_inv(&ppa, sizeof(ppa));
+	ARCH_IRQ_OFF();
+	u32 r = n950_smc(PPA_RNG, 0, PPA_FLAG, (u32)(addr_t)ppa.p);
+	dcache_inv(&ppa, sizeof(ppa));
+	return r;
+}
+
+static u32 rom_rng_read(void *out, u32 len)
+{
+	u32 done = 0;
+	while (done < len) {
+		u32 n = MIN(len - done, (u32)sizeof(ppa.buf));
+		u32 r = ppa_rng(RNG_GEN_HW, n);
+		if (r) {
+			static u32 said;
+			if (said++ < 3) kprintf("n950: the secure ROM's RNG: error 0x%x\n", r);
+			break;
+		}
+		memcpy((u8 *)out + done, ppa.buf, n);
+		done += n;
+	}
+	memset(ppa.buf, 0, sizeof(ppa.buf));
+	return done;
+}
+
+static void rom_rng_init(void)
+{
+	const char *a = boot_arg("kolibri.romrng");
+	if (a && !strncmp(a, "off", 3)) {
+		kprintf("n950: the secure ROM's RNG left alone (kolibri.romrng=off)\n");
+		return;
+	}
+	wr32(CM_ICLKEN2_CORE, rd32(CM_ICLKEN2_CORE) | 1u << 2);
+	kprintf("n950: the secure ROM's RNG (PPA service 29): asking ...\n");
+	u32 r = ppa_rng(RNG_GEN_HW, 16), r2 = 0;
+	if (r) {
+		r2 = ppa_rng(RNG_GEN_PRNG_HW_INIT, 0);
+		r = r2 ? r : ppa_rng(RNG_GEN_HW, 16);
+	}
+	u32 any = 0;
+	for (int i = 0; i < 16; i++) any |= ppa.buf[i];
+	memset(ppa.buf, 0, sizeof(ppa.buf));
+	if (r || !any) {
+		kprintf("n950: the secure ROM's RNG: %s (0x%x, init 0x%x): not used\n",
+			r ? "an error" : "only zeros", r, r2);
+		return;
+	}
+	kprintf("n950: the secure ROM's RNG answers\n");
+	/* Linux's omap3-rom-rng: quality 900 of 1024 */
+	rng_register("the secure ROM's RNG", rom_rng_read, 900);
+}
+
 static void n9_init(void)
 {
 	/* the INTC: GPTIMER1 only, for now */
@@ -133,6 +250,7 @@ static void n9_init(void)
 	wr32(GPT1 + 0x24, 3);                         /* TCLR: start, reload */
 	touch_init();
 	if (!storage_off()) emmc_init();
+	rom_rng_init();
 }
 
 static void n9_irq(void)

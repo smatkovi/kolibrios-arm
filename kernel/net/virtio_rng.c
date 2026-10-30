@@ -91,6 +91,6 @@ bool virtio_rng_probe(addr_t va)
 	wr32(va + QUEUE_DEVICE + 4, (u32)((addr_t)used >> 32));
 	wr32(va + QUEUE_READY, 1);
 	wr32(va + STATUS, 3 | 8 | 4);
-	rng_register("virtio-rng", read);
+	rng_register("virtio-rng", read, RNG_FULL);
 	return true;
 }

@@ -11,62 +11,14 @@ extern void sched_yield(void);
 
 static bool trace;
 
-/* random numbers: ChaCha20, its key from the hardware (rng.h: QEMU's
- * virtio-rng, the Pro1X's PRNG), mixed anew from it every 16 requests.
- * Without a hardware source the key comes from the counter and the clock
- * only: not good enough for keys, and said so. */
-static u32 cc_key[8], cc_ctr;
-static bool cc_seeded;
-
-#define ROTL(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
-#define QR(a, b, c, d) (a += b, d ^= a, d = ROTL(d, 16), c += d, b ^= c, b = ROTL(b, 12), \
-			a += b, d ^= a, d = ROTL(d, 8), c += d, b ^= c, b = ROTL(b, 7))
-
-static void chacha_block(u32 out[16])
+/* random numbers: the kernel's generator (rng.c); the first use by each
+ * program said on the console, with what seeded it */
+void lx_random_used(struct lx_proc *p, int how)
 {
-	u32 in[16] = { 0x61707865, 0x3320646e, 0x79622d32, 0x6b206574 };
-	for (int i = 0; i < 8; i++) in[4 + i] = cc_key[i];
-	in[12] = cc_ctr++;
-	u64 c = SYSREG_R(cntvct_el0);
-	in[13] = (u32)c;
-	in[14] = (u32)(c >> 32);
-	in[15] = 0;
-	u32 x[16];
-	memcpy(x, in, sizeof(x));
-	for (int i = 0; i < 10; i++) {
-		QR(x[0], x[4], x[8], x[12]); QR(x[1], x[5], x[9], x[13]);
-		QR(x[2], x[6], x[10], x[14]); QR(x[3], x[7], x[11], x[15]);
-		QR(x[0], x[5], x[10], x[15]); QR(x[1], x[6], x[11], x[12]);
-		QR(x[2], x[7], x[8], x[13]); QR(x[3], x[4], x[9], x[14]);
-	}
-	for (int i = 0; i < 16; i++) out[i] = x[i] + in[i];
-}
-
-void lx_random(void *buf, u32 len)
-{
-	u32 b[16];
-	static u32 requests;
-	if (!cc_seeded) {
-		for (int i = 0; i < 8; i++) cc_key[i] = net_rand() ^ (u32)(SYSREG_R(cntvct_el0) << i);
-		cc_key[0] ^= rtc_seconds();
-		cc_seeded = true;
-		if (!rng_name()) kprintf("lx: no hardware random numbers: getrandom is weak\n");
-	}
-	if (requests++ % 16 == 0) {
-		u32 hw[8];
-		if (rng_hw(hw, sizeof(hw)) == sizeof(hw))
-			for (int i = 0; i < 8; i++) cc_key[i] ^= hw[i];
-	}
-	/* the key moves on with every request */
-	chacha_block(b);
-	memcpy(cc_key, b + 8, 32);
-	u8 *d = buf;
-	while (len) {
-		chacha_block(b);
-		u32 n = MIN(len, 64u);
-		memcpy(d, b, n);
-		d += n, len -= n;
-	}
+	if (p->rnd_said & 1u << how) return;
+	p->rnd_said |= 1u << how;
+	kprintf("lx: %s: %s from the kernel's generator, %s%s\n", p->name, how ? "/dev/(u)random" : "getrandom",
+		rng_ready() ? "seeded from " : "", rng_ready() ? rng_sources() : "NOT seeded yet");
 }
 
 /* the real-time clock in ns: the RTC's seconds, the counter in between */
@@ -356,15 +308,24 @@ long lx_syscall(struct task *t)
 	case 233: r = lx_madvise(p, a[0], a[1], (int)a[2]); break;
 	case 232: r = 0; break;                 /* mincore */
 	case 278: {                             /* getrandom */
+		/* as Linux: GRND_NONBLOCK 1, GRND_RANDOM 2 (the same pool),
+		 * GRND_INSECURE 4 (also before the seed), INSECURE with RANDOM
+		 * refused; without INSECURE it waits for the seed (rng.c:
+		 * a batch of jitter at each look), NONBLOCK: EAGAIN */
+		u32 fl = (u32)a[2];
+		if ((fl & ~7u) || (fl & 6) == 6) { r = -EINVAL; break; }
+		if (!rng_ready() && !(fl & 4) && !rng_seed_step()) { r = fl & 1 ? -EAGAIN : LX_BLOCK; break; }
+		lx_random_used(p, 0);
 		u8 b[256];
 		u64 done = 0, n = MIN(a[1], 1ul << 20);
 		r = 0;
 		while (done < n) {
 			u32 k = MIN(n - done, sizeof(b));
-			lx_random(b, k);
+			rng_bytes_insecure(b, k);
 			if (lx_copy_out(p, a[0] + done, b, k)) { r = -EFAULT; break; }
 			done += k;
 		}
+		memset(b, 0, sizeof(b));
 		if (!r) r = done;
 		break;
 	}

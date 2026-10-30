@@ -18,3 +18,5 @@ tests/storage/fat_test
 tests/net/net-kos
 tests/net/net-lwip
 __pycache__/
+tests/linux/rngtest/rngtest
+tests/rng/test

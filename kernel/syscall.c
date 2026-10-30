@@ -2,6 +2,7 @@
  * KolibriOS). A program calls them with "svc #0x40"; r0-r6 stand for
  * eax, ebx, ecx, edx, esi, edi, ebp and return what they return. */
 #include "gui.h"
+#include "rng.h"
 
 #define EAX r[0]
 #define EBX r[1]
@@ -619,18 +620,6 @@ void syscall(struct task *t)
 		sys_modem(t, r);
 		return;
 	}
-	case 102:                              /* KolibriOS for ARM: the system's state */
-		if (EBX == 0) {                    /* bit 0: the display is off (the standby) */
-#ifdef __aarch64__
-			extern bool power_standby;
-			EAX = power_standby ? 1 : 0;
-#else
-			EAX = 0;
-#endif
-		} else {
-			EAX = -1;
-		}
-		return;
 #ifdef __aarch64__
 	case 101: {                            /* KolibriOS for ARM: Linux programs */
 		extern void sys_linux(struct task *t, u32 *r);
@@ -638,6 +627,23 @@ void syscall(struct task *t)
 		return;
 	}
 #endif
+	case 102:                              /* KolibriOS for ARM: the system */
+		if (EBX == 0) {
+			/* 102.0: its state; bit 0 the display off (the standby) */
+#ifdef __aarch64__
+			extern bool power_standby;
+			EAX = power_standby ? 1 : 0;
+#else
+			EAX = 0;
+#endif
+		} else {
+			/* 102.1: random numbers (docs/rng.md): EDX bytes (at
+			 * most 4096) from the kernel's generator to ECX; EAX
+			 * the number, -1 while it has no seed (rng.c) */
+			u8 *b = EBX == 1 && EDX <= 4096 ? uptr(t, ECX, EDX) : NULL;
+			EAX = b && rng_bytes(b, EDX) ? EDX : (u32)-1;
+		}
+		return;
 	case 51:                               /* threads */
 		sys_threads(t, r);
 		return;

@@ -110,6 +110,7 @@ input there).
 | Pro1X: clock (PMIC RTC), battery, everything else | not yet |
 | AArch64 kernel: the network (lwIP: DHCP, DNS, TCP, UDP), virtio-net | runs (QEMU, `make PLATFORM=arm64 run-net`); the Pro1X's Wi-Fi (WCN3990: WLFW, HTC, WMI, HTT, WPA2-PSK) written, tested on the PC against a simulated firmware and access point and in QEMU up to the hardware, not yet on the phone (`docs/pro1x-network.md`) |
 | AArch64 kernel: a Linux personality for static AArch64 programs (Go, musl): memory, threads, futexes, files, pipes, epoll, sockets; function 101 | runs (QEMU: `make run-linux`, `tests/linux`, Yappari's daemon) |
+| random numbers: one generator (ChaCha20, fast key erasure) for getrandom, /dev/urandom, lwIP, the Wi-Fi and function 102; seeded from the Pro1X's PRNG and kexec's seed, QEMU's virtio-rng, the N950's secure ROM (untried), else timing jitter with a warning (`docs/rng.md`) | runs (QEMU, `tests/rng`), **not tried on the devices** |
 
 The system functions done are in `kernel/syscall.c`; the others return
 -1 and say so on the debug output.

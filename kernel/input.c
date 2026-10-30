@@ -5,6 +5,7 @@
  * keyboard). PS/2 keyboards (QEMU) send set 2, which is translated here;
  * other keyboards (the N950's matrix) report set 1 codes directly. */
 #include "gui.h"
+#include "rng.h"
 
 /* the i8042 controller's translation of set 2 codes into set 1 */
 static const u8 set2_to_set1[128] = {
@@ -116,6 +117,7 @@ static void key(u8 sc, bool ex, bool released)
  * cursor block as the gray keys, since these have no numeric keypad */
 void input_key(u8 sc, bool released)
 {
+	rng_event(sc | (u32)released << 8);     /* its time into the random numbers' pool, credited nothing */
 	bool ex = sc == 0x47 || sc == 0x48 || sc == 0x49 || sc == 0x4b || sc == 0x4d ||
 		  sc == 0x4f || sc == 0x50 || sc == 0x51 || sc == 0x52 || sc == 0x53;
 	key(sc, ex, released);
@@ -143,6 +145,7 @@ int input_wheel;
 
 void input_mouse_rel(int dx, int dy, int buttons, int wheel)
 {
+	rng_event((u32)(dx & 0xfff) | (u32)(dy & 0xfff) << 12 | (u32)buttons << 24);
 	input_wheel += wheel;
 	mx = MAX(0, MIN(mx + dx, scr.w - 1));
 	my = MAX(0, MIN(my + dy, scr.h - 1));
@@ -160,6 +163,7 @@ void input_mouse_wheel(int dz)
 
 void input_mouse_abs(int x, int y, int buttons)
 {
+	rng_event((u32)(x & 0xfff) | (u32)(y & 0xfff) << 12 | (u32)buttons << 24);
 	mx = x;
 	my = y;
 	int changed = buttons ^ mb;

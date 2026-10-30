@@ -1,5 +1,6 @@
 /* KolibriOS for ARM: the kernel's start */
 #include "gui.h"
+#include "rng.h"
 
 extern u8 __kernel_end[];
 extern addr_t boot_args[3];
@@ -145,6 +146,11 @@ void kmain(void)
 	extern void kfs_init(void);
 	kfs_init();
 	plat->init();
+	/* the random numbers' seed, from the sources the platform's drivers
+	 * registered (rng.c, docs/rng.md); kolibri.rngtest: each source and
+	 * the generator checked (FIPS 140-2) on the console */
+	rng_init();
+	if (boot_arg("kolibri.rngtest")) rng_selftest();
 	/* the disks the platform's drivers found: their partitions and file
 	 * systems (read only), the container (kernel/storage, docs/storage.md) */
 	extern void storage_start(void), kfs_settings_init(void);
