@@ -65,6 +65,7 @@ enum { TRAP_UNDEF = 1, TRAP_SVC, TRAP_PABT, TRAP_DABT, TRAP_IRQ, TRAP_FIQ };
 #define PSR_SVC 0x13
 #define PSR_I 0x80
 #define PSR_F 0x40
+#define PSR_T 0x20
 
 /* the platform (kernel/platform/<name>.c) */
 struct mem_region {

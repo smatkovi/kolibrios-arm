@@ -11,28 +11,62 @@ void input_init(void);
 #include "net.h"
 #endif
 
-/* the look the command line asks for (kolibri.look=classic or hildon, on
- * the AArch64 kernel, which has a device tree): the ramdisk's
- * autorun.classic or autorun.hildon instead of autorun. Read before the
- * MMU is on: the kernel does not map the device tree. */
+/* the kernel command line, read before the MMU is on (the kernel does
+ * not map what the boot loader left): the image's own arguments (make
+ * CMDLINE=..., build/<platform>/cmdline.h), then the boot loader's: on
+ * AArch64 the device tree's /chosen/bootargs, on ARMv7 the ATAGs' command
+ * line (r2: kexec's and NOLO's, QEMU's -append with the raw kernel.bin) */
+#ifndef KOLIBRI_CMDLINE
+#define KOLIBRI_CMDLINE ""
+#endif
 static const char *autorun_path = "/sys/autorun";
 static char cmdline[512];               /* the kernel command line, kept */
 
-static void look_arg(void)
+#ifndef __aarch64__
+#define ATAG_CORE 0x54410001u
+#define ATAG_CMDLINE 0x54410009u
+static const char *atag_cmdline(addr_t at, u32 *len)
 {
+	if (at < plat->ram_base || at - plat->ram_base >= plat->ram_size - 16384 || (at & 3)) return NULL;
+	const u32 *t = (const u32 *)at;
+	if (t[1] != ATAG_CORE || (t[0] != 2 && t[0] != 5)) return NULL;
+	for (u32 words = 0; t[0] >= 2 && words + t[0] < 4096; words += t[0], t += t[0])
+		if (t[1] == ATAG_CMDLINE) {
+			*len = (t[0] - 2) * 4;
+			return (const char *)(t + 2);
+		}
+	return NULL;
+}
+#endif
+
+const char *boot_arg(const char *name);
+
+static void cmdline_init(void)
+{
+	const char *a = NULL;
+	u32 len = 0;
 #ifdef __aarch64__
 	const void *fdt = (const void *)boot_args[0];
-	if (!fdt_ok(fdt)) return;
-	int ac, sc, len = 0;
-	int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
-	const char *a = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &len) : NULL;
-	if (a) strncpy0(cmdline, a, MIN((u32)len + 1, sizeof(cmdline)));
-	for (int i = 0; a && i + 13 <= len; i++) {
-		if ((i && a[i - 1] != ' ') || strncmp(a + i, "kolibri.look=", 13)) continue;
-		if (i + 20 <= len && !strncmp(a + i + 13, "classic", 7)) autorun_path = "/sys/autorun.classic";
-		if (i + 19 <= len && !strncmp(a + i + 13, "hildon", 6)) autorun_path = "/sys/autorun.hildon";
+	if (fdt_ok(fdt)) {
+		int ac, sc, l = 0;
+		int ch = fdt_find_name(fdt, "chosen", &ac, &sc);
+		a = ch >= 0 ? fdt_prop(fdt, ch, "bootargs", &l) : NULL;
+		len = l;
 	}
+#else
+	a = atag_cmdline(boot_args[2], &len);
 #endif
+	u32 n = strlen(KOLIBRI_CMDLINE);
+	strncpy0(cmdline, KOLIBRI_CMDLINE, sizeof(cmdline));
+	if (a && len && n + 2 < sizeof(cmdline)) {
+		if (n) cmdline[n++] = ' ';
+		strncpy0(cmdline + n, a, MIN(len + 1, sizeof(cmdline) - n));
+	}
+	/* the look: the ramdisk's autorun.classic or autorun.hildon instead
+	 * of autorun (kolibri.look=classic or hildon) */
+	const char *look = boot_arg("kolibri.look");
+	if (look && !strncmp(look, "classic", 7)) autorun_path = "/sys/autorun.classic";
+	if (look && !strncmp(look, "hildon", 6)) autorun_path = "/sys/autorun.hildon";
 }
 
 /* an argument of the kernel command line: its value after "=", "" for
@@ -81,12 +115,19 @@ static void autorun(void)
 void kmain(void)
 {
 	plat = arch_platform();
-	look_arg();
+	cmdline_init();
 	if (plat->early_init) plat->early_init();
 	kprintf("\nKolibriOS for ARM %d.%d on %s\n", KOS_VERSION_MAJOR, KOS_VERSION_MINOR, plat->name);
 	kprintf("boot arguments %p %p %p, kernel ends at %p\n", boot_args[0], boot_args[1], boot_args[2], (addr_t)__kernel_end);
+	if (cmdline[0]) kprintf("command line: %s\n", cmdline);
 	mm_init((addr_t)__kernel_end);
 	mmu_init();
+#ifndef __aarch64__
+	/* VFP and NEON: on for the kernel, lazily for the programs
+	 * (arch/armv7/fpu.c; AArch64: blit_init, arch/arm64/fpu.c) */
+	extern void fpu_init(void);
+	fpu_init();
+#endif
 	kprintf("MMU on, %u MiB of %u MiB free\n", mm_free_kb() >> 10, mm_total_kb() >> 10);
 	if (plat->display_init(&scr.fb, &scr.w, &scr.h, &scr.stride) < 0)
 		panic("no display");
@@ -110,16 +151,15 @@ void kmain(void)
 	lx_init();
 	if (boot_arg("kolibri.lxtrace")) lx_trace_on();
 #endif
-#if defined(__aarch64__) && !defined(SIMD_C)
+#ifndef SIMD_C
 	/* kolibri.bench: the drawing and the string functions timed, C
 	 * against assembler (bench.c, docs/asm.md) */
 	extern void bench_run(void);
 	if (boot_arg("kolibri.bench")) bench_run();
 #endif
 	autorun();
-#ifdef __aarch64__
-	/* kolibri.run=/bin/x (a Linux program) or /sys/x: one more program
-	 * from the ramdisk (tests) */
+	/* kolibri.run=/sys/x, or /bin/x (a Linux program, AArch64): one more
+	 * program from the ramdisk (tests) */
 	const char *run = boot_arg("kolibri.run");
 	if (run && *run) {
 		char path[64] = "/sys/linux";
@@ -135,7 +175,6 @@ void kmain(void)
 		if (load_program(path, params[0] ? params : NULL, NULL) < 0)
 			kprintf("kolibri.run: %s not started\n", run);
 	}
-#endif
 	gfx_flush();
 	kprintf("running\n");
 	/* to the first task (or the idle loop) through the trap return */
