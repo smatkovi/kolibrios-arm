@@ -7,12 +7,17 @@
  * kept), colours, Esc sequences, keys and line editing; the names of its
  * labels kept (con.write_char -> con_write_char, ...).
  *
- * What differs: console.obj runs the window in a thread of its own and
- * the program's calls wake it by IPC; our kernel has neither, so the
- * window is handled here, in the program's thread, whenever the program
- * calls the library (con_poll). The Hildon look maximises windows: the
- * console then shows as many lines as fit (wnd_height follows the
- * window). */
+ * As console.obj, the window is a thread's of its own (con_thread,
+ * console.asm's con.thread, created by con_init with 51.1): it draws,
+ * reads the keys into the input buffer and the mouse, and is woken by
+ * IPC (60.2) when the program has changed something (con_wake: a byte,
+ * the operation). The program's calls write into the buffer and wait for
+ * keys as console.obj's do (5 2 until there is one). Its close button
+ * ends the program's thread that called con_init (18.18) and then its
+ * own; con_exit(0) leaves the window with "[Finished]" in its title
+ * after the program has ended, until it is closed. The Hildon look
+ * maximises windows: the console then shows as many lines as fit
+ * (wnd_height follows the window). */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,7 +97,7 @@ static struct {
 	int skin_h, client_w, client_h;
 } con = { .vscroll_pt = -1, .cursor_visible = 1 };
 
-static u32 con_flags = 0x07;           /* grey on black */
+static volatile u32 con_flags = 0x07;           /* grey on black */
 static u32 con_flags_attr;             /* 0x08 bright text, 0x80 bright background */
 
 /* the Esc sequence being read */
@@ -104,7 +109,17 @@ static int con_osc_strlen;
 
 static void con_draw_window(void);
 static void con_draw_image(void);
-static void con_poll(int wait);
+
+/* the thread and its wake-up (console.asm's con.thread_op, con.ipc_buf,
+ * con.wake): the operations of the byte sent */
+enum { OP_EXIT = 1, OP_SET_TITLE, OP_REDRAW, OP_GETCH, OP_RESIZE };
+static volatile u8 con_thread_op;
+/* dd 0, 8, 0, 0 and a byte: room for one message of a byte */
+static volatile u8 con_ipc_buf[0x14] __attribute__((aligned(4))) = { 0, 0, 0, 0, 8 };
+static volatile u32 con_console_tid, con_parent_tid;
+static u32 con_stack[4096] __attribute__((aligned(16)));
+static void con_wake(void);
+static void con_thread(void);
 
 /* --- the window ----------------------------------------------------- */
 
@@ -236,10 +251,6 @@ static void con_draw_window(void)
 	int h = con.wnd_height * font_height + con.skin_h + 5 - 1;
 	if (with_scrollbar()) w += vscroll_width;
 	kos_call(0, (u32)def_wnd_x << 16 | w, (u32)def_wnd_y << 16 | h, 0x74000000, 0, (u32)con.title);
-	/* the window is the program's own one here (console.obj makes one in
-	 * its thread): one the program had (terminal's settings, hidden by
-	 * 67 0,0,0,0) gets the console's place and size at the start */
-	if (!con.drawn) kos_move_window(def_wnd_x, def_wnd_y, w, h);
 	con_fit();
 	u8 info[1024];
 	kos_thread_info(info, -1);
@@ -334,7 +345,8 @@ static void con_set_attr(void)
 static void con_set_title_now(const char *t)
 {
 	strncpy(con.title, t, sizeof(con.title) - 1);
-	kos_set_caption(con.title);
+	con_thread_op = OP_SET_TITLE;
+	con_wake();
 }
 
 /* Esc[?1049h / l: the alternative buffer (no lines kept) */
@@ -521,17 +533,13 @@ static void con_write_char_ex(u8 c)
 
 /* the cursor into view; drawn now and then while writing, always before
  * waiting (con.update_screen) */
+/* con.update_screen: the cursor in view, the thread asked to draw */
 static void con_update_screen(void)
 {
 	if (con.cur_y < con.wnd_ypos) con.wnd_ypos = con.cur_y;
 	else if (con.cur_y >= con.wnd_ypos + con.wnd_height) con.wnd_ypos = con.cur_y - con.wnd_height + 1;
-	con.dirty = 1;
-	con_poll(0);
-	if (con.dirty && kos_uptime() - con.last_draw >= 5) {
-		kos_begin_draw();
-		con_draw_image();
-		kos_end_draw();
-	}
+	con_thread_op = OP_REDRAW;
+	con_wake();
 }
 
 static void con_write(const char *s, int len)
@@ -570,9 +578,16 @@ int con_init_opt(dword wnd_width, dword wnd_height, dword scr_width, dword scr_h
 	con.cursor_height = (15 * font_height + 50) / 100;
 	strncpy(con.title, title ? title : "Console", sizeof(con.title) - 1);
 	con.init_cmd = 1;
-	kos_event_mask(0x80000027);    /* redraw, key, button, mouse while active */
-	kos_call(66, 1, 1, 0, 0, 0);   /* scan codes */
-	con_draw_window();
+	/* the thread, the window's: the caller is the one its close ends */
+	u8 info[1024];
+	kos_thread_info(info, -1);
+	con_parent_tid = *(u32 *)(info + 30);
+	int tid = kos_thread_create(con_thread, con_stack + sizeof(con_stack) / sizeof(con_stack[0]));
+	if (tid < 0) {
+		kdebug("Cannot create console thread!\n");
+		exit(1);
+	}
+	con_console_tid = tid;
 	return 0;
 }
 
@@ -589,21 +604,23 @@ int con_init(void)
 	return con_init_opt(-1, -1, -1, -1, "Console");
 }
 
+/* con_exit: the window closed with it (1), or left with "[Finished]" in
+ * its title (0), its thread then living on after the program's end until
+ * the window is closed */
 void con_exit(int bCloseWindow)
 {
 	if (!con.init_cmd) return;
 	if (bCloseWindow) {
-		con.init_cmd = 2;              /* nothing drawn any more */
+		con_thread_op = OP_EXIT;
+		con_wake();
 		return;
 	}
 	strncat(con.title, " [Finished]", sizeof(con.title) - strlen(con.title) - 1);
-	kos_set_caption(con.title);
 	con.cursor_height = 0;
-	kos_begin_draw();
-	con_draw_image();
-	kos_end_draw();
-	/* the window stays until it is closed (which ends the program) */
-	for (;;) con_poll(1);
+	con_thread_op = OP_SET_TITLE;
+	con_wake();
+	con_thread_op = OP_REDRAW;
+	con_wake();
 }
 
 void con_set_title(const char *title)
@@ -817,13 +834,37 @@ static void con_mouse(void)
 	con.dirty = 1;
 }
 
-/* the window's events: wait for one (wait) or take what is there */
-static void con_poll(int wait)
+/* con.wake: the operation in con_thread_op to the thread, unless that one
+ * is waiting there already; again after 5 1 while its buffer is full */
+static void con_wake(void)
 {
-	if (!con.init_cmd || con.init_cmd == 2) return;
+	if (!con_console_tid || con_thread_op == con_ipc_buf[0x10]) return;
+	u8 op = con_thread_op;
+	while (kos_ipc_send(con_console_tid, &op, 1)) {
+		if (!con_console_tid) return;
+		kos_delay(1);
+	}
+}
+
+/* con.thread_exit: the program's calls find the window closed */
+static void con_thread_exit(void)
+{
+	con_flags |= CON_WINDOW_CLOSED;
+	con_console_tid = 0;
+	kos_exit();
+}
+
+/* con.thread: the window's events and the program's wake-ups; drawn at
+ * most every 20 ms, the rest of a burst of output after it */
+static void con_thread(void)
+{
+	kos_event_mask(0x80000067);    /* redraw, key, button, mouse while active, IPC */
+	kos_ipc_set_area((void *)con_ipc_buf, 0x11);
+	kos_call(66, 1, 1, 0, 0, 0);   /* scan codes */
+	con_draw_window();
 	for (;;) {
 		int held = con.bUpPressed | con.bDownPressed | con.bScrollingUp | con.bScrollingDown | (con.vscroll_pt >= 0);
-		int ev = wait ? kos_wait_event_timeout(held ? 5 : 100) : kos_check_event();
+		int ev = held ? kos_wait_event_timeout(5) : con.dirty ? kos_wait_event_timeout(2) : kos_wait_event();
 		switch (ev) {
 		case 1:
 			con_draw_window();
@@ -833,42 +874,50 @@ static void con_poll(int wait)
 			break;
 		case 3:
 			if ((kos_get_button() >> 8) == 1) {
-				con_flags |= CON_WINDOW_CLOSED;
-				exit(0);                   /* the close button ends the program */
+				/* we have only one button, close: the program's thread first */
+				kos_kill_pid(con_parent_tid);
+				con_thread_exit();
 			}
 			break;
 		case 6:
 			con_mouse();
 			break;
+		case 7: {                          /* con.ipc */
+			u8 op = con_ipc_buf[0x10];
+			*(volatile u32 *)(con_ipc_buf + 4) = 8;
+			con_ipc_buf[0x10] = 0;
+			if (op == OP_EXIT) con_thread_exit();
+			if (op == OP_SET_TITLE) kos_set_caption(con.title);
+			if (op == OP_REDRAW || op == OP_SET_TITLE) con.dirty = 1;
+			/* OP_GETCH: the keys are in the input buffer already */
+			break;
+		}
 		case 0:
 			if (held) con_mouse();
 			break;
 		}
-		if (con.dirty && (wait || kos_uptime() - con.last_draw >= 5)) {
+		if (con.dirty && kos_uptime() - con.last_draw >= 2) {
 			kos_begin_draw();
 			con_draw_image();
 			kos_end_draw();
 		}
-		if (!wait ? ev == 0 : ev == 2 || con.input_start != con.input_end) return;
 	}
 }
 
 int con_kbhit(void)
 {
 	if (con_flags & CON_WINDOW_CLOSED) return 1;
-	con_poll(0);
-	return con.input_start != con.input_end;
+	return con.input_start != *(volatile int *)&con.input_end;
 }
 
+/* con.force_entered_char: a key from the input buffer, waiting for one
+ * as console.obj does (5 2), after a second without one every 0.1 s (the
+ * tickless kernel idles longer); 0 when the window was closed */
 static u16 con_take(void)
 {
-	while (con.input_start == con.input_end) {
-		if (con.dirty) {
-			kos_begin_draw();
-			con_draw_image();
-			kos_end_draw();
-		}
-		con_poll(1);
+	for (int n = 0; con.input_start == *(volatile int *)&con.input_end; n++) {
+		if (con_flags & CON_WINDOW_CLOSED) return 0;
+		kos_delay(n < 50 ? 2 : 10);
 	}
 	u16 c = con.input[con.input_start];
 	con.input_start = (con.input_start + 1) % 128;
@@ -1021,8 +1070,7 @@ int con_get_input(char *buf, int buflen)
 {
 	if (!con.init_cmd) con_init();
 	int n = 0;
-	con_poll(0);
-	while (n < buflen && con.input_start != con.input_end) {
+	while (n < buflen && con.input_start != *(volatile int *)&con.input_end) {
 		u16 k = con_take();
 		u8 c = k & 0xff, x = k >> 8;
 		if (c) { buf[n++] = c; continue; }

@@ -34,7 +34,6 @@ void draw_window(void)
 	draw_but_toolbar();
 	kmainmenu_draw(main_menu);
 	ted_draw(&tedit0);
-	mb_draw();                             /* a message box open (msgbox.h) */
 	kos_end_draw();
 }
 

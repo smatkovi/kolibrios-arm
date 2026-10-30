@@ -14,7 +14,7 @@
  * kernel's entries and other programs'. An ASID's entries are thrown
  * away when it serves another tree than before, or its tree was made
  * anew (mmu_asid_forget). */
-#include "kernel.h"
+#include "task.h"
 
 #define DEV_ALIAS 0x4000000000ul        /* 256 GiB */
 #define GIB (1ul << 30)
@@ -38,7 +38,7 @@
 static u64 *kroot;                      /* the kernel's L1 table */
 static struct mem_region extra_io[8];   /* the architecture's devices (timer.c) */
 static int nextra;
-static u64 *free_roots[64];
+static u64 *free_roots[MAX_TASKS];
 static int nfree;
 
 static u64 *new_table(void)
@@ -201,7 +201,9 @@ void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
 	for (u64 o = 0; o < size; o += BLOCK)
 		l2[((va + o) >> 21) & 511] = ((pa + o) & ~(BLOCK - 1)) | ATTR_NORMAL | SH_INNER |
 					     AP_EL0 | PXN | AF | NG | D_BLOCK;
-	mmu_asid_forget(root);
+	/* a new tree (the loader): nothing to flush; a running one (a
+	 * library, 68.19): its ASID's entries, the ASID kept its own */
+	asid_flush(root);
 }
 
 void mmu_unmap_user(void *root, addr_t va, u32 size)

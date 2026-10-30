@@ -22,6 +22,11 @@ list=$top/tools/kolibrios-files.txt
 dest=$top/third_party/kolibrios
 [ -f "$dest/.complete" ] && [ "$dest/.complete" -nt "$list" ] && exit 0
 mkdir -p "$dest"
+# one at a time: make -j runs it once for each file missing; the others
+# wait and find the files there
+exec 9> "$dest/.lock"
+flock 9
+[ -f "$dest/.complete" ] && [ "$dest/.complete" -nt "$list" ] && exit 0
 n=0
 while read -r sum path; do
 	[ -n "$sum" ] || continue

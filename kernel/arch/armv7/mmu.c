@@ -4,7 +4,7 @@
  * (TTBR0, a table of its own, its memory from VA 0 as KolibriOS programs
  * expect), above it the kernel's (TTBR1): RAM mapped 1:1 (both platforms
  * have it above 1 GiB) and the devices, those below 1 GiB moved up. */
-#include "kernel.h"
+#include "task.h"
 
 #define SECTION 0x2
 #define AP_KERNEL (1u << 10)            /* PL1 read/write, PL0 none */
@@ -17,7 +17,7 @@
 
 static u32 kl1[4096] __attribute__((aligned(16384)));
 static u32 null_l1[1024] __attribute__((aligned(4096)));
-static u32 *free_tables[64];
+static u32 *free_tables[MAX_TASKS];
 static int nfree;
 
 static u32 attr_of(u32 map)
@@ -56,7 +56,8 @@ static void dcache_invalidate_all(void)
 
 static void tlb_flush(void)
 {
-	asm volatile("mcr p15, 0, %0, c8, c7, 0\n" /* TLBIALL */
+	asm volatile("dsb\n"
+		     "mcr p15, 0, %0, c8, c7, 0\n" /* TLBIALL */
 		     "mcr p15, 0, %0, c7, c5, 6\n"   /* BPIALL */
 		     "dsb\nisb" :: "r"(0) : "memory");
 }
@@ -120,12 +121,23 @@ void mmu_free_user_table(void *l1)
 		free_tables[nfree++] = l1;
 }
 
+/* changed descriptors out to the memory the table walks read (TTBR0's
+ * walks are not cached) */
+static void table_sync(const u32 *e, u32 n)
+{
+	if (plat->cached_data)
+		for (addr_t a = (addr_t)e & ~31u; a < (addr_t)(e + n); a += 32)
+			asm volatile("mcr p15, 0, %0, c7, c10, 1" :: "r"(a)); /* DCCMVAC */
+	asm volatile("dsb" ::: "memory");
+}
+
 void mmu_map_user_ro(void *root, addr_t va, addr_t pa, u32 size, bool ro)
 {
 	u32 *l1 = root;
 	for (u32 o = 0; o < size; o += 1u << 20)
 		l1[(va + o) >> 20] = ((pa + o) & 0xfff00000) | SECTION | (ro ? AP_USER_RO : AP_USER) |
 				     attr_of(MAP_NORMAL);
+	table_sync(&l1[va >> 20], ALIGN_UP(size, 1u << 20) >> 20);
 	if (ro) tlb_flush();                   /* it may have been writable */
 }
 
@@ -141,6 +153,7 @@ void mmu_unmap_user(void *root, addr_t va, u32 size)
 	u32 *l1 = root;
 	for (u32 o = 0; o < size; o += 1u << 20)
 		l1[(va + o) >> 20] = 0;
+	table_sync(&l1[va >> 20], ALIGN_UP(size, 1u << 20) >> 20);
 	tlb_flush();
 }
 

@@ -44,18 +44,3 @@ diff -ruN a/cmd/cmd_ver.c b/cmd/cmd_ver.c
  }
  
  int cmd_ver(char param[]) {
-diff -ruN a/modules/module_program_console.c b/modules/module_program_console.c
---- a/modules/module_program_console.c
-+++ b/modules/module_program_console.c
-@@ -2,6 +2,11 @@
- 
- 
- int program_console(int pid) {
-+#if defined(__arm__)
-+    /* KolibriOS for ARM has no named shared memory (68.22): the
-+     * program runs in a window of its own */
-+    return 0;
-+#endif
-     char name[32];
-     struct shell_shm_buffer *buffer;
-     char *buf1k;

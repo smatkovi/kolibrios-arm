@@ -218,7 +218,7 @@ DLL_NAMES := $(foreach d,$(DLLS),$(firstword $(subst :, ,$(d))))
 P := $(A)/pic
 PICFLAGS := -fPIC -fvisibility=hidden
 DLL_LDFLAGS := -shared -nostdlib -Wl,-Bsymbolic -Wl,--hash-style=sysv -Wl,-z,max-page-size=4096 \
-	-Wl,-z,norelro -Wl,--no-undefined -Wl,-s -Wl,--no-warn-rwx-segments
+	-Wl,--no-undefined -Wl,-s -Wl,--no-warn-rwx-segments
 # a library of a program: its import side or the library itself
 libfile = $(if $(and $(filter 1,$(DLL)),$(filter $(1),$(DLL_NAMES))),$(A)/lib/$(1)-imp.a,$(A)/lib/$(1).a)
 LIBC_PIC_OBJ := $(patsubst lib/libc/%.c,$(P)/libc/%.o,$(filter-out lib/libc/start.c lib/libc/malloc.c \

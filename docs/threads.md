@@ -64,7 +64,9 @@ threads of one program and between programs.
 `SHM_CREATE`, with `SHM_READ` or `SHM_WRITE`; it returns the address
 and in edx 0 (created) or the area's size (opened), or 0 and the error
 (5 not found, 10 access, 30 no memory, 33 parameters). An area opened
-read-only is mapped read-only. Every open maps the area again (another
+read-only is mapped read-only: the program's writes fault, and the
+kernel takes it as no buffer to write into (an IPC buffer, function 70's
+reads; KolibriOS's kernel faults on such pages), only its strings. Every open maps the area again (another
 address); 68.23 closes the thread's latest mapping of that name. The
 memory goes when its last mapping is closed.
 
@@ -140,6 +142,16 @@ the programs as before.
 | `lib/boxlib` | `/sys/lib/box_lib.obj` | box_lib's edit box, check box, option box, scroll bars, tree list and text editor, with their versions |
 | `lib/libini` | `/sys/lib/libini.obj` | libini's `ini_*` functions |
 
+## The programs that use them
+
+- The console library (`lib/console`, `/sys/lib/console.obj`) runs its
+  window in a thread of its own, woken by IPC, as console.obj does
+  (`docs/apps.md`): the shell and the terminal.
+- The shell serves a program's console through its named shared memory
+  `PID-SHELL`, as in KolibriOS (`docs/apps.md`).
+- The shell, the terminal, kfar and t_edit load console.obj, box_lib.obj
+  and libini.obj with 68.19 when they start.
+
 ## Testing
 
 `apps/threadtest` checks all of it from a program (`threadtest: done N
@@ -149,7 +161,10 @@ VFP/NEON registers kept per thread, a window per thread; IPC ping-pong
 between threads (200 rounds), the error codes, event 7; between two
 processes (it starts itself again) IPC and shared memory, the access
 rules, a process whose main thread ended while another runs on; 68.19
-of libini.obj, the same table again, a function called through it.
+of libini.obj, the same table again (also from another thread), a
+function called through it and through the program's own import stub,
+`dll_load` on lists of its own (a name not exported fails). The
+shell's test (`tests/apps`) runs `threadtest shellapi` in its console.
 `tests/threads` runs it on both kernels:
 
 ```sh

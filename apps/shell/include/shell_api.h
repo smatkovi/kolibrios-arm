@@ -1,8 +1,8 @@
 /* KolibriOS for ARM: ktcc's <shell_api.h> (programs started by the shell
  * that talk to it through named shared memory "PID-SHELL"): the
  * commands and the buffer's layout, for the shell's
- * modules/module_program_console.c; our kernel has no named shared
- * memory (68.22), so the shell never finds such a buffer (arm.patch) */
+ * modules/module_program_console.c (apps/threadtest's "shellapi" is
+ * such a program) */
 #ifndef _SHELL_API_H_
 #define _SHELL_API_H_
 
