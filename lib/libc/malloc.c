@@ -3,7 +3,9 @@
  * The kernel's function 68.12 hands out memory of the program's heap but
  * does not take it back (68.13 keeps it), so the heap is managed here: a
  * list of free blocks in address order, joined with their neighbours when
- * freed (as K&R's malloc), more memory from 68.12 in steps of 256 KiB. */
+ * freed (as K&R's malloc), more memory from 68.12 in steps of 256 KiB.
+ * free() of memory the kernel handed out itself (function 54.1's
+ * clipboard data, 68.12 called directly) goes to 68.13. */
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,6 +16,18 @@ typedef struct hdr {
 
 static hdr base;
 static hdr *freep;
+
+/* the blocks from 68.12 this allocator manages, joined when adjacent */
+#define MAX_AREAS 64
+static struct { char *lo, *hi; } areas[MAX_AREAS];
+static int nareas;
+
+static int ours(void *p)
+{
+	for (int i = 0; i < nareas; i++)
+		if ((char *)p > areas[i].lo && (char *)p < areas[i].hi) return 1;
+	return 0;
+}
 
 static inline unsigned kos68(unsigned sub, unsigned arg)
 {
@@ -28,6 +42,12 @@ static hdr *morecore(size_t units)
 	hdr *p = (hdr *)kos68(12, n * sizeof(hdr));
 	if (!p && n > units) p = (hdr *)kos68(12, (n = units) * sizeof(hdr));
 	if (!p) return NULL;
+	char *lo = (char *)p, *hi = lo + n * sizeof(hdr);
+	int i;
+	for (i = 0; i < nareas && areas[i].hi != lo; i++)
+		;
+	if (i < nareas) areas[i].hi = hi;
+	else if (nareas < MAX_AREAS) areas[nareas].lo = lo, areas[nareas++].hi = hi;
 	p->size = n;
 	free(p + 1);
 	return freep;
@@ -60,6 +80,10 @@ void *malloc(size_t n)
 void free(void *ap)
 {
 	if (!ap) return;
+	if (!ours(ap)) {
+		kos68(13, (unsigned)ap);
+		return;
+	}
 	hdr *bp = (hdr *)ap - 1, *p;
 	for (p = freep; !(bp > p && bp < p->next); p = p->next)
 		if (p >= p->next && (bp > p || bp < p->next)) break;
@@ -91,7 +115,7 @@ void *realloc(void *p, size_t n)
 	if (!p) return malloc(n);
 	if (!n) { free(p); return NULL; }
 	hdr *h = (hdr *)p - 1;
-	size_t have = (h->size - 1) * sizeof(hdr);
+	size_t have = ours(p) ? (h->size - 1) * sizeof(hdr) : *((unsigned *)p - 2) - 8;
 	if (have >= n) return p;
 	void *q = malloc(n);
 	if (!q) return NULL;
