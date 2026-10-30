@@ -369,8 +369,11 @@ def test_apps():
                     "f10", "wait:3"))
     make_kernel("realview", "autorun.t_edit")
     qemu("realview", "apps-t_edit", disk, None, "mmc0", "rw",
-         steps=keys("wait:5", "persistent text", "wait:1", "ctrl-shift-s", "wait:2", "tab", "ctrl-a", "/hd0/1",
-                    "ret", "wait:1", "tab", "ctrl-a", "t.txt", "wait:0.5", "ret", "wait:4"))
+         # the save dialog (opendial): Tab to the list, Alt+F1 "Select Disk":
+         # /rd/1, /tmp0/1, /mmc0/1, /mmc0/2, /mmc0/4, /hd0/1; Tab to the name
+         steps=keys("wait:5", "persistent text", "wait:1", "ctrl-shift-s", "wait:3", "tab", "wait:0.5", "alt-f1",
+                    "wait:1", "down", "down", "down", "down", "down", "ret", "wait:1.5", "tab", "wait:0.5",
+                    "ctrl-a", "t.txt", "wait:0.5", "ret", "wait:4"))
     make_kernel("realview")
     log = qemu("realview", "apps-check", disk, "apps", "mmc0", "rw")
     summary(log, "kfar's copies, kfar.ini and t_edit's text in /hd0/1 after a reset")
