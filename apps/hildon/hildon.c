@@ -34,6 +34,8 @@
 #define BTN_CLOSE 3
 #define BTN_STATUS 4
 #define BTN_BACKDROP 5
+#define BTN_UP 6              /* the launcher's rows: back, on */
+#define BTN_DOWN 7
 #define BTN_TILE 100          /* + the slot */
 #define BTN_TILE_CLOSE 200    /* + the slot */
 #define BTN_PROG 300          /* + the program's index */
@@ -85,6 +87,7 @@ static u32 modem_tick, modem_unread_shown;
 #endif
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
 
 static int isqrt(int v)
@@ -130,7 +133,8 @@ static const char *title_of(const char *name, char *buf)
 {
 	static const char *const known[][2] = {
 		{ "clock", "Clock" }, { "example", "Example" }, { "board", "Debug board" },
-		{ "cpu", "Processes" }, { "phone", "Phone" },
+		{ "cpu", "Processes" }, { "phone", "Phone" }, { "shell", "Shell" }, { "terminal", "Terminal" },
+		{ "kfar", "Kolibri Far" }, { "t_edit", "Text editor" },
 	};
 	char n[24];
 	strcpy(n, name);
@@ -222,6 +226,41 @@ static void text_center(int cx, int y, const char *s, u32 c, int scale)
 	else kos_text(cx - text_w(s, 1) / 2, y, s, c, 1);
 }
 
+/* KolibriOS's own icon of a program, when the ramdisk has one:
+ * /sys/icons/NAME.raw, 32 x 32 pixels B, G, R on the tile's colour
+ * (made from KolibriOS's icons32.png, apps/hildon/icons.mk) */
+#define ICON_TILE 0x30343c
+static struct { char name[24]; int ok; u8 px[32 * 32 * 3]; } icons[24];
+
+static const u8 *kolibri_icon(const char *low)
+{
+	int free_at = -1;
+	for (int i = 0; i < 24; i++) {
+		if (!icons[i].name[0]) { if (free_at < 0) free_at = i; continue; }
+		if (!strcmp(icons[i].name, low)) return icons[i].ok ? icons[i].px : 0;
+	}
+	if (free_at < 0) return 0;
+	char path[64];
+	ksprintf(path, "/sys/icons/%s.raw", low);
+	strcpy(icons[free_at].name, low);
+	struct kos_r2 r = kos_read_file(path, icons[free_at].px, sizeof(icons[free_at].px), 0);
+	icons[free_at].ok = r.ebx == sizeof(icons[free_at].px);
+	return icons[free_at].ok ? icons[free_at].px : 0;
+}
+
+/* the icon on a tile, enlarged pixel by pixel to about 3/4 of it (a
+ * whole multiple of its size, so its pixels stay square) */
+static void draw_kolibri_icon(const u8 *px, int x, int y, int n)
+{
+	static u8 big[128 * 128 * 3];
+	int m = MIN(MAX(32, (n * 3 / 4 + 16) / 32 * 32), MIN(n, 128));
+	rounded(x, y, n, n, n / 6, ICON_TILE);
+	for (int j = 0; j < m; j++)
+		for (int i = 0; i < m; i++)
+			memcpy(big + (j * m + i) * 3, px + ((j * 32 / m) * 32 + i * 32 / m) * 3, 3);
+	kos_put_image(big, m, m, x + (n - m) / 2, y + (n - m) / 2);
+}
+
 /* the program's icon, size n, at x, y */
 static void icon(const char *name, int x, int y, int n)
 {
@@ -229,6 +268,7 @@ static void icon(const char *name, int x, int y, int n)
 	strcpy(low, name);
 	lower(low);
 	int r = n / 6;
+	const u8 *kpx = kolibri_icon(low);
 	if (!strcmp(low, "clock")) {
 		rounded(x, y, n, n, r, 0x30343c);
 		int cx = x + n / 2, cy = y + n / 2, R = n * 2 / 5;
@@ -263,6 +303,8 @@ static void icon(const char *name, int x, int y, int n)
 			int bh = bars[i] * (n * 3 / 5) / 100;
 			kos_rect(x + n / 8 + i * (bw + bw / 3), y + n * 4 / 5 - bh, bw, bh, i == 3 ? 0xe8a040 : C_HI);
 		}
+	} else if (kpx) {
+		draw_kolibri_icon(kpx, x, y, n);
 	} else {
 		/* the first letter on a colour of the name */
 		u32 h = 0;
@@ -413,10 +455,29 @@ static void forget_thumb(int slot)
 /* the grids: cells of the screen below the panel */
 static int cols, cell_w, cell_h;
 
+/* the launcher's first row shown, and how many fit */
+static int top_row, rows_fit = 1;
+
 static void grid_cell(int i, int *x, int *y)
 {
 	*x = (i % cols) * cell_w + (sw - cols * cell_w) / 2;
-	*y = BAR + 16 + (i / cols) * cell_h;
+	*y = BAR + 16 + (i / cols - (mode == LAUNCHER ? top_row : 0)) * cell_h;
+}
+
+/* the launcher's rows moved by d, the selection kept in view (d 0) */
+static void scroll_rows(int d)
+{
+	int rows = (nprogs + cols - 1) / MAX(cols, 1);
+	if (d) top_row += d;
+	else if (sel / cols < top_row) top_row = sel / cols;
+	else if (sel / cols >= top_row + rows_fit) top_row = sel / cols - rows_fit + 1;
+	if (top_row > rows - rows_fit) top_row = rows - rows_fit;
+	if (top_row < 0) top_row = 0;
+	/* scrolled: the selection comes along */
+	if (sel < top_row * cols) sel = top_row * cols;
+	if (sel >= (top_row + rows_fit) * cols) sel = (top_row + rows_fit) * cols - 1;
+	if (sel >= nprogs) sel = nprogs - 1;
+	if (sel < 0) sel = 0;
 }
 
 static void draw_switcher(void)
@@ -462,8 +523,12 @@ static void draw_launcher(void)
 	if (cols < 3) cols = 3;
 	cell_w = sw / cols;
 	cell_h = 150;
+	rows_fit = MAX(1, (sh - BAR - 16) / cell_h);
+	scroll_rows(0);
+	int rows = (nprogs + cols - 1) / cols;
 	for (int i = 0; i < nprogs; i++) {
 		int x, y;
+		if (i / cols < top_row || i / cols >= top_row + rows_fit) continue;
 		grid_cell(i, &x, &y);
 		int n = 84, ix = x + (cell_w - n) / 2;
 		if (i == sel) rounded(x + 10, y - 6, cell_w - 20, cell_h - 12, 12, 0x24384e);
@@ -471,6 +536,20 @@ static void draw_launcher(void)
 		char tb[24];
 		text_center(x + cell_w / 2, y + n + 16, title_of(progs[i], tb), C_TEXT, 1);
 		kos_button_hidden(x + 4, y - 4, cell_w - 8, cell_h - 8, BTN_PROG + i);
+	}
+	/* more rows than fit: a finger-wide strip on the right with the way
+	 * back up and on down (the wheel and the arrow keys scroll too) */
+	if (rows > rows_fit) {
+		int bw = 40, bh = 60, bx = sw - bw - 6;
+		u32 up = top_row ? C_TEXT : 0x404448, dn = top_row + rows_fit < rows ? C_TEXT : 0x404448;
+		rounded(bx, BAR + 8, bw, bh, 8, 0x24282c);
+		rounded(bx, sh - bh - 8, bw, bh, 8, 0x24282c);
+		for (int k = 0; k < 10; k++) {
+			kos_rect(bx + bw / 2 - k, BAR + 8 + bh / 2 - 5 + k, 2 * k + 1, 1, up);
+			kos_rect(bx + bw / 2 - k, sh - 8 - bh / 2 + 5 - k, 2 * k + 1, 1, dn);
+		}
+		kos_button_hidden(bx, BAR + 8, bw, bh, BTN_UP);
+		kos_button_hidden(bx, sh - bh - 8, bw, bh, BTN_DOWN);
 	}
 }
 
@@ -673,6 +752,9 @@ static void button(u32 id)
 			}
 		}
 		kos_run("/sys/@hstatus", 0);
+	} else if ((id == BTN_UP || id == BTN_DOWN) && mode == LAUNCHER) {
+		scroll_rows(id == BTN_UP ? -1 : 1);
+		draw();
 	} else if (id == BTN_BACKDROP) {
 		if (mode == SWITCHER || mode == LAUNCHER) go(HOME);
 	} else if (id >= BTN_PROG && id < BTN_PROG + (u32)nprogs) {
@@ -709,6 +791,7 @@ int main(const char *params)
 		if (apps[i].slot < 64) seen[apps[i].slot] = 1;
 	draw();
 	kos_set_zpos(KOS_ZPOS_ALWAYS_TOP);
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_MOUSE);
 	kos_activate_slot(self_slot);
 	if (params && !strcmp(params, "launcher")) go(LAUNCHER);
 	else if (params && !strcmp(params, "switcher")) go(SWITCHER);
@@ -728,6 +811,12 @@ int main(const char *params)
 			break;
 		case KOS_EV_BUTTON:
 			button(kos_get_button() >> 8);
+			break;
+		case KOS_EV_MOUSE:
+			if (mode == LAUNCHER) {                    /* the wheel scrolls the launcher */
+				short dz = (short)kos_call(37, 7, 0, 0, 0, 0);
+				if (dz) { scroll_rows(dz > 0 ? 1 : -1); draw(); }
+			}
 			break;
 		case 0:
 			follow();
