@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""kolibri-home: KolibriOS's persistent home on the phone's storage, made on Linux.
+
+KolibriOS for ARM reads the file systems of the Pro1X's UFS and the N950's
+eMMC (ext4, FAT) and never writes them. The one place it writes is a
+container file made here: HOST/kolibri/kolibri.img on a file system that
+is a partition of the internal storage (the Pro1X's userdata at /host,
+the N950's Leste root or its MyDocs), with a FAT file system inside it
+(4096-byte sectors, so that its sectors are the disk's blocks), every
+byte of it written (no holes, no unwritten extents: Linux would read
+zeros there whatever KolibriOS wrote), and made unchangeable on Linux:
+chattr +i on ext4 (nothing writes, moves or deletes its blocks), read
+only and system on FAT. Next to it HOST/kolibri/kolibri.map: the file's
+inode (FAT: its first cluster), size, a UUID, and its blocks on the
+partition (FIEMAP), which KolibriOS checks against the file system's own
+metadata and the container's header before it writes a single block, and
+then only those (docs/storage.md):
+
+    kolibri-home-map 1
+    fs ext4 id INODE size BYTES uuid HEX32
+    OFFSET LENGTH                       (bytes on the partition)
+
+    kolibri-home create [--host /host] [--size 512M]
+        the container and its map (writes the whole size: a while)
+    kolibri-home status [--host /host]
+        checks the map against the file (FIEMAP), its header, its flags
+    kolibri-home map [--host /host]
+        the map again (the file must be unchanged: immutable)
+    kolibri-home remove [--host /host]
+        the container gone (KolibriOS's files in it too)
+    kolibri-home mount MOUNTPOINT [--host /host] [--rw]
+    kolibri-home umount MOUNTPOINT [--host /host]
+        KolibriOS's files seen from Linux (a loop device, read only;
+        --rw lifts the immutable flag while mounted, umount sets it again
+        and checks that the blocks did not move)
+
+As root on Leste (or any Linux on the phone), while KolibriOS does not run.
+"""
+import argparse
+import array
+import binascii
+import fcntl
+import os
+import struct
+import subprocess
+import sys
+import uuid as uuidlib
+
+FS_IOC_FIEMAP = 0xC020660B
+FIEMAP_FLAG_SYNC = 0x1
+FIEMAP_EXTENT_LAST = 0x1
+# not usable as raw blocks: unknown place, not on disk yet, encoded,
+# encrypted, not aligned, inline, tail-packed, unwritten
+FIEMAP_EXTENT_BAD = 0x2 | 0x4 | 0x8 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800
+FAT_IOCTL_GET_ATTRIBUTES = 0x80047210
+FAT_IOCTL_SET_ATTRIBUTES = 0x40047211
+ATTR_RO, ATTR_SYS = 0x01, 0x04
+EXT4_SUPER_MAGIC, MSDOS_SUPER_MAGIC = 0xEF53, 0x4D44
+
+MAP_MAGIC = "kolibri-home-map 1"
+HDR_MAGIC = b"KOLIBRI-HOME 1\0"
+HDR_OFF = 65536            # in the FAT's reserved sectors (32 of 4096 bytes)
+SECTOR = 4096
+CHUNK = 4 << 20
+MAX_RANGES = 64            # KolibriOS's fence (FMAP_MAX)
+MIN_SIZE = 32 << 20
+
+
+def size_bytes(s):
+    units = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
+    s = s.strip().upper()
+    if s and s[-1] in units:
+        return int(float(s[:-1]) * units[s[-1]])
+    return int(s)
+
+
+def header(uid, size):
+    """The container's header (at HDR_OFF): magic, UUID, size, CRC."""
+    h = HDR_MAGIC.ljust(16, b"\0") + uid + struct.pack("<Q", size)
+    return (h + struct.pack("<I", binascii.crc32(h))).ljust(512, b"\0")
+
+
+def map_text(fs, ident, size, uid, ranges):
+    lines = [MAP_MAGIC, "fs %s id %d size %d uuid %s" % (fs, ident, size, uid.hex())]
+    lines += ["%d %d" % r for r in ranges]
+    return "\n".join(lines) + "\n"
+
+
+def parse_map(text):
+    lines = [l for l in text.split("\n") if l.strip()]
+    if not lines or lines[0].strip() != MAP_MAGIC:
+        raise ValueError("not a %s" % MAP_MAGIC)
+    w = lines[1].split()
+    if len(w) != 8 or w[0] != "fs" or w[2] != "id" or w[4] != "size" or w[6] != "uuid":
+        raise ValueError("second line")
+    return {"fs": w[1], "id": int(w[3]), "size": int(w[5]), "uuid": bytes.fromhex(w[7]),
+            "ranges": [tuple(int(x) for x in l.split()) for l in lines[2:]]}
+
+
+def fiemap(path):
+    """The file's extents as (logical, physical, length, flags)."""
+    extents = []
+    start = 0
+    with open(path, "rb") as f:
+        while True:
+            count = 256
+            hdr = struct.pack("=QQLLLL", start, 0xFFFFFFFFFFFFFFFF, FIEMAP_FLAG_SYNC, 0, count, 0)
+            buf = array.array("B", hdr + bytes(56 * count))
+            fcntl.ioctl(f.fileno(), FS_IOC_FIEMAP, buf, True)
+            mapped = struct.unpack_from("=L", buf, 20)[0]
+            last = False
+            for i in range(mapped):
+                lo, ph, ln, _, _, fl = struct.unpack_from("=QQQQQL", buf, 32 + 56 * i)
+                extents.append((lo, ph, ln, fl))
+                start = lo + ln
+                last = bool(fl & FIEMAP_EXTENT_LAST)
+            if mapped == 0 or last:
+                return extents
+
+
+def ranges(path):
+    """The file's blocks as (offset on the partition, length), adjacent
+    ones joined; refuses a file that is not fully written out."""
+    size = os.stat(path).st_size
+    out, pos = [], 0
+    for lo, ph, ln, fl in fiemap(path):
+        if fl & FIEMAP_EXTENT_BAD:
+            raise SystemExit("%s: extent at %d has flags 0x%x (not plain written blocks)" % (path, lo, fl))
+        if lo != pos:
+            raise SystemExit("%s: a hole at %d" % (path, pos))
+        if out and out[-1][0] + out[-1][1] == ph:
+            out[-1] = (out[-1][0], out[-1][1] + ln)
+        else:
+            out.append((ph, ln))
+        pos = lo + ln
+    if pos < size:
+        raise SystemExit("%s: a hole at the end (%d of %d)" % (path, pos, size))
+    if pos > size:
+        ph, ln = out[-1]
+        out[-1] = (ph, ln - (pos - size))
+    for ph, ln in out:
+        if ph % 512 or ln % 512:
+            raise SystemExit("%s: an extent not in whole sectors" % path)
+    return out
+
+
+def mount_of(path):
+    """(mount point, source device, file system type) of path."""
+    path = os.path.realpath(path)
+    best = None
+    with open("/proc/self/mountinfo") as f:
+        for line in f:
+            p = line.split()
+            mp = p[4].replace("\\040", " ")
+            sep = p.index("-")
+            if (path == mp or path.startswith(mp.rstrip("/") + "/")) and (not best or len(mp) >= len(best[0])):
+                best = (mp, p[sep + 2], p[sep + 1])
+    return best
+
+
+def check_host(host):
+    """host must be the root of an ext4 or FAT file system on a partition
+    of a real disk (not a loop image, not device mapper)."""
+    m = mount_of(host)
+    if not m or os.path.realpath(host) != m[0]:
+        raise SystemExit("%s is not a mount point: give the file system's root (--host)" % host)
+    mp, dev, fstype = m
+    if fstype not in ("ext4", "vfat"):
+        raise SystemExit("%s is %s: ext4 or vfat only" % (mp, fstype))
+    name = os.path.basename(os.path.realpath(dev))
+    if not os.path.exists("/sys/class/block/%s/partition" % name):
+        raise SystemExit("%s is on %s, not a partition of the internal storage (KolibriOS "
+                         "sees partitions only: no loop images, no device mapper)" % (mp, dev))
+    return "fat" if fstype == "vfat" else "ext4", dev
+
+
+def lsattr_i(path):
+    r = subprocess.run(["lsattr", "-d", path], capture_output=True, text=True)
+    return r.returncode == 0 and "i" in r.stdout.split()[0]
+
+
+def fat_attrs(path, set_to=None):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        buf = array.array("I", [0])
+        fcntl.ioctl(fd, FAT_IOCTL_GET_ATTRIBUTES, buf, True)
+        if set_to is not None:
+            fcntl.ioctl(fd, FAT_IOCTL_SET_ATTRIBUTES, array.array("I", [set_to]), False)
+        return buf[0]
+    finally:
+        os.close(fd)
+
+
+def protect(img, fs, on):
+    """ext4: immutable; FAT: read only and system."""
+    if fs == "ext4":
+        subprocess.run(["chattr", "+i" if on else "-i", img], check=True)
+    else:
+        a = fat_attrs(img)
+        fat_attrs(img, (a | ATTR_RO | ATTR_SYS) if on else (a & ~(ATTR_RO | ATTR_SYS)))
+
+
+def protected(img, fs):
+    if fs == "ext4":
+        return lsattr_i(img)
+    return fat_attrs(img) & (ATTR_RO | ATTR_SYS) == ATTR_RO | ATTR_SYS
+
+
+def ident(img, fs):
+    """ext4: the inode; FAT: the first cluster (FAT's inode numbers are
+    Linux's own: the first cluster from FIEMAP and the FAT's geometry)."""
+    st = os.stat(img)
+    if fs == "ext4":
+        return st.st_ino
+    return fat_first_cluster(img)
+
+
+def fat_first_cluster(img):
+    """The first cluster of img on its vfat partition, from the boot
+    sector and FIEMAP's first physical offset."""
+    m = mount_of(img)
+    with open(m[1], "rb") as d:
+        bs = d.read(512)
+    bps, spc = struct.unpack_from("<HB", bs, 11)
+    rsvd, nfats = struct.unpack_from("<HB", bs, 14)
+    rootents = struct.unpack_from("<H", bs, 17)[0]
+    fatsz = struct.unpack_from("<H", bs, 22)[0] or struct.unpack_from("<I", bs, 36)[0]
+    data = (rsvd + nfats * fatsz + (rootents * 32 + bps - 1) // bps) * bps
+    ph = fiemap(img)[0][1]
+    if (ph - data) % (bps * spc):
+        raise SystemExit("%s: its first block is not at a cluster's start" % img)
+    return (ph - data) // (bps * spc) + 2
+
+
+def paths(host):
+    d = os.path.join(host, "kolibri")
+    return d, os.path.join(d, "kolibri.img"), os.path.join(d, "kolibri.map")
+
+
+def write_map(img, mapfile, fs, uid):
+    st = os.stat(img)
+    rs = ranges(img)
+    if len(rs) > MAX_RANGES:
+        raise SystemExit("%s: in %d pieces on the partition, more than %d" % (img, len(rs), MAX_RANGES))
+    if rs[0][1] < HDR_OFF + 4096:
+        raise SystemExit("%s: its first piece is too small" % img)
+    tmp = mapfile + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(map_text(fs, ident(img, fs), st.st_size, uid, rs))
+        f.flush()
+        os.fsync(f.fileno())
+    os.rename(tmp, mapfile)
+    dfd = os.open(os.path.dirname(mapfile), os.O_RDONLY)
+    os.fsync(dfd)
+    os.close(dfd)
+    return rs
+
+
+def read_uuid(img):
+    with open(img, "rb") as f:
+        f.seek(HDR_OFF)
+        h = f.read(48)
+    if not h.startswith(HDR_MAGIC):
+        raise SystemExit("%s: no KOLIBRI-HOME header" % img)
+    return h[16:32]
+
+
+def cmd_create(a):
+    fs, dev = check_host(a.host)
+    d, img, mapfile = paths(a.host)
+    size = size_bytes(a.size)
+    size -= size % (1 << 20)
+    if size < MIN_SIZE:
+        raise SystemExit("--size: at least 32M")
+    if (256 << 20) <= size < (260 << 20):
+        size = 260 << 20          # too large for FAT16, too small for FAT32
+    if os.path.exists(img):
+        raise SystemExit("%s is there already (kolibri-home remove first: KolibriOS's files in it "
+                         "go with it)" % img)
+    st = os.statvfs(a.host)
+    if st.f_bavail * st.f_frsize < size + (256 << 20):
+        raise SystemExit("%s: not enough room for %d MiB" % (a.host, size >> 20))
+    os.makedirs(d, exist_ok=True)
+    uid = uuidlib.uuid4().bytes
+    fd = os.open(img, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        # every byte written (holes or fallocate would leave extents Linux
+        # reads as zeros whatever KolibriOS writes)
+        zero = bytes(CHUNK)
+        done = 0
+        while done < size:
+            done += os.write(fd, zero[:min(CHUNK, size - done)])
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        # FAT inside: 4096-byte sectors and clusters (the disk's blocks),
+        # 32 reserved sectors (the header in the 17th), FAT32 when it is
+        # large enough for one
+        fat = "32" if size >= (260 << 20) else "16"
+        subprocess.run(["mkfs.fat", "-S", str(SECTOR), "-s", "1", "-R", "32", "-F", fat, "-n", "KOLIBRI",
+                        "-i", uid[:4].hex(), img], check=True, stdout=subprocess.DEVNULL)
+        if os.stat(img).st_size != size:
+            raise SystemExit("%s: mkfs.fat changed its size" % img)
+        with open(img, "r+b") as f:
+            f.seek(HDR_OFF)
+            f.write(header(uid, size))
+            f.flush()
+            os.fsync(f.fileno())
+        if fs == "ext4" and len(ranges(img)) > MAX_RANGES:
+            # fewer pieces where the partition has the room
+            subprocess.run(["e4defrag", img], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        rs = write_map(img, mapfile, fs, uid)
+        protect(img, fs, True)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        if os.path.exists(img):
+            if protected(img, fs):
+                protect(img, fs, False)
+            os.unlink(img)
+        if os.path.exists(mapfile):
+            os.unlink(mapfile)
+        raise
+    print("%s: %d MiB, FAT%s inside, %d range(s) on %s, %s; map %s" %
+          (img, size >> 20, fat, len(rs), dev, "immutable" if fs == "ext4" else "read only and system",
+           mapfile))
+    print("KolibriOS shows it as /hd0/1 (read only); with kolibri.home=rw it writes there.")
+
+
+def cmd_status(a):
+    fs, dev = check_host(a.host)
+    d, img, mapfile = paths(a.host)
+    if not os.path.exists(img):
+        print("no %s" % img)
+        return 1
+    st = os.stat(img)
+    ok = True
+    p = protected(img, fs)
+    ok &= p
+    print("%s: %d bytes, %s %d, %s" % (img, st.st_size, "inode" if fs == "ext4" else "first cluster",
+          ident(img, fs), ("immutable" if fs == "ext4" else "read only and system") if p else "NOT PROTECTED"))
+    try:
+        m = parse_map(open(mapfile).read())
+    except (OSError, ValueError) as e:
+        print("%s: %s" % (mapfile, e))
+        return 1
+    same_file = m["fs"] == fs and m["id"] == ident(img, fs) and m["size"] == st.st_size
+    same_blocks = m["ranges"] == ranges(img)
+    try:
+        same_uuid = read_uuid(img) == m["uuid"]
+    except SystemExit as e:
+        print(e)
+        same_uuid = False
+    ok &= same_file and same_blocks and same_uuid
+    print("%s: %s, %s, %s, %d range(s)" % (mapfile, "for this file" if same_file else "NOT FOR THIS FILE",
+          "blocks unchanged" if same_blocks else "BLOCKS MOVED", "header's UUID" if same_uuid else
+          "NOT THE HEADER'S UUID", len(m["ranges"])))
+    return 0 if ok else 1
+
+
+def cmd_map(a):
+    fs, dev = check_host(a.host)
+    d, img, mapfile = paths(a.host)
+    if not protected(img, fs):
+        raise SystemExit("%s is not protected: its blocks may have moved; make it again (remove, "
+                         "create)" % img)
+    rs = write_map(img, mapfile, fs, read_uuid(img))
+    print("%s: %d range(s)" % (mapfile, len(rs)))
+
+
+def cmd_remove(a):
+    fs, dev = check_host(a.host)
+    d, img, mapfile = paths(a.host)
+    if os.path.exists(mapfile):
+        os.unlink(mapfile)
+    if os.path.exists(img):
+        if protected(img, fs):
+            protect(img, fs, False)
+        os.unlink(img)
+    print("removed")
+
+
+def cmd_mount(a):
+    fs, dev = check_host(a.host)
+    d, img, mapfile = paths(a.host)
+    if a.rw:
+        protect(img, fs, False)
+    try:
+        subprocess.run(["mount", "-t", "vfat", "-o", "loop," + ("rw" if a.rw else "ro"), img, a.mountpoint],
+                       check=True)
+    except BaseException:
+        if a.rw:
+            protect(img, fs, True)
+        raise
+    print("%s on %s (%s)" % (img, a.mountpoint, "read-write: kolibri-home umount sets it immutable again"
+                             if a.rw else "read only"))
+
+
+def cmd_umount(a):
+    fs, dev = check_host(a.host)
+    d, img, mapfile = paths(a.host)
+    subprocess.run(["umount", a.mountpoint], check=True)
+    if not protected(img, fs):
+        protect(img, fs, True)
+    m = parse_map(open(mapfile).read())
+    if m["ranges"] != ranges(img):
+        raise SystemExit("%s: ITS BLOCKS MOVED: KolibriOS will refuse it until `kolibri-home map`" % img)
+    print("%s protected again, its blocks unchanged" % img)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("command", choices=("create", "status", "map", "remove", "mount", "umount"))
+    ap.add_argument("mountpoint", nargs="?", help="mount, umount: where")
+    ap.add_argument("--host", default="/host", help="the file system's root (the Pro1X's userdata: /host)")
+    ap.add_argument("--size", default="512M", help="create: the container's size")
+    ap.add_argument("--rw", action="store_true", help="mount: read-write")
+    a = ap.parse_args()
+    if os.geteuid() != 0:
+        raise SystemExit("as root")
+    if a.command in ("mount", "umount") and not a.mountpoint:
+        raise SystemExit("%s MOUNTPOINT" % a.command)
+    return {"create": cmd_create, "status": cmd_status, "map": cmd_map, "remove": cmd_remove,
+            "mount": cmd_mount, "umount": cmd_umount}[a.command](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
