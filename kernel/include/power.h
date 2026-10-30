@@ -63,6 +63,8 @@ u32 power_test_minutes(void);          /* kolibri.powertest=N, 0 */
  * wake it, is left for the next shallower one) */
 void power_hold_awake(u32 until_tick);
 bool power_soc_sleep_ok(void);
+/* the display on with the sleep set at 0 (after a standby): no SoC sleep */
+void power_hold_display(bool on);
 extern bool power_standby;             /* the display off: timer slack */
 void power_set_standby(bool on);       /* ... and EV_SYSTEM to the shells */
 

@@ -124,7 +124,7 @@ void power_tick(void)
 }
 
 static u32 awake_until;
-static bool awake_set;
+static bool awake_set, display_hold;
 
 void power_hold_awake(u32 until)
 {
@@ -132,9 +132,17 @@ void power_hold_awake(u32 until)
 	awake_set = true;
 }
 
+/* the display on again after a standby: its scan-out runs on the XO and
+ * the buses that the sleep set has at 0 since, so the SoC does not sleep
+ * (the cluster's deepest state left for the next one, as for a device) */
+void power_hold_display(bool on)
+{
+	display_hold = on;
+}
+
 bool power_soc_sleep_ok(void)
 {
-	return !awake_set || (s32)(ticks - awake_until) >= 0;
+	return !display_hold && (!awake_set || (s32)(ticks - awake_until) >= 0);
 }
 
 u32 power_next(void)

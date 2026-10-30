@@ -1574,6 +1574,7 @@ static void standby_enter(const char *why)
 	kprintf("pro1x: standby (%s)\n", why);
 	display_power(false);
 	power_set_standby(true);
+	power_hold_display(false);
 	if (!soc_sleep_on) soc_sleep_start();
 	if (keytest) keytest_at = ticks + keytest * 100;
 }
@@ -1583,6 +1584,10 @@ static void standby_leave(const char *why)
 	if (!standby) return;
 	standby = false;
 	power_set_standby(false);
+	/* the sleep set stays at 0 (Linux's votes are not known to put them
+	 * back): the scan-out needs the XO and the buses, so no SoC sleep
+	 * while the display is on, unless kolibri.rpmsleep asks for it */
+	if (!rpmsleep) power_hold_display(true);
 	kprintf("pro1x: awake (%s) after %u s; MPM wake-ups: %u by keys, %u by the SPMI arbiter\n", why,
 		(ticks - standby_since) / 100, mpm_key_wakes, mpm_spmi_wakes);
 	if (display_off) display_power(true);

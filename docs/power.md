@@ -366,7 +366,11 @@ row), the interrupt is switched off and said so.
 it (as the power test does after 10 s): the display off, the programs'
 timeouts on whole seconds, the SoC's sleep (the sleep set, the MPM). The
 power key again, the volume-down key, any key of the keyboard, the
-modifiers or Fn end it: the display on, the timeouts as before. The key
+modifiers or Fn end it: the display on, the timeouts as before; the
+sleep set stays at 0 (Linux's votes are not known to put them back), so
+while the display is on the SoC does not sleep (`power_hold_display`:
+the cluster's GDHS instead of its collapse, `SoC sleep held N` in the
+power lines; `kolibri.rpmsleep` lets it sleep anyway). The key
 that ends it is not passed on (neither its press nor its release);
 touches are read and dropped while the display is off.
 
@@ -604,7 +608,11 @@ On the Pro1X, after steps 1-5 (the same way in: `tools/pro1x-kexec.sh`,
    the watchdog every 10 s; the shell nothing, `tasks` 0), the RPM's
    `vlow`/`vmin` counts against step 3's, the battery's mean current
    against step 3's (and Leste's 160 mA). The line a minute is the test's
-   own.
+   own. After the standby (step 4's power key) the power lines count
+   `SoC sleep held N`: no SoC sleep with the display on, as the sleep set
+   (now with the interconnect's bandwidth) stays at 0; a picture that
+   flickers or freezes after the standby with `kolibri.rpmsleep` given
+   is that.
 7. The display's DSI lanes in ULPS: `... "kolibri.nomodem kolibri.powertest=3
    kolibri.dsiulps"`. Expected after `display off: ...`: `pro1x: DSI lanes
    to ULPS (lanes 1f, LANE_CTRL 11000000): done, status 0` (or 10000000:

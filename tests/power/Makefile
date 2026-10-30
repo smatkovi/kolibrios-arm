@@ -18,7 +18,9 @@
 #          host held by a Linux program (tests/linux/tcphold, without and
 #          with a 15 s keepalive), the messenger on the fake backend
 #          (tests/messenger/fakepeer); each with the display on and in the
-#          standby (kolibri.standby)
+#          standby (kolibri.standby). Needs aarch64-linux-gnu-gcc (static
+#          glibc: tcphold) and Go (the fake backend); it leaves
+#          build/arm64 with those programs on the ramdisk
 TOP := ../..
 K := $(TOP)/build/arm64/kernel.bin
 B := $(TOP)/build/power
