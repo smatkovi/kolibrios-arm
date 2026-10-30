@@ -11,9 +11,11 @@
  * delete_file_worker returns 0 OK, 1 retry, 2 skip, -1 cancel (the
  * original's "cmp al, 2"); delete_file, copy_file and copy_file_worker
  * return true for "cancel the job" (the original's "ja cancel_label").
- * The plugins' branches (source_hModule, hPlugin) are left out: there
- * are no plugins (kfar.h), so they are always 0; copy_AddDir and
- * copy_AddFile, the callbacks of a plugin's GetFiles, are left out. */
+ * The plugins' branches are the original's: source_hModule is the
+ * source panel's plugin (its PluginInfo), source_hPlugin the plugin's
+ * handle, source_hFile the file being copied; copy_AddDir and
+ * copy_AddFile are the callbacks of a plugin's GetFiles; the file layer
+ * reads a plugin's files through its open, read, setpos, close. */
 #include "kfar.h"
 
 /* kfar.asm: panels_OnKey.bigfilename (with .l2's restore_semicolon):
@@ -170,6 +172,14 @@ int makedir(int num_buttons, const char **buttons)
 	}
 }
 
+/* copy_file_worker2's end: the plugin's file closed if it was opened
+ * there (not GetFiles') */
+static void close_source_hFile(void *own_hFile)
+{
+	PluginInfo *mod = source_hModule;
+	if (!own_hFile && mod && source_hFile) mod->close(source_hFile);
+}
+
 /* filetool.inc: copy_file_worker2: in: execdata = the source's name,
  * CopyDestEditBuf.data = the destination's name, edx = the source's
  * BDFE, edi = the name to add to the destination when bDestIsFolder;
@@ -211,19 +221,36 @@ static bool copy_file_worker2(const u8 *edx, const char *edi)
 	readinfo.size = copy_buffer_size;
 	readinfo.data = copy_buffer;
 	readinfo.name = esi;
-	/* (source_hFile, .source_reopen: plugins only) */
+	/* the source's handle: GetFiles' (copy_AddFile, the plugin closes
+	 * it) or none: opened here from the plugin's panel (.source_reopen) */
+	void *own_hFile = source_hFile;
+	PluginInfo *mod = source_hModule;
+	if (!own_hFile && mod) source_hFile = mod->open(source_hPlugin, esi, O_READ + O_SEQUENTIAL_ONLY);
 	bool cancel;
 	int al;
 	for (;;) {
-		/* .copyloop (.native) */
-		u32 ebx;
-		u32 eax = fs_call(&readinfo, &ebx);
+		/* .copyloop */
+		u32 ebx, eax;
+		if (mod) {
+			/* (a plugin's error: get_error_msg(-1), as the original's
+			 * read result) */
+			eax = source_hFile ? mod->read(source_hFile, readinfo.data, readinfo.size) : (u32)-1;
+			ebx = eax;
+			if (eax != (u32)-1) eax = 0;
+		} else {
+			/* .native */
+			eax = fs_call(&readinfo, &ebx);
+		}
 		if (eax && eax != 6) {
 			/* .readerr */
 			if (copy_bSkipAll2) goto copyfailed_del2;
 			const char *strings[3] = { get_error_msg(eax), aCannotReadFile, esi };
 			al = SayErr(3, strings, 4, DeleteErrorBtn);
-			if (!al) continue;      /* retry */
+			if (!al) {              /* retry */
+				if (mod && !source_hFile)
+					source_hFile = mod->open(source_hPlugin, esi, O_READ + O_SEQUENTIAL_ONLY);
+				continue;
+			}
 			goto copyfailed_parseuser;
 		}
 		/* .copyreadok */
@@ -248,7 +275,9 @@ static bool copy_file_worker2(const u8 *edx, const char *edi)
 		writeinfo.code = 3;
 		if (writeinfo.size != copy_buffer_size) break;
 	}
-	/* .copydone: now try to set the source's attributes, ignore errors */
+	/* .copydone */
+	close_source_hFile(own_hFile);
+	/* now try to set the source's attributes, ignore errors */
 	memcpy(attrinfo_attr, edx, 32);
 	/* replace zero dates with default values */
 	u8 *def = default_attr;
@@ -269,6 +298,7 @@ copyfailed_parseuser:
 	}
 	cancel = al != 1;                       /* "cmp al, 1": skip, or cancel */
 	/* .copyfailed */
+	close_source_hFile(own_hFile);
 	if (!bConfirmDeleteIncomplete) goto copyfailed_del;
 	if (writeinfo.code == 2) goto copydone2;
 	{
@@ -286,7 +316,9 @@ copydone2:
 
 copyfailed_del2:
 	/* (the original jumps here with the source's handle still on its
-	 * stack, which unbalances it; here: skip, as intended) */
+	 * stack, which unbalances it, and the plugin's file open; here:
+	 * skip, as intended) */
+	close_source_hFile(own_hFile);
 	cancel = false;
 	goto copyfailed_del;
 }
@@ -362,7 +394,23 @@ enter_recursion:
 		goto cancel2;
 	}
 target_created:
-	/* (.nosetdir: plugins' SetFolder left out) */
+	if (source_hModule) {
+		/* into the folder on the plugin's panel */
+		for (;;) {
+			const char *rel = strrchr(execdata, '/') + 1;
+			if (((PluginInfo *)source_hModule)->SetFolder(source_hPlugin, rel, execdata)) break;
+			/* (the original skips quietly unless "skip all" was
+			 * chosen, and asks then: the test reversed) */
+			if (copy_bSkipAll3) goto skip2;
+			const char *strings[2] = { aCannotSetFolder, execdata };
+			al = SayErr(2, strings, 4, DeleteErrorBtn);
+			if (!al) continue;      /* retry */
+			copy_bSkipAll3 = al == 2;
+			if (al == 1 || al == 2) goto skip2;
+			goto cancel2;
+		}
+	}
+	/* .nosetdir */
 	n = 0;
 return_from_recursion:
 	for (;;) {
@@ -371,8 +419,15 @@ return_from_recursion:
 		dirinfo.size = copy_dir_query_size;
 		dirinfo.data = copy_dir_query_area;
 		dirinfo.name = execdata;
-		u32 ebx;
-		u32 err = fs_call(&dirinfo, &ebx);
+		u32 ebx, err;
+		if (source_hModule) {
+			err = ((PluginInfo *)source_hModule)->ReadFolder(source_hPlugin, n, copy_dir_query_size,
+									 copy_dir_query_area);
+			ebx = *(u32 *)(copy_dir_query_area + 4);
+		} else {
+			/* .readfolder_native */
+			err = fs_call(&dirinfo, &ebx);
+		}
 		if (!err || err == 6) {
 			/* .readok: loop through the folder and copy items */
 			u8 *e = copy_dir_query_area + 32;
@@ -449,6 +504,11 @@ return_from_recursion:
 copy_dir_entry_done:
 	/* .skip1: return to the parent folder */
 	delete_last_name_from_end(execdata);
+	if (source_hModule) ((PluginInfo *)source_hModule)->SetFolder(source_hPlugin, aDotDot, execdata);
+	if (0) {
+	skip2:
+		delete_last_name_from_end(execdata);
+	}
 	/* pop the item from the folder stack */
 	if (copy_dir_stack_ptr <= copy_dir_stack) {
 		dirinfo.first = 0;                      /* .done */
@@ -458,14 +518,63 @@ copy_dir_entry_done:
 	/* restore the parent's name */
 	delete_last_name_from_end(CopyDestEditBuf.data);
 	goto return_from_recursion;
+	/* depth: the folders entered on a plugin's panel, less one (the
+	 * original's copy_dir_stack_ptr, which .cancel2 takes below the
+	 * stack for the first folder not entered) */
+	int depth;
 cancel2:
+	depth = copy_dir_stack_ptr - copy_dir_stack - 1;
 	if (copy_dir_stack_ptr > copy_dir_stack) copy_dir_stack_ptr--;
+	goto cancel3_depth;
 cancel3:
+	depth = copy_dir_stack_ptr - copy_dir_stack;
+cancel3_depth:
 	delete_last_name_from_end(execdata);
+	goto cancel_depth;
 cancel:
-	/* .cancel.ret (the plugins' SetFolder("..") left out) */
+	depth = copy_dir_stack_ptr - copy_dir_stack;
+cancel_depth:
+	/* on a plugin's panel back to the folder of the start */
+	if (source_hModule)
+		for (; depth >= 0; depth--) {
+			delete_last_name_from_end(execdata);
+			((PluginInfo *)source_hModule)->SetFolder(source_hPlugin, aDotDot, execdata);
+		}
+	/* .cancel.ret */
 	dirinfo.first = 0;
 	return true;
+}
+
+/* filetool.inc: copy_AddDir: GetFiles' adddir: the folder name (relative
+ * to the panel's) made in the destination; false: stop the copy */
+bool copy_AddDir(const char *name, void *bdfe_info)
+{
+	bool eax = true;                        /* for "return true" */
+	char *esi = CopyDestEditBuf.data + strlen(CopyDestEditBuf.data) + 1;
+	if (esi[-2] == '/') esi--;
+	char saved[4];
+	memcpy(saved, esi - 1, 4);
+	esi[-1] = '/';
+	char *edi = esi;
+	for (;;) {
+		/* .0 */
+		char al = *name++;
+		*edi++ = al;
+		if (edi >= CopyDestEditBuf.data + 512) goto done;
+		if (!al) break;
+	}
+	if (makedir(2, RetryOrCancelBtn)) eax = false;
+done:
+	memcpy(esi - 1, saved, 4);
+	return eax;
+}
+
+/* filetool.inc: copy_AddFile: GetFiles' addfile: the plugin's file hFile
+ * (the plugin opens and closes it) copied as name; false: stop */
+bool copy_AddFile(const char *name, void *bdfe_info, HANDLE hFile)
+{
+	source_hFile = hFile;
+	return !copy_file_worker2(bdfe_info, name);
 }
 
 /* filetool.inc: delete_last_name_from_end: esi -> the name */
@@ -546,20 +655,54 @@ _FILE *open(const char *name, int mode)
 }
 
 /* HANDLE __stdcall open2(int plugin_id, HANDLE plugin_instance, const
- * char* name, int mode): opens a file on a plugin's panel (plugins are
- * not supported: only plugin_id 0, the physical file) */
+ * char* name, int mode): opens a file on a plugin's panel (plugin_id
+ * its PluginInfo, plugin_instance its handle), or a physical file
+ * (plugin_id 0). The plugin's getattr fills attr (the original hands it
+ * the fileinfo instead, and filesize then says 0) */
 _FILE *open2(void *plugin_id, void *plugin_instance, const char *name, int mode)
 {
-	if (plugin_id) return 0;
-	return open(name, mode);
+	if (!plugin_id) return open(name, mode);
+	/* .plugin */
+	_FILE *ecx = xpgalloc(sizeof(_FILE));
+	if (!ecx) return 0;
+	if (strlen(name) >= sizeof(ecx->finame)) {
+		pgfree(ecx);                    /* .ret0 */
+		return 0;
+	}
+	strcpy(ecx->finame, name);
+	PluginInfo *edx = plugin_id;
+	ecx->hPlugin = edx;
+	ecx->mode = mode;
+	void *eax = edx->open(plugin_instance, ecx->finame, mode);
+	if (!eax) {
+		pgfree(ecx);
+		return 0;
+	}
+	ecx->hFile = eax;
+	memset(ecx->attr, 0, sizeof(ecx->attr));
+	edx->getattr(plugin_instance, ecx->finame, ecx->attr);
+	ecx->pos = 0;
+	ecx->bufpos = 0;
+	ecx->bufsize = 0;
+	ecx->fileinfo.first = ecx->fileinfo.first_hi = 0;      /* fioffset */
+	return ecx;
 }
 
 /* read.doread: fisize bytes at fioffset into fibuf; returns the error
  * (0, end of file included), *ebx the bytes read */
 static u32 read_doread(_FILE *ecx, u32 *ebx)
 {
-	u32 eax = fs_call(&ecx->fileinfo, ebx);
-	if (eax && eax != 6) return eax;
+	u32 eax;
+	if (ecx->hPlugin) {
+		eax = ((PluginInfo *)ecx->hPlugin)->read(ecx->hFile, ecx->fileinfo.data, ecx->fileinfo.size);
+		if (eax == (u32)-1) return eax;
+		*ebx = eax;
+		eax = 0;
+	} else {
+		/* .native */
+		eax = fs_call(&ecx->fileinfo, ebx);
+		if (eax && eax != 6) return eax;
+	}
 	/* .addpos */
 	u64 off = (ecx->fileinfo.first | (u64)ecx->fileinfo.first_hi << 32) + *ebx;
 	ecx->fileinfo.first = off;
@@ -660,11 +803,11 @@ void seek(_FILE *ecx, int method, s64 newpos)
 	if (eax == fioffset) return;
 	ecx->fileinfo.first = eax;
 	ecx->fileinfo.first_hi = eax >> 32;
-	/* (a plugin's setpos left out) */
+	if (ecx->hPlugin) ((PluginInfo *)ecx->hPlugin)->setpos(ecx->hFile, eax);
 }
 
-/* filetool.inc: setpos_default, the plugins' default setpos (seek from
- * the start; kept for completeness, no plugins use it here) */
+/* filetool.inc: setpos_default, the plugins' default setpos: seek from
+ * the start (for plugins whose files are kfar's, read being kfar's too) */
 void setpos_default(_FILE *hFile, s64 pos)
 {
 	seek(hFile, 0, pos);
@@ -682,14 +825,15 @@ s64 filesize(_FILE *hFile)
 	return *(u32 *)(hFile->attr + 32) | (u64)*(u32 *)(hFile->attr + 36) << 32;
 }
 
-/* void __stdcall close(HANDLE hFile) (a plugin's close left out) */
+/* void __stdcall close(HANDLE hFile) */
 void close(_FILE *hFile)
 {
+	if (hFile->hPlugin) ((PluginInfo *)hFile->hPlugin)->close(hFile->hFile);
 	pgfree(hFile);
 }
 
 /* filetool.inc: getattr_default, the plugins' default getattr: "not
- * supported" (kept for completeness) */
+ * supported" */
 int getattr_default(void *hPlugin, const char *name, void *info)
 {
 	return 2;

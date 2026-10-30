@@ -5,8 +5,8 @@
  * and the KolibriOS team, GPL-2.0.
  *
  * Differences from the original:
- * - files on plugin panels (hPlugin) are not supported (kfar.h): those
- *   branches are left out;
+ * - files on plugin panels: as the original's (the plugin's getattr,
+ *   open, read, setpos, close; hostname the host file's name);
  * - the percentage in the status line is the FPU's result computed with
  *   integers (viewer_percent);
  * - viewer_get_prev_char goes back to the right place when the buffer
@@ -79,7 +79,11 @@ void view_file(int eax, const char *esi, const u8 *ecx)
 		/* .frompanel */
 		PanelData *panel = PANEL_OF_DIR(esi);
 		ebp->hPlugin = panel->hPlugin;
-		/* (the plugin's host name in hostname: plugins are not supported) */
+		if (ebp->hPlugin) {
+			/* the host file's name, its last part */
+			const char *h = panel_host_name(panel), *t = strrchr(h, '/');
+			strcpy(ebp->hostname, t ? t + 1 : h);
+		}
 		/* .nocopyhostname */
 		ebp->hFile = panel->hFile;
 		while (*esi) *edi++ = *esi++;
@@ -96,8 +100,10 @@ void view_file(int eax, const char *esi, const u8 *ecx)
 	fileinfo *ebx = &attrinfo;
 	u32 err;
 attr_retry:
-	/* .attr_native (the plugins' getattr left out) */
-	err = fs_call(ebx, 0);
+	if (ebp->hPlugin)
+		err = PANEL_PLUGIN(ebp)->getattr(ebp->hFile, ebp->filename, attrinfo_attr);
+	else
+		err = fs_call(ebx, 0);          /* .attr_native */
 	if (err) {
 		const char *s[3] = { get_error_msg(err), aCannotReadFile, ebp->filename };
 		if (SayErr(3, s, 2, RetryOrCancelBtn) == 0) {
@@ -114,10 +120,28 @@ attr_retry:
 	readinfo.size = 16384;
 	readinfo.data = ebp->buf;
 	ebp->buf_pos = ebp->buf;
-	/* .retry: .read_native (the plugins' open and read left out) */
+	if (ebp->hPlugin) {
+		ebp->hWorkFile = PANEL_PLUGIN(ebp)->open(ebp->hFile, ebp->filename, O_READ);
+		if (!ebp->hWorkFile) {
+			/* ..openerr_in_screen */
+			SayErr(1, aCannotOpenFile_ptr, 1, ContinueBtn);
+			delete_active_screen();
+			return;
+		}
+	}
+	/* .retry */
 	u32 nread;
-	err = fs_call(&readinfo, &nread);
-	ebp->buf_size = nread;
+	if (ebp->hPlugin) {
+		nread = PANEL_PLUGIN(ebp)->read(ebp->hWorkFile, readinfo.data, 16384);
+		/* -1: let's hope that plugin says error itself */
+		if (nread == (u32)-1) nread = 0;
+		ebp->buf_size = nread;
+		err = 0;
+	} else {
+		/* .read_native */
+		err = fs_call(&readinfo, &nread);
+		ebp->buf_size = nread;
+	}
 	if (err && err != 6) {
 		/* .readerr */
 		const char *s[3] = { get_error_msg(err), aCannotReadFile, ebp->filename };
@@ -173,7 +197,13 @@ static bool viewer_load_next(viewer_data *ebp)
 	readinfo.data = ebp->buf + 8192;
 	readinfo.name = ebp->filename;
 	u32 ebx;
-	for (;;) {                              /* .readretry: .native */
+	for (;;) {                              /* .readretry */
+		if (ebp->hPlugin) {
+			ebx = PANEL_PLUGIN(ebp)->read(ebp->hWorkFile, readinfo.data, 8192);
+			if (ebx == (u32)-1) ebx = 0;
+			break;
+		}
+		/* .native */
 		u32 eax = fs_call(&readinfo, &ebx);
 		if (eax == 0 || eax == 6) break;
 		if (ask_retry_ignore(ebp, eax)) break;  /* .readerr */
@@ -608,10 +638,16 @@ static void viewer_seek_to_current(viewer_data *ebp)
 	viewer_seek(ebp, ebp->cur_pos);
 }
 
-/* viewer.inc: viewer_seek.q: reads readinfo (the plugins' setpos and
- * read left out); the bytes read */
+/* viewer.inc: viewer_seek.q: reads readinfo (on a plugin's panel its
+ * setpos and read); the bytes read */
 static u32 viewer_seek_q(viewer_data *ebp)
 {
+	if (ebp->hPlugin) {
+		PluginInfo *eax = PANEL_PLUGIN(ebp);
+		eax->setpos(ebp->hWorkFile, readinfo.first | (u64)readinfo.first_hi << 32);
+		u32 ebx = eax->read(ebp->hWorkFile, readinfo.data, readinfo.size);
+		return ebx == (u32)-1 ? 0 : ebx;       /* (the plugin has said why) */
+	}
 	for (;;) {
 		u32 ebx;
 		u32 eax = fs_call(&readinfo, &ebx);
@@ -803,9 +839,16 @@ static void viewer_set_keybar(viewer_data *ebp)
 	draw_keybar();
 }
 
-/* viewer.inc: viewer_OnExit (a plugin's file closed: none here) */
-void viewer_OnExit(void *ebp)
+/* viewer.inc: viewer_OnExit: a plugin's file closed, the plugin too
+ * when no screen uses it */
+void viewer_OnExit(void *p)
 {
+	viewer_data *ebp = p;
+	PluginInfo *edx = PANEL_PLUGIN(ebp);
+	if (!edx) return;
+	ebp->hPlugin = 0;
+	edx->close(ebp->hWorkFile);
+	close_handle_if_unused(edx, ebp->hFile);
 }
 
 /* viewer.inc: viewer_IsHandleUsed */
@@ -1147,10 +1190,18 @@ __attribute__((weak)) void editor_getname(void *ebp, char *edi, int ecx)
 void viewedit_getname(void *ebp, char *edi, int ecx)
 {
 	ecx -= 13;
-	/* (a plugin's file: its host name first; plugins are not supported) */
-	/* .native */
 	const char *esi = VIEWEDIT_FILENAME(ebp);
 	int edx = 3;
+	if (VIEWEDIT_HPLUGIN(ebp)) {
+		/* the host file's name in up to half of the line, then the
+		 * plugin's file */
+		const char *h = VIEWEDIT_HOSTNAME(ebp);
+		char *start = edi;
+		for (int n = ecx >> 1; n > 0 && *h; n--) *edi++ = *h++;
+		ecx -= edi - start;
+		goto main;
+	}
+	/* .native */
 	for (;;) {
 		char al = *esi++;
 		*edi++ = al;
@@ -1159,6 +1210,7 @@ void viewedit_getname(void *ebp, char *edi, int ecx)
 		if (al == '/' && !--edx) break;
 		if (ecx <= 3) break;            /* (the menu's line is full) */
 	}
+main:;
 	/* .main */
 	u32 len = strlen(esi);
 	if (len > (u32)ecx) {

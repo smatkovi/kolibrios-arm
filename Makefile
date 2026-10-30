@@ -188,13 +188,14 @@ $(A)/%.kex: $(A)/%.elf
 LIBS := $(sort $(patsubst lib/%/,%,$(dir $(wildcard lib/*/*.c))))
 LIBC_INC := -nostdinc -isystem $(shell $(CC32) -print-file-name=include) -Ilib/libc/include -Ilib \
 	$(foreach l,$(LIBS),-Ilib/$(l)) -I$(A)/gen
-# a library's own rules (generated headers): lib/NAME/lib.mk
+# a library's own rules (generated headers; LIBCFLAGS_NAME, its flags
+# besides these): lib/NAME/lib.mk
 include $(sort $(wildcard lib/*/lib.mk))
 define CLIB
 $(1)_LOBJ := $$(patsubst lib/$(1)/%.c,$(A)/lib/$(1)/%.o,$$(wildcard lib/$(1)/*.c))
 $(A)/lib/$(1)/%.o: lib/$(1)/%.c | dirs
 	@mkdir -p $$(dir $$@)
-	$(CC32) $(ACFLAGS) $(LIBC_INC) -MMD -MP -c $$< -o $$@
+	$(CC32) $(ACFLAGS) $(LIBC_INC) $$(LIBCFLAGS_$(1)) -MMD -MP -c $$< -o $$@
 $(A)/lib/$(1).a: $$($(1)_LOBJ)
 	@rm -f $$@
 	$(CROSS)ar rcs $$@ $$^
@@ -212,7 +213,7 @@ $(A)/lib/crt0-libc.o: lib/crt0.S | dirs
 # (lib/NAME/import/*.c with them: what KolibriOS's programs have
 # themselves, macros and the like); DLL=0 links the libraries in
 DLL ?= 1
-DLLS := console:console.obj boxlib:box_lib.obj libini:libini.obj
+DLLS := console:console.obj boxlib:box_lib.obj libini:libini.obj kfar_arc:kfar_arc.obj
 DLL_NAMES := $(foreach d,$(DLLS),$(firstword $(subst :, ,$(d))))
 P := $(A)/pic
 PICFLAGS := -fPIC -fvisibility=hidden
@@ -236,7 +237,7 @@ define DLL_LIB
 $(1)_POBJ := $$(patsubst lib/$(1)/%.c,$(P)/$(1)/%.o,$$(wildcard lib/$(1)/*.c))
 $(P)/$(1)/%.o: lib/$(1)/%.c | dirs
 	@mkdir -p $$(dir $$@)
-	$(CC32) $(ACFLAGS) $(PICFLAGS) $(LIBC_INC) -MMD -MP -c $$< -o $$@
+	$(CC32) $(ACFLAGS) $(PICFLAGS) $(LIBC_INC) $$(LIBCFLAGS_$(1)) -MMD -MP -c $$< -o $$@
 $(P)/$(1)/exports.S: lib/$(1)/$(1).exp tools/mkdll.py | dirs
 	@mkdir -p $$(dir $$@)
 	python3 -I tools/mkdll.py exports $$< $$@

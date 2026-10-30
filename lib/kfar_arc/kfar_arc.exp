@@ -1,0 +1,23 @@
+# kfar_arc.obj's export table (programs/fs/kfar/kfar_arc/kfar_arc.asm's
+# EXPORTS, kfar_arc 0.17, kfar's plugin interface version 3), for
+# tools/mkdll.py; lib_init first, as in KolibriOS for ARM's other
+# libraries (kfar calls it before plugin_load: apps/kfar/tools.c). Not
+# here: the zlib encoder the original links in from ../zlib/zlib.asm
+# (deflateInit, deflateInit2, deflateReset, deflate, deflateEnd, zError,
+# calc_crc32), which is not ported (docs/apps.md)
+lib_init lib_init lib
+version =3
+plugin_load
+OpenFilePlugin
+ClosePlugin
+ReadFolder
+SetFolder
+GetFiles
+GetOpenPluginInfo
+getattr mygetattr
+open myopen
+read myread
+setpos mysetpos
+close myclose
+deflate_unpack
+deflate_unpack2
