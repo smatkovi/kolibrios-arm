@@ -122,10 +122,12 @@ address there. The C library's start runs it on the program's own list
 
 `lib/NAME/NAME.exp` lists a library's exports in the original's order
 (`tools/mkdll.py`'s comment has the format). The Makefile's `DLLS`
-(`console:console.obj boxlib:box_lib.obj libini:libini.obj`) are built
+(`console:console.obj boxlib:box_lib.obj libini:libini.obj
+kfar_arc:kfar_arc.obj`) are built
 twice: as before into `build/apps/lib/NAME.a`, and position independent
 into `build/apps/lib/FILE`, which goes onto the ramdisk as
-`/sys/lib/FILE`. A library's `malloc` and its kin are `lib/dllrt.c`'s:
+`/sys/lib/FILE` (`lib/NAME/lib.mk` may add rules and `LIBCFLAGS_NAME`,
+flags of its own). A library's `malloc` and its kin are `lib/dllrt.c`'s:
 the program's, from `lib_init`, so memory may change hands between a
 program and its libraries.
 
@@ -141,6 +143,7 @@ the programs as before.
 | `lib/console` | `/sys/lib/console.obj` | console.obj 2.9's: `START`, `version`, `con_init`, ... `con_get_input` |
 | `lib/boxlib` | `/sys/lib/box_lib.obj` | box_lib's edit box, check box, option box, scroll bars, tree list and text editor, with their versions |
 | `lib/libini` | `/sys/lib/libini.obj` | libini's `ini_*` functions |
+| `lib/kfar_arc` | `/sys/lib/kfar_arc.obj` | kfar_arc's: `version`, `plugin_load`, ... (kfar's plugin, `docs/apps.md`) |
 
 ## The programs that use them
 
@@ -151,6 +154,8 @@ the programs as before.
   `PID-SHELL`, as in KolibriOS (`docs/apps.md`).
 - The shell, the terminal, kfar and t_edit load console.obj, box_lib.obj
   and libini.obj with 68.19 when they start.
+- kfar loads its plugins (`kfar_arc.obj`) with 68.19 from its settings,
+  as the original, and calls their `lib_init` (`docs/apps.md`).
 
 ## Testing
 

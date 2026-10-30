@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOP = os.path.dirname(os.path.dirname(HERE))
 out = sys.argv[1]
 host = os.path.join(out, 'host')
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(TOP, 'apps', 'kfar'))
 import mkarc  # noqa: E402
 
