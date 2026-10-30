@@ -39,7 +39,8 @@ $(TE_GEN)/tl_sys_16.c: $(KOS)/programs/media/log_el/tl_sys_16.png tools/png2bgr.
 	python3 tools/png2bgr.py $< $@ tl_sys_16
 
 # the syntax files' sources for FASMARM, beside asm.inc (included)
-$(TE_GEN)/src/.renamed: $(wildcard $(TE_SRC)/info/*_syn.asm) $(TE_SRC)/info/asm.inc apps/t_edit/fasm2arm.py
+TE_SYN_SRC := $(foreach s,$(TE_SYN),$(TE_SRC)/info/$(lastword $(subst :, ,$(s)))_syn.asm) $(TE_SRC)/info/asm.inc
+$(TE_GEN)/src/.renamed: $(TE_SYN_SRC) apps/t_edit/fasm2arm.py
 	@mkdir -p $(dir $@)
 	for f in $(filter-out %.py,$^); do python3 apps/t_edit/fasm2arm.py $$f $(dir $@)$$(basename $$f); done
 	touch $@
