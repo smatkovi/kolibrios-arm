@@ -318,10 +318,9 @@ What differs, and why:
   one), the disks' table holds longer paths than the original's 10
   bytes (`/linux/home`), the name's box keeps to its 256 bytes, and
   OpenDialog_start stops waiting when opendial is gone without an
-  answer (ended from outside). In the classic look opendial's window
-  has no title yet: opendial sets it with 71.1, which in KolibriOS also
-  turns the window's caption on (`syscall_window_settings`), and this
-  kernel's 71.1 does not.
+  answer (ended from outside). opendial sets its title with 71.1, which
+  turns the window's caption on, as KolibriOS's `syscall_window_settings`
+  does.
 - kmenu has no source in KolibriOS's repository (only `kmenu.obj`):
   `lib/kmenu` is written anew with the API t_edit and `kolibri_kmenu.h`
   use; its drop-downs are drawn in the window (what they cover kept

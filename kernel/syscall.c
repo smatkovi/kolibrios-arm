@@ -640,6 +640,8 @@ void syscall(struct task *t)
 			const char *s = ustr(t, ECX);
 			if (s) {
 				strncpy0(t->win.title, s, sizeof(t->win.title));
+				/* syscall_window_settings: the window has a caption now */
+				t->win.flags |= 1;
 				wm_draw_frame(t);
 			}
 		}
