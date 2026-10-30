@@ -267,7 +267,10 @@ runs write nothing at all:
 
        tools/pro1x-kexec.sh /host/kolibri/kernel.bin "kolibri.lifetime=90 kolibri.run=/sys/board"
 
-   Back in Linux: `tools/pro1x-read.py` (the RAM console). What to look
+   Back in Linux: `tools/pro1x-read.py` (the RAM console). That nothing
+   was written: every `blk: ufs0..` line ends in `read only` (no driver
+   got a write entry), no `write` line of `blk:` or `ufs:`, `home: no
+   container: nothing on the storage is written`. What else to look
    for: `pro1x: stream 0x100: context bank N, SCTLR 0x... -> 0`, `ufs:
    UFSHCI 3.0, ... HCE 1, HCS 0x..f` (the device present, the lists
    ready), `ufs: keeping the link that is up`, six `blk: ufs0..ufs5`
@@ -284,7 +287,12 @@ runs write nothing at all:
    --host /host --size 512M` (writes 512 MB to userdata: only with the
    user's go), `kolibri-home status`. Then KolibriOS again without
    `kolibri.home`: `home: ufs0/13's kolibri/kolibri.img checked: 512 MiB
-   in N range(s), hd0/1 read only`.
+   in N range(s), hd0/1 read only`. If `home:` refuses it with ext4's
+   reason that the journal needs recovery or the file system is not
+   clean (`ext4 ufs0/13: no map: ...`), Leste did not leave userdata
+   cleanly (`pro1x-kexec.sh`'s emergency remount): start KolibriOS from
+   the boot menu's entry instead, which unmounts userdata first. The
+   listing works either way.
 4. **Writing**: `kolibri.home=rw` (in `/host/kolibri/cmdline` for the
    boot menu): kfar, F5 from `/sys` into `/hd0/1`, a text saved with
    t_edit. Back on Leste: `kolibri-home status` (blocks unchanged),

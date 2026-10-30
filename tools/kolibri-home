@@ -271,8 +271,6 @@ def write_map(img, mapfile, fs, uid):
     if len(rs) > MAX_RANGES:
         raise SystemExit("%s: in %d pieces on the partition, more than %d (a smaller --size, or a "
                          "partition with more room in one piece)" % (img, len(rs), MAX_RANGES))
-    if rs[0][1] < HDR_OFF + 4096:
-        raise SystemExit("%s: its first piece is too small" % img)
     tmp = mapfile + ".tmp"
     with open(tmp, "w") as f:
         f.write(map_text(fs, ident(img, fs), st.st_size, uid, rs))

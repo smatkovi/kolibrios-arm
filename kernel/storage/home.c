@@ -171,12 +171,22 @@ static bool check(struct vol *v, struct hmap *m)
 			slog("home: %s: range %d differs from the file's blocks\n", v->name, i);
 			return false;
 		}
-	if (m->size < (1u << 20) || (m->size & 4095) || m->ext[0].len < HDR_OFF + 4096) {
-		say(v, "the container's size or first range is too small");
+	if (m->size < (1u << 20) || (m->size & 4095)) {
+		say(v, "the container's size is not whole 4 KiB blocks of at least 1 MiB");
 		return false;
 	}
+	/* the header's place on v: its offset through the ranges (they are
+	 * whole sectors, so its 512 bytes are in one of them) */
+	u64 at = HDR_OFF, hoff = 0;
+	for (int i = 0; i < m->n; i++) {
+		if (at < m->ext[i].len) {
+			hoff = m->ext[i].off + at;
+			break;
+		}
+		at -= m->ext[i].len;
+	}
 	static u8 h[512];
-	if (vol_rd(v, m->ext[0].off + HDR_OFF, sizeof(h), h)) {
+	if (!hoff || vol_rd(v, hoff, sizeof(h), h)) {
 		say(v, "the header is not read");
 		return false;
 	}

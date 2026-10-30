@@ -226,7 +226,10 @@ static int disk_write(struct blkdev *d, u64 off, u32 len, const u8 *buf)
 		u32 o = (u32)(off % bs);
 		if (o || len < bs) {
 			u32 k = MIN(len, bs - o);
-			if (!blk_fence_allows(d, lba, 1)) return disk_write_blocks(d, lba, 1, buf);  /* refused, said */
+			if (!blk_fence_allows(d, lba, 1)) {
+				slog("blk: %s: write of block %u refused (outside the container)\n", d->name, (u32)lba);
+				return E_ACCESS;
+			}
 			int e = disk_read(d, lba * bs, bs, tmp);
 			if (e) return e;
 			memcpy(tmp + o, buf, k);
