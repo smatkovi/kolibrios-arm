@@ -70,11 +70,18 @@ bench32: $(B)/test32
 
 .PHONY: test test64 test32 bench bench64 bench32
 
+qemu: qemu64 qemu32
+
+# the ARMv7 kernel's side in QEMU's realview (qemu32.sh): fptest, asmclock,
+# the C and NEON screens, SIMD=c
+qemu32:
+	./qemu32.sh
+
 # the kernel's side in QEMU (virt): the programs' FP/SIMD registers kept
 # across switches and the kernel's NEON (apps/fptest), the system call
 # and the switch counted (tools/qemu-prof/sysbench.sh), the kernel with
 # the C drawing (kolibri.simd=c) and with NEON showing the same screen
-qemu:
+qemu64:
 	$(MAKE) -C $(TOP) PLATFORM=arm64
 	cd $(TOP) && T=$$(mktemp -d /tmp/kos-asm.XXXXXX) && \
 	QEMU_MACHINE=virt QEMU_APPEND="kolibri.run=/sys/fptest" python3 scripts/qemu-shot.py \
@@ -87,4 +94,4 @@ qemu:
 	[ "$$(magick compare -metric AE $$T/c/home.png $$T/neon/home.png /dev/null 2>&1)" = "0 (0)" ] && \
 	echo "the screens of C and NEON: the same" && tools/qemu-prof/sysbench.sh
 
-.PHONY: qemu
+.PHONY: qemu qemu32 qemu64

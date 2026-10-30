@@ -106,7 +106,7 @@ struct blit_ops blit;
 const char *boot_arg(const char *name);
 
 /* kolibri.simd=c: the value runs to the next space */
-static bool simd_c(void)
+static __attribute__((unused)) bool simd_c(void)
 {
 	const char *v = boot_arg("kolibri.simd");
 	return v && v[0] == 'c' && (!v[1] || v[1] == ' ');
