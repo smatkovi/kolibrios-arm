@@ -1,0 +1,2 @@
+# after the messenger ran with kolibri.home=rw, and a reset
+expect /hd0/1/messenger/whatsapp/chats.json ["messenger",1,"whatsapp"]

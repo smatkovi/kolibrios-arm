@@ -1,0 +1,3 @@
+# tools/kolibri-home's container, read only
+tree /$D/13
+ro /$D/13 /$D/13/readme.txt

@@ -1,0 +1,4 @@
+# a container that is not to be taken: no /hd0, the disks unchanged
+tree /$D/13
+ro /$D/13 /$D/13/readme.txt
+rw /hd0/1

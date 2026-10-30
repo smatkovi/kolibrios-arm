@@ -1,0 +1,6 @@
+tree /$D/1
+tree /$D/2
+tree /$D/4
+ro /$D/1 /$D/1/readme.txt
+ro /$D/4 /$D/4/readme.txt
+tree /hd0/1

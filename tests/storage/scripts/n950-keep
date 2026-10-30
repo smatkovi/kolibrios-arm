@@ -1,0 +1,3 @@
+# after a reset: what rw left (the N950's disk)
+keep /hd0/1
+tree /$D/1

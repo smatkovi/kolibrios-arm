@@ -10,3 +10,7 @@ tests/messenger/json_test
 tests/wifi/crypto
 tests/wifi/station
 tests/wifi/regd
+tests/storage/host
+tests/storage/ufs_sim
+tests/storage/ext4_test
+tests/storage/fat_test

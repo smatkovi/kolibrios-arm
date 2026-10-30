@@ -1,0 +1,4 @@
+# the container written (kolibri.home=rw), the disks' volumes still read only
+ro /$D/13 /$D/13/readme.txt
+rw /hd0/1
+tree /hd0/1

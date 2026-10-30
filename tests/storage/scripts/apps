@@ -1,0 +1,5 @@
+# after kfar's and t_edit's runs with kolibri.home=rw, and a reset
+expect /hd0/1/board MENUETA1
+expect /hd0/1/example MENUETA1
+expect /hd0/1/t.txt persistent text
+expect /hd0/1/sys/kfar.ini [Associations]

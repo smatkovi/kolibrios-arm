@@ -1,0 +1,7 @@
+# the volumes read, nothing written (kolibri.home=ro)
+tree /$D/13
+tree /$D/2
+ro /$D/13 /$D/13/readme.txt
+ro /$D/2 /$D/2/readme.txt
+tree /hd0/1
+ro /hd0/1 /hd0/1/nothing

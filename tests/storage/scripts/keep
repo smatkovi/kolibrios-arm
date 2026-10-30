@@ -1,0 +1,3 @@
+# after a reset: what rw left
+keep /hd0/1
+tree /$D/13
