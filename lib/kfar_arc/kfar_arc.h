@@ -29,9 +29,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include "kos.h"
 #include "kfar_api.h"
 
+/* (kos.h's, without its system calls: the plugin makes none, and
+ * tests/kfar_arc builds it for the PC) */
+typedef unsigned char u8;
+typedef unsigned short u16;
+typedef unsigned int u32;
+typedef int s32;
 typedef unsigned long long u64;
 typedef long long s64;
 
@@ -281,20 +286,22 @@ void setpos_7z(void *ebx, u64 pos);
 void close_file_7z(void *ebx);
 extern const u32 handle_7z_basesize, file_in_7z_size;
 
-/* the decoders of 7z.inc's coders: their buffers' sizes and their init */
-void copy_get_buf_size(u32 *eax, u32 *edx);
-void copy_init_decoder(streamInfo *ebp, const u8 *esi, u32 params_size, int ebx);
+/* the decoders of 7z.inc's coders (_7z.GetBufSizeTable, _7z.InitTable):
+ * from the coder's properties esi (params_size bytes) the size of the
+ * decoder's data (eax) and of its buffer (edx); the decoder's start
+ * (ebx = 1: again, setpos_7z) */
 void lzma_get_buf_size(const u8 *esi, u32 params_size, u32 *eax, u32 *edx);
 void lzma_init_decoder(streamInfo *ebp, const u8 *esi, u32 params_size, int ebx);
 void ppmd_get_buf_size(const u8 *esi, u32 params_size, u32 *eax, u32 *edx);
 void ppmd_init_decoder(streamInfo *ebp, const u8 *esi, u32 params_size, int ebx);
-void init_ppmd(void);
-void bcj_get_buf_size(u32 *eax, u32 *edx);
+void bcj_get_buf_size(const u8 *esi, u32 params_size, u32 *eax, u32 *edx);
 void bcj_init_decoder(streamInfo *ebp, const u8 *esi, u32 params_size, int ebx);
-void bcj2_get_buf_size(u32 *eax, u32 *edx);
+void bcj2_get_buf_size(const u8 *esi, u32 params_size, u32 *eax, u32 *edx);
 void bcj2_init_decoder(streamInfo *ebp, const u8 *esi, u32 params_size, int ebx);
-void aes7z_get_buf_size(u32 *eax, u32 *edx);
+void aes7z_get_buf_size(const u8 *esi, u32 params_size, u32 *eax, u32 *edx);
 void aes7z_init_decoder(streamInfo *ebp, const u8 *esi, u32 params_size, int ebx);
+/* plugin_load's: ppmd.inc's and aes.inc's tables */
+void init_ppmd(void);
 void init_aes(void);
 
 #endif
