@@ -19,7 +19,9 @@
  * the window is the panel only. A call coming in starts the phone (or
  * brings it to the front); unread messages show beside the clock. Everything is a finger wide; the arrow
  * keys, Enter and Escape work in the grids. The status area opens
- * @hstatus. The icons are drawn here, simple shapes. */
+ * @hstatus. The icons are drawn here, simple shapes. With a keyboard only:
+ * Enter at home opens the launcher, typing a program's name there chooses
+ * it, Enter starts it. */
 #include "kos.h"
 #include "kos_modem.h"
 
@@ -628,8 +630,25 @@ static void key(u32 k)
 	case 13:
 		if (mode == LAUNCHER && sel < nprogs) launch(sel);
 		else if (mode == SWITCHER && sel < napps) { front = apps[sel].slot; go(APP); }
+		else if (mode == HOME) go(LAUNCHER);
 		return;
 	default:
+		/* the launcher: typing a program's name chooses it */
+		if (mode == LAUNCHER && c > 32 && c < 127) {
+			static char typed[16];
+			static u32 typed_at;
+			int n = strlen(typed);
+			if (kos_uptime() - typed_at > 150) n = 0;
+			typed_at = kos_uptime();
+			if (n + 1 < (int)sizeof(typed)) typed[n++] = c >= 'A' && c <= 'Z' ? c + 32 : c;
+			typed[n] = 0;
+			for (int i = 0; i < nprogs; i++) {
+				int k = 0;
+				while (typed[k] && progs[i][k] == typed[k]) k++;
+				if (!typed[k]) { sel = i; break; }
+			}
+			draw();
+		}
 		return;
 	}
 	if (mode == LAUNCHER || mode == SWITCHER) draw();

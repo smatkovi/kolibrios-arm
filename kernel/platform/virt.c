@@ -7,7 +7,9 @@
  *
  * PL011 for the debug output, GICv3 and the virtual timer, ramfb (set up
  * through fw_cfg) as the display, PL031 as the clock, a virtio-net card
- * on virtio-mmio as the network (make run-net). No input. */
+ * on virtio-mmio as the network (make run-net), virtio-input as the
+ * keyboard and the pointer (-device virtio-keyboard-device,
+ * virtio-tablet-device: tests type through the monitor's sendkey). */
 #include "kernel.h"
 #include "fdt.h"
 #include "net.h"
@@ -24,12 +26,14 @@ void gic3_irq(void);
 void gic3_enable_spi(u32 id);
 bool virtio_net_probe(addr_t va);
 bool virtio_rng_probe(addr_t va);
+bool virtio_input_probe(addr_t va);
 void virtio_net_irq(void);
+void virtio_input_irq(void);
 
 /* the virtio-mmio slots of the device tree (read before the MMU is on) */
 static struct { addr_t pa; u32 irq; } vslot[32];
 static int nvslot;
-static u32 net_irq;
+static u32 net_irq, input_irq[2];
 
 static addr_t io(addr_t pa)
 {
@@ -49,6 +53,7 @@ static u64 gicd = GICD, gicr = GICR;
 static void v_other_irq(u32 id)
 {
 	if (id == net_irq) virtio_net_irq();
+	if (id == input_irq[0] || id == input_irq[1]) virtio_input_irq();
 }
 
 static void v_init(void)
@@ -58,6 +63,11 @@ static void v_init(void)
 	for (int i = 0; i < nvslot; i++) {
 		addr_t va = mmu_io_va(vslot[i].pa);
 		if (virtio_rng_probe(va)) continue;
+		if (virtio_input_probe(va)) {
+			input_irq[input_irq[0] ? 1 : 0] = vslot[i].irq;
+			gic3_enable_spi(vslot[i].irq);
+			continue;
+		}
 		if (net_irq || !virtio_net_probe(va)) continue;
 		net_irq = vslot[i].irq;
 		gic3_enable_spi(net_irq);
