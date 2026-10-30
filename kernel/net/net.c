@@ -27,7 +27,8 @@ static u8 txbuf[1600];
  * timers.c's net_enter) */
 u32 sys_now(void)
 {
-	u64 f = SYSREG_R(cntfrq_el0) / 1000;
+	static u64 f;
+	if (!f) f = SYSREG_R(cntfrq_el0) / 1000;
 	return f ? (u32)(timer_count() / f) : ticks * 10;
 }
 

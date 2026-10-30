@@ -348,9 +348,13 @@ static u32_t lazy_due(u32_t now)
 
 /* --- lwIP's interface ------------------------------------------------------- */
 
+/* the next time net_enter has something to count: a 500 ms slot's start
+ * (tcp_ticks), every second's among them (the idle timers') */
+static u32_t next_enter;
+
 void sys_timeouts_init(void)
 {
-	t0 = sys_now();
+	t0 = next_enter = sys_now();
 	on = 1;
 }
 
@@ -363,8 +367,10 @@ void net_enter(void)
 {
 	if (!on) return;
 	u32_t now = sys_now();
+	if (!reached(now, next_enter)) return;
 	tcp_ticks_now(now);
 	lazy_catch_up(now);
+	next_enter = t0 + (since(now) / TCP_SLOW_INTERVAL + 1) * TCP_SLOW_INTERVAL;
 }
 
 void sys_check_timeouts(void)
