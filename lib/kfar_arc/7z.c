@@ -96,7 +96,7 @@ typedef struct handle_7z {
 
 const u32 handle_7z_basesize = sizeof(handle_7z), file_in_7z_size = sizeof(file_in_7z);
 
-static handle_common empty_7z_handle = { type_7z };
+static handle_common empty_7z_handle = { .type = type_7z };
 
 /* the coder's record */
 static inline u32 get32(const u8 *p) { return p[0] | p[1] << 8 | p[2] << 16 | (u32)p[3] << 24; }
@@ -1360,7 +1360,7 @@ typedef struct file_handle_7z {
 
 /* a file without data: reads nothing (the original hands out
  * empty_7z_handle, which reads as one) */
-static file_handle_7z empty_7z_file = { type_7z };
+static file_handle_7z empty_7z_file = { .type = type_7z };
 
 /* open_file_7z.done: the password of the archive kept */
 static void open_file_7z_done(handle_7z *ebp)
