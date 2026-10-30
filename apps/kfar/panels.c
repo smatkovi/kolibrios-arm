@@ -681,6 +681,9 @@ static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
 			eax2++;
 			last = edi;
 		}
+	/* /sys is /rd/1: two levels (the original counts the slashes of
+	 * "/file-system/partition/...", and /sys/name would be a partition) */
+	if (!strncmp(esi, "/sys", 4) && (!esi[4] || esi[4] == '/')) eax2++;
 	bNeedRestoreName = 0;
 	u8 dl = 1;
 	/* "/file-system/partition" folders already exist */
