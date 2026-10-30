@@ -34,6 +34,8 @@ struct wifi_conf {
 	char country[3];                    /* the regulatory domain's country: "AT" unless country= says */
 	bool no_ps;                         /* powersave=off (cfg80211's default: on) */
 	u8 uapsd_queues;                    /* uapsd=on: all four ACs (mac80211's default: none) */
+	bool no_pmf;                        /* pmf=off (ieee80211w=0); on: whenever the AP is capable */
+	bool pmf_fw;                        /* pmf=fw: also the firmware's peer PMF flag (WMI_PEER_PMF) */
 };
 
 struct wifi_hw {
@@ -52,11 +54,12 @@ enum wifi_state {
 	WIFI_SETUP, WIFI_SCAN, WIFI_JOIN, WIFI_PEER, WIFI_AUTH, WIFI_ASSOC, WIFI_4WAY, WIFI_KEYS, WIFI_UP, WIFI_FAILED,
 };
 
-/* "ssid=NAME" and "psk=PASSPHRASE" (or 64 hex digits) lines, "bssid=
- * aa:bb:cc:dd:ee:ff", "country=XX" (ISO 3166 alpha-2, 00: none; AT by
- * default), "powersave=on|off" (on), "uapsd=on|off" (off, as mac80211's
- * IEEE80211_DEFAULT_UAPSD_QUEUES) optional, '#' comments: 0, or -1
- * (*why) */
+/* "ssid=NAME" and "psk=PASSPHRASE" (or 64 hex digits: WPA2 only) lines,
+ * "bssid=aa:bb:cc:dd:ee:ff", "country=XX" (ISO 3166 alpha-2, 00: none; AT
+ * by default), "powersave=on|off" (on), "uapsd=on|off" (off, as mac80211's
+ * IEEE80211_DEFAULT_UAPSD_QUEUES), "pmf=on|off|fw" (on) optional, '#'
+ * comments: 0, or -1 (*why). The passphrase serves WPA2 and WPA3 (SAE's
+ * password) alike. */
 int wifi_conf_parse(const char *text, u32 len, struct wifi_conf *c, const char **why);
 
 /* after WLFW said the firmware is ready (wlfw.c): the bring-up starts */
@@ -84,6 +87,7 @@ struct wifi_stats {
 	u16 freq, aid;
 	u8 ht;                              /* the peer: 0 legacy, 20 or 40 MHz HT */
 	bool qos, ps;                       /* QoS data, the firmware's power save */
+	u32 saq_answered;                   /* the AP's SA Queries answered */
 };
 const struct wifi_stats *wifi_stats(void);
 

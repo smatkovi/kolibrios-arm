@@ -1,6 +1,7 @@
-/* KolibriOS for ARM: SHA-1, HMAC-SHA1, PBKDF2, the 802.11 PRF, AES-128
- * and its key wrap (crypto.h). Byte-wise and plain: the handshake needs
- * a few thousand SHA-1 blocks (the PMK) and a few AES blocks (the GTK). */
+/* KolibriOS for ARM: SHA-1, SHA-256, HMAC, PBKDF2, the 802.11 PRF and
+ * KDF, HKDF-Expand, AES-128, its key wrap and CMAC (crypto.h). Byte-wise
+ * and plain: the handshakes need a few thousand hash blocks (the PMK, SAE's
+ * hunting and pecking) and a few AES blocks. */
 #include "crypto.h"
 
 /* --- SHA-1 (FIPS 180-4) -------------------------------------------------- */
@@ -106,6 +107,154 @@ void hmac_sha1_vec(const u8 *key, u32 key_len, int n, const u8 *const p[], const
 void hmac_sha1(const u8 *key, u32 key_len, const u8 *p, u32 len, u8 out[SHA1_LEN])
 {
 	hmac_sha1_vec(key, key_len, 1, &p, &len, out);
+}
+
+/* --- SHA-256 (FIPS 180-4, 6.2) ---------------------------------------------- */
+
+static const u32 k256[64] = {
+	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+};
+
+static inline u32 ror(u32 x, int n) { return x >> n | x << (32 - n); }
+
+static void sha256_block(u32 h[8], const u8 *p)
+{
+	u32 w[64];
+	for (int i = 0; i < 16; i++) w[i] = (u32)p[4 * i] << 24 | p[4 * i + 1] << 16 | p[4 * i + 2] << 8 | p[4 * i + 3];
+	for (int i = 16; i < 64; i++) {
+		u32 s0 = ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >> 3);
+		u32 s1 = ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >> 10);
+		w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+	}
+	u32 a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+	for (int i = 0; i < 64; i++) {
+		u32 t1 = hh + (ror(e, 6) ^ ror(e, 11) ^ ror(e, 25)) + ((e & f) ^ (~e & g)) + k256[i] + w[i];
+		u32 t2 = (ror(a, 2) ^ ror(a, 13) ^ ror(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+		hh = g, g = f, f = e, e = d + t1, d = c, c = b, b = a, a = t1 + t2;
+	}
+	h[0] += a, h[1] += b, h[2] += c, h[3] += d, h[4] += e, h[5] += f, h[6] += g, h[7] += hh;
+}
+
+void sha256_init(struct sha256 *s)
+{
+	static const u32 iv[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+				   0x5be0cd19 };
+	mcopy(s->h, iv, sizeof(iv));
+	s->n = 0;
+	s->used = 0;
+}
+
+void sha256_update(struct sha256 *s, const void *data, u32 len)
+{
+	const u8 *p = data;
+	s->n += len;
+	while (len) {
+		u32 k = MIN(len, 64 - s->used);
+		mcopy(s->buf + s->used, p, k);
+		s->used += k, p += k, len -= k;
+		if (s->used == 64) {
+			sha256_block(s->h, s->buf);
+			s->used = 0;
+		}
+	}
+}
+
+void sha256_final(struct sha256 *s, u8 out[SHA256_LEN])
+{
+	u64 bits = s->n * 8;
+	u8 pad = 0x80;
+	sha256_update(s, &pad, 1);
+	pad = 0;
+	while (s->used != 56) sha256_update(s, &pad, 1);
+	u8 l[8];
+	for (int i = 0; i < 8; i++) l[i] = (u8)(bits >> (56 - 8 * i));
+	sha256_update(s, l, 8);
+	for (int i = 0; i < 8; i++) {
+		out[4 * i] = (u8)(s->h[i] >> 24), out[4 * i + 1] = (u8)(s->h[i] >> 16);
+		out[4 * i + 2] = (u8)(s->h[i] >> 8), out[4 * i + 3] = (u8)s->h[i];
+	}
+	crypto_wipe(s, sizeof(*s));
+}
+
+void sha256(const void *p, u32 len, u8 out[SHA256_LEN])
+{
+	struct sha256 s;
+	sha256_init(&s);
+	sha256_update(&s, p, len);
+	sha256_final(&s, out);
+}
+
+void hmac_sha256_vec(const u8 *key, u32 key_len, int n, const u8 *const p[], const u32 len[], u8 out[SHA256_LEN])
+{
+	u8 k[64], tk[SHA256_LEN], pad[64], inner[SHA256_LEN];
+	if (key_len > 64) {
+		sha256(key, key_len, tk);
+		key = tk;
+		key_len = SHA256_LEN;
+	}
+	mzero(k, 64);
+	mcopy(k, key, key_len);
+	struct sha256 s;
+	for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x36;
+	sha256_init(&s);
+	sha256_update(&s, pad, 64);
+	for (int i = 0; i < n; i++) sha256_update(&s, p[i], len[i]);
+	sha256_final(&s, inner);
+	for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x5c;
+	sha256_init(&s);
+	sha256_update(&s, pad, 64);
+	sha256_update(&s, inner, SHA256_LEN);
+	sha256_final(&s, out);
+	crypto_wipe(k, sizeof(k));
+	crypto_wipe(pad, sizeof(pad));
+	crypto_wipe(tk, sizeof(tk));
+	crypto_wipe(inner, sizeof(inner));
+}
+
+void hmac_sha256(const u8 *key, u32 key_len, const u8 *p, u32 len, u8 out[SHA256_LEN])
+{
+	hmac_sha256_vec(key, key_len, 1, &p, &len, out);
+}
+
+void sha256_kdf_bits(const u8 *key, u32 key_len, const char *label, const u8 *data, u32 data_len, u8 *out, u32 bits)
+{
+	u32 n = (bits + 7) / 8, pos = 0;
+	u8 ctr[2], blen[2] = { (u8)bits, (u8)(bits >> 8) }, h[SHA256_LEN];
+	const u8 *v[4] = { ctr, (const u8 *)label, data, blen };
+	u32 l[4] = { 2, mstrlen(label), data_len, 2 };
+	for (u16 i = 1; pos < n; i++) {
+		ctr[0] = (u8)i, ctr[1] = (u8)(i >> 8);
+		hmac_sha256_vec(key, key_len, 4, v, l, h);
+		u32 k = MIN(n - pos, (u32)SHA256_LEN);
+		mcopy(out + pos, h, k);
+		pos += k;
+	}
+	if (bits % 8) out[n - 1] &= (u8)(0xff << (8 - bits % 8));
+	crypto_wipe(h, sizeof(h));
+}
+
+void hkdf_expand_sha256(const u8 *prk, u32 prk_len, const u8 *info, u32 info_len, u8 *out, u32 out_len)
+{
+	u8 t[SHA256_LEN], iter = 1;
+	const u8 *v[3] = { t, info, &iter };
+	u32 l[3] = { 0, info_len, 1 }, pos = 0;
+	while (pos < out_len) {
+		/* T(1) = HMAC(PRK, info || 1), T(i) = HMAC(PRK, T(i-1) || info || i) */
+		hmac_sha256_vec(prk, prk_len, 3, v, l, t);
+		l[0] = SHA256_LEN;
+		u32 k = MIN(out_len - pos, (u32)SHA256_LEN);
+		mcopy(out + pos, t, k);
+		pos += k;
+		iter++;
+	}
+	crypto_wipe(t, sizeof(t));
 }
 
 /* --- PBKDF2-SHA1 (sha1-pbkdf2.c) ------------------------------------------ */
@@ -304,6 +453,68 @@ int aes_unwrap(const u8 kek[16], u32 n, const u8 *cipher, u8 *plain)
 	for (int i = 0; i < 8; i++)
 		if (av[i] != 0xa6) return -1;
 	return 0;
+}
+
+/* --- AES-CMAC (RFC 4493; aes-omac1.c) ------------------------------------ */
+
+static void gf_double(u8 b[16])
+{
+	u8 carry = b[0] & 0x80;
+	for (int i = 0; i < 15; i++) b[i] = (u8)(b[i] << 1 | b[i + 1] >> 7);
+	b[15] = (u8)(b[15] << 1);
+	if (carry) b[15] ^= 0x87;
+}
+
+void aes_cmac_vec(const u8 key[16], int n, const u8 *const p[], const u32 len[], u8 mac[16])
+{
+	struct aes128 a;
+	aes128_init(&a, key);
+	u8 k1[16] = { 0 }, cbc[16] = { 0 }, blk[16];
+	aes128_encrypt(&a, k1, k1);                 /* L = AES(K, 0) */
+	gf_double(k1);                              /* K1 */
+	u32 total = 0;
+	for (int i = 0; i < n; i++) total += len[i];
+	u32 used = 0, seen = 0;
+	int e = 0;
+	u32 off = 0;
+	/* every block but the last through the CBC chain */
+	while (total - seen > 16 || (total - seen == 16 && used)) {
+		while (used < 16) {
+			while (e < n && off == len[e]) e++, off = 0;
+			blk[used++] = p[e][off++];
+			seen++;
+		}
+		for (int i = 0; i < 16; i++) cbc[i] ^= blk[i];
+		aes128_encrypt(&a, cbc, cbc);
+		used = 0;
+	}
+	/* the last block: whole (with K1) or padded with 10* (with K2) */
+	u32 rest = total - seen;
+	for (u32 i = 0; i < rest; i++) {
+		while (e < n && off == len[e]) e++, off = 0;
+		blk[i] = p[e][off++];
+	}
+	if (rest == 16 && total) {
+		for (int i = 0; i < 16; i++) cbc[i] ^= blk[i] ^ k1[i];
+	} else {
+		u8 k2[16];
+		mcopy(k2, k1, 16);
+		gf_double(k2);
+		blk[rest] = 0x80;
+		for (u32 i = rest + 1; i < 16; i++) blk[i] = 0;
+		for (int i = 0; i < 16; i++) cbc[i] ^= blk[i] ^ k2[i];
+		crypto_wipe(k2, sizeof(k2));
+	}
+	aes128_encrypt(&a, cbc, mac);
+	crypto_wipe(&a, sizeof(a));
+	crypto_wipe(k1, sizeof(k1));
+	crypto_wipe(cbc, sizeof(cbc));
+	crypto_wipe(blk, sizeof(blk));
+}
+
+void aes_cmac(const u8 key[16], const u8 *p, u32 len, u8 mac[16])
+{
+	aes_cmac_vec(key, 1, &p, &len, mac);
 }
 
 int crypto_memcmp(const void *a, const void *b, u32 n)

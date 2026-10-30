@@ -102,6 +102,9 @@ int wlan_parse_bss(const u8 *f, u32 len, u16 freq, s32 snr, struct wlan_bss *b);
 u32 wlan_probe_ies(u8 *o, bool band5);
 /* management frames to the AP: their length */
 u32 wlan_auth(u8 *o, const u8 bssid[6], const u8 own[6]);
+/* an authentication frame of another algorithm (SAE: 3): the header,
+ * algorithm, transaction, status, then len bytes of body */
+u32 wlan_auth_alg(u8 *o, const u8 bssid[6], const u8 own[6], u16 alg, u16 seq, u16 status, const u8 *body, u32 len);
 /* the association request as mac80211's: our capabilities (the BSS's
  * privacy, 2.4 GHz short slot and preamble, spectrum management with the
  * power capability (max_power dBm) and the supported channels), the rates
@@ -128,6 +131,17 @@ int wlan_auth_resp(const u8 *f, u32 len, const u8 bssid[6], const u8 own[6], u16
 int wlan_assoc_resp(const u8 *f, u32 len, const u8 bssid[6], const u8 own[6], u16 *status, u16 *aid);
 int wlan_deauth(const u8 *f, u32 len, const u8 bssid[6], u16 *reason);
 u16 wlan_fc(const u8 *f);
+#define WLAN_FC_ACTION 0x00d0
+/* management frame protection (IEEE 802.11-2020 12.6.11): an SA Query
+ * request or response (action category 8, 0 or 1, the transaction id) to
+ * the AP, protected: the CCMP header with this PN and key 0, room for the
+ * MIC the firmware puts there (ath10k's WMI management path adds it): its
+ * length */
+u32 wlan_sa_query(u8 *o, const u8 bssid[6], const u8 own[6], u8 action, const u8 id[2], u64 pn);
+/* a protected unicast management frame from the AP as the firmware hands
+ * it over (decrypted, the CCMP header and the MIC still there: ath10k's
+ * wmi.c on PMF): the PN, the body between: 0, or -1 */
+int wlan_ccmp_mgmt(const u8 *f, u32 len, u64 *pn, const u8 **body, u32 *blen);
 
 /* Ethernet (dst, src, type, payload) to a native Wi-Fi data frame to the
  * AP (ToDS: addr1 the BSSID, addr2 ours, addr3 the destination), the

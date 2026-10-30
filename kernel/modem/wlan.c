@@ -233,6 +233,42 @@ u32 wlan_assoc_req(u8 *o, const struct wlan_bss *b, const u8 own[6], const struc
 	return n;
 }
 
+u32 wlan_auth_alg(u8 *o, const u8 bssid[6], const u8 own[6], u16 alg, u16 seq, u16 status, const u8 *body, u32 len)
+{
+	hdr(o, WLAN_FC_AUTH, bssid, own, bssid);
+	put16(o + WLAN_HDR, alg);
+	put16(o + WLAN_HDR + 2, seq);
+	put16(o + WLAN_HDR + 4, status);
+	mcopy(o + WLAN_HDR + 6, body, len);
+	return WLAN_HDR + 6 + len;
+}
+
+u32 wlan_sa_query(u8 *o, const u8 bssid[6], const u8 own[6], u8 action, const u8 id[2], u64 pn)
+{
+	hdr(o, WLAN_FC_ACTION | WLAN_FC_PROTECTED, bssid, own, bssid);
+	u8 *h = o + WLAN_HDR;
+	/* the CCMP header: PN0, PN1, reserved, ExtIV and key id 0, PN2-PN5 */
+	h[0] = (u8)pn, h[1] = (u8)(pn >> 8), h[2] = 0, h[3] = 0x20;
+	h[4] = (u8)(pn >> 16), h[5] = (u8)(pn >> 24), h[6] = (u8)(pn >> 32), h[7] = (u8)(pn >> 40);
+	u8 *b = h + 8;
+	b[0] = 8;                               /* WLAN_ACTION_SA_QUERY */
+	b[1] = action;
+	b[2] = id[0], b[3] = id[1];
+	mzero(b + 4, 8);                        /* the MIC's room */
+	return WLAN_HDR + 8 + 4 + 8;
+}
+
+int wlan_ccmp_mgmt(const u8 *f, u32 len, u64 *pn, const u8 **body, u32 *blen)
+{
+	if (len < WLAN_HDR + 8 + 8 || !(get16(f) & WLAN_FC_PROTECTED)) return -1;
+	const u8 *h = f + WLAN_HDR;
+	if (!(h[3] & 0x20)) return -1;          /* ExtIV */
+	*pn = h[0] | (u64)h[1] << 8 | (u64)h[4] << 16 | (u64)h[5] << 24 | (u64)h[6] << 32 | (u64)h[7] << 40;
+	*body = h + 8;
+	*blen = len - WLAN_HDR - 8 - 8;
+	return 0;
+}
+
 static bool to_us(const u8 *f, const u8 bssid[6], const u8 own[6])
 {
 	for (int i = 0; i < 6; i++)

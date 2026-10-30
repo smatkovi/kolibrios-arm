@@ -16,6 +16,7 @@
 #include "wpa.h"
 #include "crypto.h"
 #include "regd.h"
+#include "sae.h"
 
 #define VDEV 0
 #define SCAN_ID 0                       /* ATH10K_SCAN_ID */
@@ -283,7 +284,22 @@ static void mgmt_done(u32 id, u32 status, void *arg)
 
 static struct wlan_bss bss, best;
 static bool have_best;
-static u8 pmk[WPA_PMK_LEN];
+static u8 pmk[WPA_PMK_LEN];             /* the association's: PBKDF2's or SAE's */
+static u8 psk_pmk[WPA_PMK_LEN];         /* PBKDF2's (the passphrase and the SSID) */
+static struct wpa_choice choice, best_choice;
+/* SAE (sae.c): its exchange, PT kept for the SSID and password */
+static struct sae sae;
+static u8 sae_pt_val[64];
+static bool sae_pt_ok, sae_confirmed;
+static u32 sae_tries;
+/* management frame protection: our PN for protected management frames
+ * (mac80211 makes their IV: IEEE80211_KEY_FLAG_GENERATE_IV_MGMT), the
+ * AP's last; an SA Query (wpa_supplicant's sme_sa_query: 201 ms between
+ * tries, 1000 ms at most), the association's comeback time */
+static u64 mgmt_tx_pn, mgmt_rx_pn;
+static bool saq_on;
+static u8 saq_id[2];
+static u32 saq_start, saq_next, comeback_at;
 static struct wpa_sm wpa;
 static u8 own_ie[WPA_MAX_IE];
 static u32 own_ie_len;
@@ -295,6 +311,11 @@ static u32 tries;
 static u8 eapol_pending[512];           /* an EAPOL frame before the association's answer */
 static u32 eapol_pending_len;
 static void eapol_in(const u8 *p, u32 len);
+static void lost(const char *why);
+static void sae_rx(const u8 *f, u32 len);
+static void pmf_action(const u8 *f, u32 len);
+static int pmf_disconnect(const u8 *f, u32 len, u16 *reason);
+static u32 assoc_comeback(const u8 *f, u32 len);
 
 /* the regulatory domain (regd.c): the EEPROM's code from SERVICE_READY,
  * the configured country; the channel list from it */
@@ -566,6 +587,17 @@ static void join(void)
 	 * channel ours; 40 MHz by its secondary channel's offset where the
 	 * regulatory domain has HT40 that way (cfg80211_chandef_usable),
 	 * else 20 MHz */
+	/* the RSN choice (wpa.c): our elements, the PMK for the PSKs */
+	choice = best_choice;
+	own_ie_len = wpa_own_ie(own_ie, &choice);
+	own_rsnx_len = wpa_own_rsnx(own_rsnx, &choice);
+	if (choice.akm != WPA_AKM_SAE) mcopy(pmk, psk_pmk, WPA_PMK_LEN);
+	pmf_on = choice.mfp;
+	mgmt_tx_pn = mgmt_rx_pn = 0;
+	saq_on = false;
+	comeback_at = 0;
+	mlog("wifi: %s%s%s\n", wpa_akm_name(choice.akm), choice.akm == WPA_AKM_SAE ? (choice.h2e ? " (hash-to-element)" :
+	     " (hunting and pecking)") : "", choice.mfp ? ", management frame protection" : "");
 	const struct regd_chan *rc = regd_find(&regd, bss.freq);
 	mzero(&lk, sizeof(lk));
 	lk.wmm = bss.wmm;
@@ -593,9 +625,53 @@ static void join(void)
 	go(WIFI_JOIN, 3000);                    /* ath10k_vdev_setup_sync: 3 s (ATH10K_VDEV_SETUP_TIMEOUT_HZ) */
 }
 
+static void sae_send_commit(void)
+{
+	u64 pa;
+	u8 *f = slot_alloc(&pa);
+	u8 body[SAE_COMMIT_LEN + 300];
+	u32 n = sae_write_commit(&sae, body);
+	if (!f || mgmt_tx(f, wlan_auth_alg(f, bss.bssid, mac, 3, 1, sae.h2e ? SAE_STATUS_H2E : 0, body, n))) {
+		slot_free(f);
+		fail("no room for SAE's commit");
+		return;
+	}
+	sae_confirmed = false;
+	go(WIFI_AUTH, 1000);
+}
+
+/* wpa_supplicant's sme_auth_build_sae_commit: the PWE by hash-to-element
+ * (PT once per network) or hunting and pecking, a new commit */
+static void sae_start(void)
+{
+	mzero(&sae, sizeof(sae));
+	mcopy(sae.own, mac, 6);
+	mcopy(sae.peer, bss.bssid, 6);
+	sae.random = hw.random;
+	u32 pl = mstrlen(conf.psk);
+	int r;
+	if (choice.h2e) {
+		if (!sae_pt_ok) sae_pt_ok = !sae_pt(sae_pt_val, conf.ssid, conf.ssid_len, (const u8 *)conf.psk, pl, NULL);
+		r = sae_pt_ok ? sae_pwe_from_pt(&sae, sae_pt_val) : -1;
+	} else {
+		r = sae_pwe_hnp(&sae, (const u8 *)conf.psk, pl);
+	}
+	if (r || sae_commit(&sae, NULL, NULL)) {
+		lost("SAE: no password element");
+		return;
+	}
+	sae_tries = 0;
+	mlog("wifi: SAE commit out (group 19, %s)\n", sae.h2e ? "hash-to-element" : "hunting and pecking");
+	sae_send_commit();
+}
+
 static void send_auth(void)
 {
 	eapol_pending_len = 0;
+	if (choice.akm == WPA_AKM_SAE) {
+		sae_start();
+		return;
+	}
 	u64 pa;
 	u8 *f = slot_alloc(&pa);
 	if (!f || mgmt_tx(f, wlan_auth(f, bss.bssid, mac))) {
@@ -688,7 +764,9 @@ static void associated(u16 aid, u16 cap, const u8 *f, u32 len)
 	a.vdev = VDEV;
 	a.aid = aid;
 	a.flags = WMI_TLV_PEER_AUTH | (bss.rsn_len ? WMI_TLV_PEER_NEED_PTK_4_WAY : 0) | (lk.qos ? WMI_TLV_PEER_QOS : 0);
-	if (pmf_on) a.flags |= WMI_TLV_PEER_PMF;
+	/* ath10k_peer_assoc_h_crypto: the PMF flag only with a firmware of
+	 * ATH10K_FW_FEATURE_MFP_SUPPORT (not the Pro1X's: pmf=fw to try) */
+	if (pmf_on && conf.pmf_fw) a.flags |= WMI_TLV_PEER_PMF;
 	a.caps = cap;
 	a.listen = 1;                           /* ath10k_peer_assoc_h_listen_intval: 1 for a station */
 	a.nss = 1;
@@ -748,7 +826,7 @@ static void associated(u16 aid, u16 cap, const u8 *f, u32 len)
 	     a.phymode == MODE_11A ? "11a" : "11n", a.nss, a.nss == 1 ? "" : "s", a.n_ht, lk.qos ? "on" : "off");
 	stats.ht = lk.ht && lk.peer_ht ? (bw40 ? 40 : 20) : 0;
 	stats.qos = lk.qos;
-	wpa_init(&wpa, pmk, mac, bss.bssid, own_ie, own_ie_len, bss.rsn, bss.rsn_len, hw.random);
+	wpa_init(&wpa, pmk, &choice, mac, bss.bssid, own_ie, own_ie_len, bss.rsn, bss.rsn_len, bss.rsnx, bss.rsnx_len, hw.random);
 	go(WIFI_4WAY, 10000);                   /* the AP sends message 1 right away */
 	if (eapol_pending_len) {
 		u32 n = eapol_pending_len;
@@ -807,7 +885,7 @@ static void install_next(void)
 		tries = 0;
 		mlog("wifi: up: \"%s\" ", (const char *)conf.ssid);
 		print_mac("(", bss.bssid);
-		mlog("), WPA2-PSK CCMP\n");
+		mlog("), %s CCMP%s\n", wpa_akm_name(choice.akm), pmf_on ? ", PMF" : "");
 		go(WIFI_UP, 0);
 		/* ieee80211_recalc_ps_vif: power save once the port is
 		 * authorized (cfg80211's default: CONFIG_CFG80211_DEFAULT_PS) */
@@ -849,6 +927,7 @@ static void eapol_in(const u8 *p, u32 len)
 	} else if (n) {
 		mlog("wifi: 4-way handshake: message 2 out\n");
 	}
+	if (r & WPA_DO_IGTK) mlog("wifi: the IGTK %d kept (BIP in software, as ath10k)\n", wpa.igtk_idx);
 }
 
 /* lost: back to scanning after the vdev is down (mac80211's connection loss) */
@@ -876,6 +955,146 @@ static void lost(const char *why)
 	stats.restarts++;
 	retry_at = hw.now_ms() + 2000;
 	go(WIFI_SETUP, 0);
+}
+
+/* --- SAE's frames (wpa_supplicant's sme_sae_auth) ------------------------------- */
+
+static void sae_rx(const u8 *f, u32 len)
+{
+	if (len < WLAN_HDR + 6 || crypto_memcmp(f + 10, bss.bssid, 6) || crypto_memcmp(f + 4, mac, 6)) return;
+	u16 alg = get16(f + WLAN_HDR), seq = get16(f + WLAN_HDR + 2), status = get16(f + WLAN_HDR + 4);
+	const u8 *b = f + WLAN_HDR + 6;
+	u32 bl = len - WLAN_HDR - 6;
+	if (alg != 3) return;
+	if (seq == 1 && status == SAE_STATUS_ANTI_CLOGGING && !sae_confirmed) {
+		/* the AP wants its token back with our commit */
+		if (sae_take_token(&sae, b, bl) || ++sae_tries > 3) {
+			lost("SAE: an anti-clogging request not understood");
+			return;
+		}
+		mlog("wifi: SAE: the AP asks for its anti-clogging token: commit again\n");
+		sae_send_commit();
+		return;
+	}
+	if (seq == 1 && status == SAE_STATUS_GROUP_UNSUPPORTED) {
+		lost("SAE: the AP has no group 19");
+		return;
+	}
+	if (seq == 1) {
+		if (sae_confirmed) return;      /* (waiting for its confirm) */
+		if (status != (sae.h2e ? SAE_STATUS_H2E : 0)) {
+			mlog("wifi: SAE: the AP's commit with status %u\n", status);
+			lost("SAE");
+			return;
+		}
+		u16 r = sae_parse_commit(&sae, b, bl);
+		if (r == SAE_SILENT) return;
+		if (r || sae_process(&sae)) {
+			mlog("wifi: SAE: the AP's commit refused (%u)\n", r);
+			lost("SAE");
+			return;
+		}
+		u8 body[SAE_CONFIRM_LEN];
+		u32 n = sae_write_confirm(&sae, body);
+		u64 pa;
+		u8 *o = slot_alloc(&pa);
+		if (!o || mgmt_tx(o, wlan_auth_alg(o, bss.bssid, mac, 3, 2, 0, body, n))) {
+			slot_free(o);
+			fail("no room for SAE's confirm");
+			return;
+		}
+		sae_confirmed = true;
+		mlog("wifi: SAE confirm out\n");
+		go(WIFI_AUTH, 1000);
+		return;
+	}
+	if (seq == 2) {
+		if (!sae_confirmed) return;
+		if (status || sae_check_confirm(&sae, b, bl)) {
+			mlog("wifi: SAE: the AP's confirm is wrong (the password?)\n");
+			lost("SAE");
+			return;
+		}
+		mcopy(pmk, sae.pmk, WPA_PMK_LEN);
+		mlog("wifi: authenticated (SAE)\n");
+		send_assoc();
+	}
+}
+
+/* --- management frame protection (mac80211's ieee80211_drop_unencrypted_mgmt,
+ * ieee80211_process_sa_query_req; wpa_supplicant's sme_event_unprot_disconnect,
+ * sme_sa_query_*) ----------------------------------------------------------------- */
+
+static void send_sa_query(u8 action, const u8 id[2])
+{
+	u64 pa;
+	u8 *f = slot_alloc(&pa);
+	if (!f) return;
+	if (mgmt_tx(f, wlan_sa_query(f, bss.bssid, mac, action, id, ++mgmt_tx_pn))) slot_free(f);
+}
+
+static void saq_begin(void)
+{
+	if (saq_on) return;
+	hw.random(saq_id, 2);
+	saq_on = true;
+	saq_start = hw.now_ms();
+	saq_next = saq_start + 201;
+	mlog("wifi: an unprotected disconnection: an SA Query to the AP\n");
+	send_sa_query(0, saq_id);
+}
+
+/* a deauthentication or disassociation while PMF is on: 0 when it counts
+ * (the reason in *reason), 1 when it is dropped */
+static int pmf_disconnect(const u8 *f, u32 len, u16 *reason)
+{
+	if (f[4] & 1) {
+		/* group addressed: BIP with the IGTK */
+		if (wpa_bip_check(&wpa, f, len)) {
+			mlog("wifi: a group disconnection without a valid BIP MIC: dropped\n");
+			return 1;
+		}
+		*reason = get16(f + WLAN_HDR);
+		return 0;
+	}
+	u64 pn;
+	const u8 *b;
+	u32 bl;
+	if (wlan_ccmp_mgmt(f, len, &pn, &b, &bl)) {
+		saq_begin();
+		return 1;
+	}
+	if (pn <= mgmt_rx_pn || bl < 2) return 1;      /* a replay */
+	mgmt_rx_pn = pn;
+	*reason = get16(b);
+	return 0;
+}
+
+static void pmf_action(const u8 *f, u32 len)
+{
+	u64 pn;
+	const u8 *b;
+	u32 bl;
+	if (!pmf_on || !keys_in || (f[4] & 1) || crypto_memcmp(f + 10, bss.bssid, 6)) return;
+	/* robust: only protected ones, the PN above the last */
+	if (wlan_ccmp_mgmt(f, len, &pn, &b, &bl) || pn <= mgmt_rx_pn || bl < 4 || b[0] != 8) return;
+	mgmt_rx_pn = pn;
+	if (b[1] == 0) {
+		send_sa_query(1, b + 2);        /* the AP asks: we are here */
+		stats.saq_answered++;
+	} else if (b[1] == 1 && saq_on && !crypto_memcmp(b + 2, saq_id, 2)) {
+		saq_on = false;
+		mlog("wifi: SA Query answered: still associated\n");
+	}
+}
+
+/* the association's answer: the Timeout Interval's association comeback
+ * time in TUs (element 56, type 3) */
+static u32 assoc_comeback(const u8 *f, u32 len)
+{
+	for (const u8 *p = f + WLAN_HDR + 6, *end = f + len; end - p >= 2 && p + 2 + p[1] <= end; p += 2 + p[1])
+		if (p[0] == 56 && p[1] == 5 && p[2] == 3) return get32(p + 3);
+	return 0;
 }
 
 /* --- WMI events --------------------------------------------------------------- */
@@ -1010,15 +1229,25 @@ static void wmi_event(const u8 *p, u32 len)
 			if (conf.have_bssid) match = match && !crypto_memcmp(b.bssid, conf.bssid, 6);
 			if (!match) return;
 			const char *why = NULL;
-			if (!b.rsn_len) why = "an open network (only WPA2-PSK here)";
-			else if (wpa_check_ap_ie(b.rsn, b.rsn_len, &why)) {}
+			struct wpa_ap ap;
+			struct wpa_choice c;
+			if (!b.rsn_len) why = "an open network (only WPA2/WPA3 personal here)";
+			else if (!wpa_parse_ap(b.rsn, b.rsn_len, b.rsnx, b.rsnx_len, &ap, &why)) {
+				/* no SAE with a raw PSK (64 hex digits: no password);
+				 * pmf=off: as ieee80211w=0 */
+				if (mstrlen(conf.psk) == 64) ap.akms &= ~(1u << WPA_AKM_SAE);
+				if (conf.no_pmf) ap.caps &= (u16)~WPA_CAP_MFPC;
+				wpa_choose(&ap, b.h2e_only, &c, &why);
+			}
 			if (why) {
 				print_mac("wifi: ", b.bssid);
 				mlog(" skipped: %s\n", why);
 				return;
 			}
-			if (!have_best || b.snr > best.snr) best = b;
+			if (!have_best || b.snr > best.snr) best = b, best_choice = c;
 			have_best = true;
+		} else if (fc == WLAN_FC_AUTH && st == WIFI_AUTH && choice.akm == WPA_AKM_SAE) {
+			sae_rx(e.frame, e.len);
 		} else if (fc == WLAN_FC_AUTH && st == WIFI_AUTH) {
 			if (wlan_auth_resp(e.frame, e.len, bss.bssid, mac, &status)) return;
 			if (status) {
@@ -1030,15 +1259,29 @@ static void wmi_event(const u8 *p, u32 len)
 			send_assoc();
 		} else if (fc == WLAN_FC_ASSOC_RESP && st == WIFI_ASSOC) {
 			if (wlan_assoc_resp(e.frame, e.len, bss.bssid, mac, &status, &aid)) return;
+			if (status == 30) {
+				/* rejected for now (an SA Query to our old
+				 * association runs): again after the Timeout
+				 * Interval's comeback time (mac80211) */
+				u32 tu = assoc_comeback(e.frame, e.len);
+				u32 ms = tu * 1024 / 1000 < 100 ? 100 : tu * 1024 / 1000;
+				mlog("wifi: association refused for now (PMF), again in %u ms\n", ms);
+				comeback_at = hw.now_ms() + ms;
+				go(WIFI_ASSOC, ms + 1000);
+				return;
+			}
 			if (status) {
 				mlog("wifi: association refused (status %u)\n", status);
 				lost("association");
 				return;
 			}
 			associated(aid, get16(e.frame + WLAN_HDR), e.frame, e.len);
+		} else if (fc == WLAN_FC_ACTION && st == WIFI_UP) {
+			pmf_action(e.frame, e.len);
 		} else if ((fc == WLAN_FC_DEAUTH || fc == WLAN_FC_DISASSOC) && st >= WIFI_AUTH && st <= WIFI_UP) {
 			u16 reason;
 			if (wlan_deauth(e.frame, e.len, bss.bssid, &reason)) return;
+			if (pmf_on && keys_in && pmf_disconnect(e.frame, e.len, &reason)) return;
 			mlog("wifi: %s by the AP (reason %u)\n", fc == WLAN_FC_DEAUTH ? "deauthenticated" : "disassociated",
 			     reason);
 			lost("the AP");
@@ -1360,6 +1603,19 @@ void wifi_poll(void)
 		}
 	}
 	if (st == WIFI_SETUP && !wmi_qn && (s32)(now - retry_at) >= 0) scan_start();
+	if (st == WIFI_ASSOC && comeback_at && (s32)(now - comeback_at) >= 0) {
+		comeback_at = 0;
+		send_assoc();
+	}
+	if (st == WIFI_UP && saq_on) {
+		if (now - saq_start >= 1000) {
+			saq_on = false;
+			lost("SA Query: no answer (the AP lost us)");
+		} else if ((s32)(now - saq_next) >= 0) {
+			saq_next = now + 201;
+			send_sa_query(0, saq_id);
+		}
+	}
 	polling = false;
 }
 
@@ -1372,6 +1628,8 @@ u32 wifi_next_ms(void)
 		n = (s32)(end - now) > 0 ? end - now : 0;
 	}
 	if (st == WIFI_SETUP) n = MIN(n, (s32)(retry_at - now) > 0 ? retry_at - now : 0);
+	if (comeback_at) n = MIN(n, (s32)(comeback_at - now) > 0 ? comeback_at - now : 0);
+	if (saq_on) n = MIN(n, (s32)(saq_next - now) > 0 ? saq_next - now : 0);
 	/* without the engines' interrupts the caller polls at its own rate */
 	return n;
 }
@@ -1410,12 +1668,12 @@ void wifi_start(const struct wifi_hw *h, const struct wifi_conf *c)
 	if (st != WIFI_OFF && st != WIFI_FAILED) return;
 	hw = *h;
 	conf = *c;
-	if (wpa_pmk(conf.psk, conf.ssid, conf.ssid_len, pmk)) {
+	if (wpa_pmk(conf.psk, conf.ssid, conf.ssid_len, psk_pmk)) {
 		mlog("wifi: the PSK is not 8-63 characters or 64 hex digits\n");
 		go(WIFI_FAILED, 0);
 		return;
 	}
-	own_ie_len = wpa_own_ie(own_ie);
+	sae_pt_ok = false;
 	if (!pool) {
 		pool = hw.ce.dma_alloc(NSLOTS * SLOT, &pool_pa);
 		rx_ring = hw.ce.dma_alloc(HTT_RX_RING_SIZE * 8, &rx_ring_pa);
@@ -1500,6 +1758,12 @@ int wifi_conf_parse(const char *t, u32 len, struct wifi_conf *c, const char **wh
 			if (!on && !off) { *why = kl == 5 ? "uapsd=on or off" : "powersave=on or off"; return -1; }
 			if (kl == 9) c->no_ps = off;
 			else c->uapsd_queues = on ? WMM_QOSINFO_STA_AC_VO | WMM_QOSINFO_STA_AC_VI | WMM_QOSINFO_STA_AC_BK | WMM_QOSINFO_STA_AC_BE : 0;
+		} else if (kl == 3 && !crypto_memcmp(k, "pmf", 3)) {
+			bool on = vl == 2 && !crypto_memcmp(v, "on", 2), off = vl == 3 && !crypto_memcmp(v, "off", 3);
+			bool fw = vl == 2 && !crypto_memcmp(v, "fw", 2);
+			if (!on && !off && !fw) { *why = "pmf=on, off or fw"; return -1; }
+			c->no_pmf = off;
+			c->pmf_fw = fw;
 		} else if (kl == 5 && !crypto_memcmp(k, "bssid", 5)) {
 			if (vl != 17) { *why = "bssid=aa:bb:cc:dd:ee:ff"; return -1; }
 			for (int j = 0; j < 6; j++) {
