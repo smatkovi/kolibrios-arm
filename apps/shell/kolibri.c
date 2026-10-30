@@ -158,14 +158,17 @@ int kol_kill_process(unsigned process) { return kos_call(18, 2, process, 0, 0, 0
 void kol_get_kernel_ver(struct kernel_version *kv) { kos_call(18, 13, (u32)kv, 0, 0, 0); }
 
 /* named shared memory (68.22, 68.23): not in KolibriOS for ARM */
+/* named shared memory (68.22, 68.23): a started program's console
+ * "PID-SHELL" (modules/module_program_console.c); edx: the size or the
+ * error */
 int kol_buffer_open(char name[], int mode, int size, char **buf)
 {
-	(void)name; (void)mode; (void)size;
-	*buf = NULL;
-	return E_NOTFOUND;
+	u32 edx = 0;
+	*buf = kos_shm_open(name, size, mode, &edx);
+	return edx;
 }
 
-void kol_buffer_close(char name[]) { (void)name; }
+void kol_buffer_close(char name[]) { kos_shm_close(name); }
 
 /* the current folder: function 30 (ktcc's libc has these) */
 void set_cwd(const char *cwd) { kos_call(30, 1, (u32)cwd, 0, 0, 0); }

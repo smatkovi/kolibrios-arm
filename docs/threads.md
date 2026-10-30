@@ -140,6 +140,16 @@ the programs as before.
 | `lib/boxlib` | `/sys/lib/box_lib.obj` | box_lib's edit box, check box, option box, scroll bars, tree list and text editor, with their versions |
 | `lib/libini` | `/sys/lib/libini.obj` | libini's `ini_*` functions |
 
+## The programs that use them
+
+- The console library (`lib/console`, `/sys/lib/console.obj`) runs its
+  window in a thread of its own, woken by IPC, as console.obj does
+  (`docs/apps.md`): the shell and the terminal.
+- The shell serves a program's console through its named shared memory
+  `PID-SHELL`, as in KolibriOS (`docs/apps.md`).
+- The shell, the terminal, kfar and t_edit load console.obj, box_lib.obj
+  and libini.obj with 68.19 when they start.
+
 ## Testing
 
 `apps/threadtest` checks all of it from a program (`threadtest: done N
@@ -149,7 +159,10 @@ VFP/NEON registers kept per thread, a window per thread; IPC ping-pong
 between threads (200 rounds), the error codes, event 7; between two
 processes (it starts itself again) IPC and shared memory, the access
 rules, a process whose main thread ended while another runs on; 68.19
-of libini.obj, the same table again, a function called through it.
+of libini.obj, the same table again (also from another thread), a
+function called through it and through the program's own import stub,
+`dll_load` on lists of its own (a name not exported fails). The
+shell's test (`tests/apps`) runs `threadtest shellapi` in its console.
 `tests/threads` runs it on both kernels:
 
 ```sh

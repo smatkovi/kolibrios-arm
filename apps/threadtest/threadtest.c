@@ -7,11 +7,15 @@
  *
  *   threadtest                 all of it
  *   threadtest echo PID        (the second process) IPC to PID's echo, then shared memory
- *   threadtest orphan          (the second process) its main thread ends, a thread stays */
+ *   threadtest orphan          (the second process) its main thread ends, a thread stays
+ *   threadtest shellapi        started by the shell: its console through "PID-SHELL"
+ *                              (ktcc's shell_api.h, the shell's module_program_console.c) */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <kos.h>
+#include <kos_dll.h>
+#include <libini.h>
 
 static int failed;
 
@@ -462,6 +466,13 @@ static void *find_export(struct kexport *e, const char *name)
 	return NULL;
 }
 
+static void *volatile dll_from_thread;
+static void t_dll(void)
+{
+	dll_from_thread = kos_load_dll("/sys/lib/libini.obj");
+	kos_exit();
+}
+
 static void test_dll(void)
 {
 	struct kexport *e = kos_load_dll("/sys/lib/libini.obj");
@@ -478,12 +489,79 @@ static void test_dll(void)
 	check(get_str != NULL && buf[0], "a function called through the export table", buf[0], 0);
 	check(kos_load_dll("/sys/lib/none.obj") == NULL, "68.19 of no file: 0", 0, 0);
 	check(kos_load_dll("/sys/threadtest") == NULL, "68.19 of a program, not a library: 0", 0, 0);
+
+	/* the program's own import of libini (LIBS_threadtest): its stub
+	 * jumps to the same function (DLL=0: linked in, the address is the
+	 * program's own) */
+	char buf2[64] = "";
+	ini_get_str("/sys/kfar.ini", "Panels", "SortMode", buf2, sizeof(buf2), "none");
+	check(!strcmp(buf, buf2), "the import table's stub calls the library", buf2[0], buf[0]);
+
+	/* dll.Load of a list of its own: a name the library lacks fails */
+	static void *tab_ok[] = { "ini_get_int", NULL }, *tab_bad[] = { "ini_get_nothing", NULL };
+	static const struct kos_import imp_ok[] = { { tab_ok, "libini.obj" }, { NULL, NULL } };
+	static const struct kos_import imp_bad[] = { { tab_bad, "libini.obj" }, { NULL, NULL } };
+	check(dll_load(imp_ok) == 0 && tab_ok[0] == find_export(e, "ini_get_int"), "dll_load resolves a table by name", 0, 0);
+	check(dll_load(imp_bad) == 1, "dll_load of a name not exported: 1", 0, 0);
+
+	/* another thread of the process gets the same table */
+	dll_from_thread = NULL;
+	int tid = kos_thread_create(t_dll, STACK(1));
+	wait_gone(tid);
+	check(dll_from_thread == e, "68.19 in another thread: the process's table", (int)dll_from_thread, (int)e);
+}
+
+/* --- the shell's console (shell_api.h's buffer: a command byte, the data,
+ * at the end the return values) ----------------------------------------- */
+
+#define SHELL_SHM_MAX (16 * 1024)
+enum { SHELL_OK = 0, SHELL_EXIT = 1, SHELL_PUTS = 3, SHELL_PID = 7 };
+
+static int shell_cmd(volatile u8 *b, int cmd)
+{
+	b[0] = cmd;
+	for (int i = 0; i < 300; i++) {
+		if (b[0] == SHELL_OK) return 1;
+		kos_delay(1);
+	}
+	return 0;
+}
+
+static void shell_api(void)
+{
+	char name[32];
+	snprintf(name, sizeof(name), "%u-SHELL", my_pid());
+	u32 edx;
+	volatile u8 *b = kos_shm_open(name, SHELL_SHM_MAX, KOS_SHM_OPEN_ALWAYS | KOS_SHM_WRITE, &edx);
+	if (!b) {
+		printf("threadtest: FAIL shell api: no area (%u)\n", edx);
+		return;
+	}
+	/* the shell opens it within 0.6 s of starting us, then serves it */
+	strcpy((char *)b + 1, "threadtest: this line came through the shell's console\n");
+	int ok = shell_cmd(b, SHELL_PUTS);
+	u32 pid = 0;
+	ok = ok && shell_cmd(b, SHELL_PID);
+	memcpy(&pid, (const void *)(b + 1), 4);
+	int slot = pid ? kos_slot_of_pid(pid) : 0;
+	char who[12] = { 0 };
+	if (slot) {
+		kos_thread_info(info, slot);
+		memcpy(who, info + 10, 11);
+	}
+	ok = ok && !strcmp(who, "shell") && shell_cmd(b, SHELL_EXIT);
+	printf("threadtest: %s the shell's console through %s (the shell's PID %u)\n", ok ? "ok" : "FAIL", name, pid);
+	kos_shm_close(name);
 }
 
 int main(int argc, char **argv)
 {
 	if (argc >= 3 && !strcmp(argv[1], "echo")) {
 		child_echo(atoi(argv[2]));
+		return 0;
+	}
+	if (argc >= 2 && !strcmp(argv[1], "shellapi")) {
+		shell_api();
 		return 0;
 	}
 	if (argc >= 2 && !strcmp(argv[1], "orphan")) {

@@ -77,10 +77,13 @@ def test_shell(img):
                  'ret', 'ls', 'ret', 'more sub/d.txt', 'ret', 'wait:1', 'shot:shell-files',
                  'fstest expect /tmp0/1/w/a.txt hello', 'ret', 'fstest expect /tmp0/1/w/sub/d.txt hello', 'ret',
                  'fstest expect /tmp0/1/w/c.txt -', 'ret', 'rm a.txt', 'ret', 'fstest expect /tmp0/1/w/a.txt -',
-                 'ret', 'clear', 'ret', 'kfetch', 'ret', 'wait:2', 'shot:shell-kfetch')
+                 'ret', 'clear', 'ret', 'kfetch', 'ret', 'wait:2', 'shot:shell-kfetch',
+                 # a program in the shell's console: threadtest's "PID-SHELL" area (68.22)
+                 'clear', 'ret', 'threadtest shellapi', 'ret', 'wait:3', 'shot:shell-api')
     log = qemu('realview', f'{OUT}/shell', steps)
     n_ok = log.count('fstest: expect ok')
     check(n_ok == 4 and 'expect FAIL' not in log, f'shell: mkdir, cd, echo >, cp, ren, mv, rm ({n_ok} of 4 files as expected)')
+    check('threadtest: ok the shell\'s console' in log, 'shell: a program writes into its console through named shared memory')
     if img:
         for n in ('shell-files', 'shell-kfetch'):
             shutil.copy(f'{OUT}/shell/{n}.png', os.path.join(img, n + '.png'))
