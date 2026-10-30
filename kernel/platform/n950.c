@@ -17,6 +17,7 @@
  *     T5, polled; the first finger is the mouse with its left button
  * Not yet: the RTC (TWL4030), the battery. */
 #include "kernel.h"
+#include "blit.h"
 
 #define UART3 0x49020000u
 #define INTC 0x48200000u
@@ -282,33 +283,34 @@ static int n9_display_init(u32 **fb, int *w, int *h, int *stride)
 	return 0;
 }
 
-/* landscape (x, y) to the panel's portrait pixel: turned by 90 degrees
- * (the keyboard side down); the direction is a guess until it is seen
- * on the device */
+/* landscape (x, y) to the panel's portrait pixel (PANEL_W - 1 - y,
+ * HIDDEN + x): turned by 90 degrees (the keyboard side down); the
+ * direction is a guess until it is seen on the device. A screen column
+ * is a panel line, the band's bottom line first: blit.rot90 writes the
+ * panel (uncached) line by line, in whole blocks of 16 lines, so that
+ * each panel line's run starts 64 bytes aligned (32 at 16 bpp) */
+static void n9_copy(int y0, int y1)
+{
+	y0 &= ~15;
+	y1 = MIN((y1 + 15) & ~15, SCR_H);
+	/* only the panel's own pixels: 0 <= PANEL_W - 1 - y < lcd_w,
+	 * HIDDEN + x < lcd_h */
+	int lo = MAX(y0, PANEL_W - lcd_w), hi = MIN(y1, PANEL_W);
+	int w = MIN(SCR_W, lcd_h - HIDDEN);
+	if (lo >= hi || w <= 0) return;
+	u32 bytes = lcd_bpp / 8;
+	char *d = (char *)lcd + (u32)HIDDEN * lcd_stride * bytes + (u32)(PANEL_W - hi) * bytes;
+	blit_begin();
+	blit.rot90(d, lcd_stride * bytes, shadow + lo * SCR_W, SCR_W, w, hi - lo, lcd_bpp);
+	asm volatile("dsb" ::: "memory");             /* the frame in memory before DISPC goes */
+}
+
 static bool n9_display_flush(int y0, int y1)
 {
 	static u32 last;
 	if (ticks - last < 3) return false;           /* at most ~30 frames a second */
 	last = ticks;
-	for (int y = y0; y < y1; y++) {
-		const u32 *src = &shadow[y * SCR_W];
-		int px = PANEL_W - 1 - y;
-		if (px < 0 || px >= lcd_w) continue;
-		if (lcd_bpp == 32) {
-			for (int x = 0; x < SCR_W; x++) {
-				int py = HIDDEN + x;
-				if (py < lcd_h) lcd[py * lcd_stride + px] = src[x];
-			}
-		} else {
-			u16 *l16 = (u16 *)lcd;
-			for (int x = 0; x < SCR_W; x++) {
-				int py = HIDDEN + x;
-				u32 c = src[x];
-				if (py < lcd_h)
-					l16[py * lcd_stride + px] = ((c >> 8) & 0xf800) | ((c >> 5) & 0x7e0) | ((c >> 3) & 0x1f);
-			}
-		}
-	}
+	n9_copy(y0, y1);
 	/* one frame to the panel: GOLCD, then LCDENABLE (stall mode) */
 	u32 c = rd32(DISPC + DISPC_CONTROL);
 	wr32(DISPC + DISPC_CONTROL, c | (1u << 5));

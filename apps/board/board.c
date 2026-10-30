@@ -1,11 +1,15 @@
 /* board: KolibriOS's debug board, what the kernel and the programs write
- * to the debug output (function 63), the last lines */
+ * to the debug output (function 63), the last lines: as many as the
+ * screen holds (70 x 22 at least, 130 x 40 at most) */
 #include "kos.h"
 
-#define COLS 70
-#define ROWS 22
-static char lines[ROWS][COLS + 1];
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MAX_COLS 130
+#define MAX_ROWS 40
+static char lines[MAX_ROWS][MAX_COLS + 1];
 static int cur, col;
+static int COLS = 70, ROWS = 22;
 
 static void put(int c)
 {
@@ -32,10 +36,12 @@ static int poll(void)
 	return got;
 }
 
+static int win_x = 40, win_y = 30;
+
 static void draw(void)
 {
 	kos_begin_draw();
-	kos_window(40, 30, COLS * 6 + 24, ROWS * 11 + 36, KOS_WIN_SKINNED | 0x000000, "Debug board");
+	kos_window(win_x, win_y, COLS * 6 + 24, ROWS * 11 + 36, KOS_WIN_SKINNED | 0x000000, "Debug board");
 	kos_rect(0, 0, COLS * 6 + 14, ROWS * 11 + 8, 0x000000);
 	for (int i = 0; i < ROWS; i++) {
 		int l = (cur + 1 + i) % ROWS;
@@ -46,6 +52,12 @@ static void draw(void)
 
 int main(void)
 {
+	int sw, sh;
+	kos_screen_size(&sw, &sh);
+	COLS = MAX(70, MIN(MAX_COLS, (sw - 24 - 16) / 6));
+	ROWS = MAX(22, MIN(MAX_ROWS, (sh - 36 - 70) / 11));
+	win_x = MAX(0, (sw - (COLS * 6 + 24)) / 2);
+	win_y = MAX(0, MIN(60, sh - (ROWS * 11 + 36) - 8));
 	poll();
 	draw();
 	for (;;) {

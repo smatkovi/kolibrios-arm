@@ -1,9 +1,12 @@
-# The AArch64 kernel's assembler against its C, bit for bit: make -C tests/asm
-#   test    the comparisons (test.c) under qemu-aarch64
-#   bench   the routines on the screen's sizes under qemu-aarch64 with
-#           tools/qemu-prof's plugin: the instructions of each, C and
-#           assembler (the device's own times: kolibri.bench, docs/asm.md)
-# Needs aarch64-linux-gnu-gcc (static glibc) and qemu-aarch64.
+# The kernel's assembler against its C, bit for bit: make -C tests/asm
+#   test    the comparisons (test.c): AArch64 (test64, qemu-aarch64) and
+#           ARMv7 (test32, qemu-arm -cpu cortex-a8)
+#   bench   the routines on the screen's sizes with tools/qemu-prof's
+#           plugin: the instructions of each, C and assembler (bench64:
+#           the Pro1X's 1080 x 540, bench32: the N950's 854 x 480; the
+#           device's own times: kolibri.bench, docs/asm.md)
+# Needs aarch64-linux-gnu-gcc (static glibc) and qemu-aarch64; for ARMv7
+# zig (cc for arm-linux-musleabi, static), arm-none-eabi-gcc and qemu-arm.
 TOP := ../..
 B := $(TOP)/build/asm-test
 CC64 ?= aarch64-linux-gnu-gcc
@@ -17,7 +20,9 @@ ASM := $(TOP)/kernel/arch/arm64/blit.S $(TOP)/kernel/arch/arm64/string.S
 # string.S's names moved aside: the C library has its own
 RENAME := -Dmemcpy=k_memcpy -Dmemmove=k_memmove -Dmemset=k_memset
 
-test: $(B)/test
+test: test64 test32
+
+test64: $(B)/test
 	qemu-aarch64 $(B)/test
 
 $(B)/test: $(SRC) $(ASM) $(TOP)/kernel/blit.c $(TOP)/kernel/include/blit.h cstring.c Makefile
@@ -28,13 +33,42 @@ $(B)/test: $(SRC) $(ASM) $(TOP)/kernel/blit.c $(TOP)/kernel/include/blit.h cstri
 	$(CC64) -c $(RENAME) $(TOP)/kernel/arch/arm64/string.S -o $(B)/string.o
 	$(CC64) $(CFLAGS) -static $(SRC) $(B)/blit_c.o $(B)/cstring.o $(B)/blit.o $(B)/string.o -o $@
 
-bench: $(B)/test
+bench: bench64 bench32
+
+bench64: $(B)/test
 	$(MAKE) -C $(TOP)/tools/qemu-prof
 	qemu-aarch64 -plugin $(TOP)/build/qemu-prof/prof.so,out=$(B)/bench.prof $(B)/test bench
 	python3 $(TOP)/tools/qemu-prof/report.py $(B)/bench.prof $(B)/test 0 60 | \
 		grep -E "_c |_neon |k_mem|c_mem|^instructions"
 
-.PHONY: test bench
+# ARMv7: the C compiled as the kernel compiles it (arm-none-eabi-gcc,
+# soft-float, -O2), the assembler as the kernel's; the test itself with
+# zig's C library (soft-float EABI, as the objects)
+CC32 ?= zig cc -target arm-linux-musleabi -mcpu=cortex_a8
+KCC32 := arm-none-eabi-gcc -march=armv7-a -marm -mfloat-abi=soft -O2 -std=gnu11 -ffreestanding \
+	-fno-builtin -fno-common -DBLIT_HOST -I$(TOP)/kernel/include
+ASM32 := $(TOP)/kernel/arch/armv7/blit.S $(TOP)/kernel/arch/armv7/string.S
+QEMU32 := qemu-arm -cpu cortex-a8
+
+test32: $(B)/test32
+	$(QEMU32) $(B)/test32
+
+$(B)/test32: $(SRC) $(ASM32) $(TOP)/kernel/blit.c $(TOP)/kernel/include/blit.h cstring.c Makefile
+	@mkdir -p $(B)
+	$(KCC32) -c $(TOP)/kernel/blit.c -o $(B)/blit_c32.o
+	$(KCC32) -c cstring.c -o $(B)/cstring32.o
+	arm-none-eabi-gcc -march=armv7-a -marm -c $(TOP)/kernel/arch/armv7/blit.S -o $(B)/blit32.o
+	arm-none-eabi-gcc -march=armv7-a -marm -c $(RENAME) $(TOP)/kernel/arch/armv7/string.S -o $(B)/string32.o
+	$(CC32) -O2 -g -Wall -Wno-unused-parameter -Wno-sign-compare -DBLIT_HOST -I$(TOP)/kernel/include -static \
+		$(SRC) $(B)/blit_c32.o $(B)/cstring32.o $(B)/blit32.o $(B)/string32.o -o $@
+
+bench32: $(B)/test32
+	$(MAKE) -C $(TOP)/tools/qemu-prof
+	$(QEMU32) -plugin $(TOP)/build/qemu-prof/prof.so,out=$(B)/bench32.prof $(B)/test32 bench
+	python3 $(TOP)/tools/qemu-prof/report.py $(B)/bench32.prof $(B)/test32 0 60 | \
+		grep -E "_c |_neon |k_mem|c_mem|^instructions"
+
+.PHONY: test test64 test32 bench bench64 bench32
 
 # the kernel's side in QEMU (virt): the programs' FP/SIMD registers kept
 # across switches and the kernel's NEON (apps/fptest), the system call
