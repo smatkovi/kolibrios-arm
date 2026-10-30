@@ -129,11 +129,11 @@ int main(int argc, char **argv)
 	/* /sys: copy on write */
 	r = f70(0, 0, 0, 8, buf, "fstest");
 	check(r.eax == 0 && !memcmp(buf, "MENUETA1", 8), "70.0 /sys/fstest (relative)", r.eax, 0);
-	r = f70(2, 0, 0, 4, "new!", "/rd/1/settings/new.txt");
+	r = f70(2, 0, 0, 4, "new!", "/rd/1/fstest.d/new.txt");
 	check(r.eax == 5, "70.2 in a folder that is not there", r.eax, 0);
-	r = f70(9, 0, 0, 0, 0, "/sys/settings");
-	r = f70(2, 0, 0, 4, "new!", "/rd/1/settings/new.txt");
-	check(r.eax == 0, "70.2 in /sys/settings", r.eax, 0);
+	r = f70(9, 0, 0, 0, 0, "/sys/fstest.d");
+	r = f70(2, 0, 0, 4, "new!", "/rd/1/fstest.d/new.txt");
+	check(r.eax == 0, "70.2 in a new folder of /sys", r.eax, 0);
 	r = f70(0, 0, 0, 8, buf, "/sys/autorun");
 	char head[9] = { 0 };
 	memcpy(head, buf, 8);

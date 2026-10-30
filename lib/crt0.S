@@ -7,7 +7,7 @@ __header:
 	.ascii	"MENUETA1"
 	.word	1			/* version */
 	.word	_start
-	.word	__image_end		/* end of the image */
+	.word	__bss_end		/* the end of the image with its .bss: the heap (68.11/68.12) starts behind it */
 	.word	__memory_size		/* memory the program gets */
 	.word	__stack_top
 	.word	__params		/* the parameters (256 bytes) */
