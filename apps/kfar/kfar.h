@@ -25,6 +25,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include "kos.h"
 #include "font.h"              /* generated: font_width, font_height, font[] */
 
@@ -235,7 +236,12 @@ static inline u16 *get_console_ptr(int eax, int edx)
 #define CELL(c, a) ((u16)((u8)(c) | (u16)(u8)(a) << 8))
 
 void draw_window(void);
+/* the window's frame width (5 classic, 0 in Hildon's look; kfar.c) */
+int kfar_wnd_border(void);
 void draw_image(void);
+/* draw_image does nothing while set (the original patches its first
+ * byte with ret: filesearch_OnRedraw) */
+extern u8 bDrawImageDisabled;
 void draw_keybar(void);
 void draw_cmdbar(void);
 void init_console(void);
@@ -315,7 +321,7 @@ typedef struct editdata { u32 maxlength, pos, start; char data[]; } editdata;
 #define EDITBUF(n) struct { u32 maxlength, pos, start; char data[(n) + 1]; }
 typedef EDITBUF(512) editbuf512;
 typedef EDITBUF(253 + 1) searchbuf_t;
-typedef EDITBUF(quicksearch_maxlen - 1) quicksearchbuf_t;
+typedef EDITBUF(quicksearch_maxlen) quicksearchbuf_t;   /* 12 + 64 bytes, and the original's byte beyond */
 /* a list's items and data */
 typedef struct listitem { struct listitem *next, *prev; char text[]; } listitem;
 typedef struct listdata { listitem *curitemptr; u32 numitems; listitem *head; u32 curitem; } listdata;
@@ -526,11 +532,16 @@ int match_symbol(u8 al, u8 edi);
 int strcmpi(const char *esi, const char *edi);
 /* esi -> name (lower case), edx -> its end, edi -> mask; true <=> match */
 bool match_mask_rev_lowercase(const char *esi, const char *edx, const char *edi);
-/* the association of the entry's extension (its value) or NULL;
- * esi_ext: the extension */
-char *find_extension(const u8 *ecx, const char **esi_ext);
+/* the association (the value in [Associations]) of the extension of the
+ * entry ecx, or NULL (CF in the original) */
+char *find_extension(const u8 *ecx);
+/* kfar.asm: draw_border: a double frame of ebx x edx cells at edi */
+void draw_border(u16 *edi, u8 ah, int ebx, int edx);
 void panels_OnKey_run_association2(PanelData *ebp, const u8 *ecx, char *edi);
 void panels_OnKey_ctrl_r(void *ebp, u32 eax);
+/* kfar.asm: panels_OnKey.ctrl_r.doread: the folder again, the cursor on
+ * saved_file_name (or at the index); the file search's Go to */
+void panels_OnKey_ctrl_r_doread(PanelData *ebp, int index);
 void panels_OnKey_done_redraw(PanelData *ebp);
 void panels_OnKey_reread(PanelData *ebp);
 void panels_OnKey_enter(void *ebp, u32 eax);
@@ -619,7 +630,7 @@ void editor_OnKey_shift_f7(void *ebp, u32 eax);
  * max_height lines (editor_data, editor_line are editor.c's) */
 void editor_calc_datasize(void);
 /* editor.inc's edit.eol_* (EditEOLStyle) */
-enum { edit_eol_unix = 0, edit_eol_dos = 1, edit_eol_mac = 2 };
+enum { edit_eol_dos = 1, edit_eol_unix = 2, edit_eol_mac = 3 };
 
 /* filetool.c (filetool.inc): the delete, the copy, the folders; true:
  * the job is cancelled (the original's "ja cancel_label") */

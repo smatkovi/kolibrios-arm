@@ -19,6 +19,7 @@
 /* the window's frame: 5 pixels in KolibriOS's skinned windows, 0 in
  * Hildon's look (function 9: the client area's x offset) */
 static int wnd_border = 5;
+int kfar_wnd_border(void) { return wnd_border; }
 static u8 procinfo_buf[1024];
 
 static int min_y, max_y, min_x, max_x;
@@ -389,7 +390,10 @@ static void mouse(void)
 	else if (eax & (1 << 8)) mousestate = 0;        /* left button down */
 	else return;
 	eax = kos_call(37, 1, 0, 0, 0, 0);
-	s16 y = eax & 0xffff;
+	/* 37.1 is relative to the client area here (as in KolibriOS's
+	 * kernel now); the original's arithmetic is relative to the window */
+	eax += (u32)wnd_border << 16;
+	s16 y = (eax & 0xffff) + skinh;
 	if (y < (s16)skinh) return;
 	int edx = (u16)(y - skinh) / font_height;
 	int x = eax >> 16;
@@ -638,8 +642,11 @@ static void draw_image_nomem(void)
 /* kfar.asm: draw_image: the cells that changed since the last time into
  * the image (the font's pixels in the palette's colours), and that part
  * of the image to the window */
+u8 bDrawImageDisabled;
+
 void draw_image(void)
 {
+	if (bDrawImageDisabled) return;
 	bMemForImageValidData = 1;
 	if (!MemForImage) {
 		/* allocate memory for image */
