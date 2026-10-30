@@ -45,6 +45,7 @@ int strcmp(const char *a, const char *b);
 int strncmp(const char *a, const char *b, size_t n);
 char *strncpy0(char *d, const char *s, size_t n); /* always terminated */
 int kprintf(const char *fmt, ...);
+int kvsnprintf(char *buf, u32 size, const char *fmt, __builtin_va_list ap);
 void kputc(char c);
 int dbg_get(void);              /* the debug board's next char or -1 */
 void kputs(const char *s);
@@ -65,6 +66,7 @@ enum { TRAP_UNDEF = 1, TRAP_SVC, TRAP_PABT, TRAP_DABT, TRAP_IRQ, TRAP_FIQ };
 #define PSR_SVC 0x13
 #define PSR_I 0x80
 #define PSR_F 0x40
+#define PSR_T 0x20
 
 /* the platform (kernel/platform/<name>.c) */
 struct mem_region {

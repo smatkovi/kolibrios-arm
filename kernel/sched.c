@@ -52,9 +52,9 @@ void task_exit(struct task *t)
 	if (t->state == T_FREE) return;
 #ifdef __aarch64__
 	if (t->lx) lx_thread_gone(t);
-	extern void fp_task_gone(struct task *t);     /* arch/arm64/fpu.c */
-	fp_task_gone(t);
 #endif
+	extern void fp_task_gone(struct task *t);     /* arch/<arch>/fpu.c */
+	fp_task_gone(t);
 	wm_remove(t);
 	if (t->mem_pa) mm_free_mb(t->mem_pa, t->mem_size >> 20);
 	if (t->l1) mmu_free_user_table(t->l1);

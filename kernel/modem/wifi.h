@@ -32,6 +32,10 @@ struct wifi_conf {
 	u8 bssid[6];
 	bool have_bssid;
 	char country[3];                    /* the regulatory domain's country: "AT" unless country= says */
+	bool no_ps;                         /* powersave=off (cfg80211's default: on) */
+	u8 uapsd_queues;                    /* uapsd=on: all four ACs (mac80211's default: none) */
+	bool no_pmf;                        /* pmf=off (ieee80211w=0); on: whenever the AP is capable */
+	bool pmf_fw;                        /* pmf=fw: also the firmware's peer PMF flag (WMI_PEER_PMF) */
 };
 
 struct wifi_hw {
@@ -50,9 +54,12 @@ enum wifi_state {
 	WIFI_SETUP, WIFI_SCAN, WIFI_JOIN, WIFI_PEER, WIFI_AUTH, WIFI_ASSOC, WIFI_4WAY, WIFI_KEYS, WIFI_UP, WIFI_FAILED,
 };
 
-/* "ssid=NAME" and "psk=PASSPHRASE" (or 64 hex digits) lines, "bssid=
- * aa:bb:cc:dd:ee:ff" and "country=XX" (ISO 3166 alpha-2, 00: none; AT
- * by default) optional, '#' comments: 0, or -1 (*why) */
+/* "ssid=NAME" and "psk=PASSPHRASE" (or 64 hex digits: WPA2 only) lines,
+ * "bssid=aa:bb:cc:dd:ee:ff", "country=XX" (ISO 3166 alpha-2, 00: none; AT
+ * by default), "powersave=on|off" (on), "uapsd=on|off" (off, as mac80211's
+ * IEEE80211_DEFAULT_UAPSD_QUEUES), "pmf=on|off|fw" (on) optional, '#'
+ * comments: 0, or -1 (*why). The passphrase serves WPA2 and WPA3 (SAE's
+ * password) alike. */
 int wifi_conf_parse(const char *text, u32 len, struct wifi_conf *c, const char **why);
 
 /* after WLFW said the firmware is ready (wlfw.c): the bring-up starts */
@@ -60,6 +67,13 @@ void wifi_start(const struct wifi_hw *hw, const struct wifi_conf *c);
 void wifi_wlan_enabled(int err);       /* WLFW's answer to WLAN_MODE */
 void wifi_poll(void);                  /* the engines, then the state's timeouts */
 u32 wifi_next_ms(void);                /* ms until wifi_poll has work without an interrupt (tickless) */
+/* the host's side of power save: how often to look at the engines without
+ * their interrupts (10 ms on the way up; up: 20 ms while frames come, 200
+ * ms after a second without, 1 s after ten: the firmware and the AP keep
+ * what comes meanwhile), and whether frames came in the last second (then
+ * the engines' interrupts should be able to wake the CPU: no SoC sleep) */
+u32 wifi_poll_ms(void);
+bool wifi_busy(void);
 int wifi_send(const u8 *eth, u32 len); /* an Ethernet frame out: 0, or -1 (not up, or full) */
 enum wifi_state wifi_state(void);
 const char *wifi_state_name(enum wifi_state s);
@@ -71,6 +85,12 @@ struct wifi_stats {
 	u32 restarts;
 	u8 bssid[6];
 	u16 freq, aid;
+	u8 ht;                              /* the peer: 0 legacy, 20 or 40 MHz HT */
+	bool qos, ps;                       /* QoS data, the firmware's power save */
+	u32 saq_answered;                   /* the AP's SA Queries answered */
+	u8 akm;                             /* the association's AKM (00-0f-ac:N) */
+	bool pmf, h2e;                      /* management frame protection, SAE by hash-to-element */
+	u32 saq_sent, unprot_dropped, bip_dropped;  /* our SA Queries, disconnections dropped (unprotected, bad BIP) */
 };
 const struct wifi_stats *wifi_stats(void);
 

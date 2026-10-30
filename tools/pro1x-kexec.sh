@@ -18,9 +18,11 @@
 # (kolibri.ipcrtr=adopt). rmtfs keeps running until the jump: stopped
 # normally it would stop the modem.
 #
-# -w FILE (with -m): the Wi-Fi (docs/pro1x-network.md, stages 4-6): FILE
-# has the network, "ssid=NAME" and "psk=PASSPHRASE" lines (or 64 hex
-# digits; "bssid=aa:bb:..." optional). It goes into the initrd as the
+# -w FILE (with -m): the Wi-Fi (docs/pro1x-network.md, stages 4-7): FILE
+# has the network, "ssid=NAME" and "psk=PASSPHRASE" lines (WPA2 or WPA3,
+# whatever the AP offers best; 64 hex digits: WPA2 only), optional
+# "bssid=aa:bb:...", "country=AT" (the default; 00: none), "powersave=off",
+# "uapsd=on", "pmf=off|fw". It goes into the initrd as the
 # image "wifi" (the PSK in it: the initrd file is made readable by root
 # only), kolibri.wifi is added; KolibriOS starts the WCN3990 once WLFW
 # (over the modem's QRTR) says the firmware is ready. Linux's ath10k is

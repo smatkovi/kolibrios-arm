@@ -39,7 +39,7 @@ stream of whatever device does DMA (Wi-Fi `0x1a0`).
 
 | | Wi-Fi (WCN3990) | Mobile data (IPA) | USB to a PC (gadget) |
 | --- | --- | --- | --- |
-| what KolibriOS must do | RPM votes for the four rails; SMMU bypass; WLFW over the existing QRTR/QMI (indications, host capabilities, board data, `WLAN_CFG` with the copy-engine layout, `WLAN_MODE` on); the copy engines (rings in RAM, 12 pipes); HTC, WMI (scan, vdev/peer, keys) and HTT (the data frames); the 802.11 part ath10k leaves to mac80211 (probe, authentication, association, 802.11 <-> Ethernet frames); WPA2-PSK (PBKDF2 for the PMK, the 4-way handshake with EAPOL, AES key unwrap, keys installed through WMI: the hardware encrypts) | QMI WDS (start a network interface: the APN, the address), the data port mapper, the IPA control service the apps processor offers; the GSI firmware through TrustZone; IPA and GSI themselves (endpoints, channels, rings, routing/filter tables), QMAP framing | clocks and power domain (GCC), the USB 2 PHY, DWC3 in device mode, a CDC NCM or ECM function; the PC routes (NAT) |
+| what KolibriOS must do | RPM votes for the four rails; SMMU bypass; WLFW over the existing QRTR/QMI (indications, host capabilities, board data, `WLAN_CFG` with the copy-engine layout, `WLAN_MODE` on); the copy engines (rings in RAM, 12 pipes); HTC, WMI (scan, vdev/peer, keys) and HTT (the data frames); the 802.11 part ath10k leaves to mac80211 (probe, authentication, association, 802.11 <-> Ethernet frames); WPA2 and WPA3 personal (PBKDF2 or SAE for the PMK, the 4-way handshake with EAPOL, AES key unwrap, keys installed through WMI: the hardware encrypts; PMF) | QMI WDS (start a network interface: the APN, the address), the data port mapper, the IPA control service the apps processor offers; the GSI firmware through TrustZone; IPA and GSI themselves (endpoints, channels, rings, routing/filter tables), QMAP framing | clocks and power domain (GCC), the USB 2 PHY, DWC3 in device mode, a CDC NCM or ECM function; the PC routes (NAT) |
 | reused | QRTR, QMI from the modem stack | QRTR, QMI, the running modem's registration | nothing |
 | size (estimate) | 8000-10000 lines | 6000-8000 lines, plus the firmware loading | 1500-2000 lines |
 | firmware | already on the modem | `ipa_fws.mbn` (the phone's own, from its file system) | none |
@@ -82,10 +82,14 @@ image `wifi` (never in the repository).
 | 4 | the bring-up as `ath10k_core_start` orders it: WLFW's `WLAN_CFG` and `WLAN_MODE` sent, the engines set up, HTC (READY, HTT's service, then WMI's, SETUP_COMPLETE_EX), WMI-TLV (SERVICE_READY, the host memory it asks for, INIT, READY with the MAC address), HTT (VERSION_REQ, FRAG_DESC_BANK_CFG, RX_RING_CFG, AGGR_CFG), `ath10k_start`'s device parameters, the channel list | `kernel/modem/wifi.c` (the driver), `htc.c`, `wmi.c`, `htt.c`, `wlfw.c` (`wlfw_wlan_enable`), `kernel/net/wifi_dev.c`, `kernel/platform/pro1x.c` (`wifi_ready`) | `make -C tests/wifi` (`station`: against a simulated WCN3990), `make -C tests/modem` (WLAN_CFG and WLAN_MODE through the fake modem), `make -C tests/wifi qemu` (the kernel's side in QEMU up to the engines) |
 | 5 | a station vdev, the scan (the BSS of the configured SSID: CCMP, PSK), vdev start, the AP's peer, open authentication and association (`MGMT_TX_SEND` by reference, or HTT), `PEER_ASSOC`, `VDEV_UP`; WPA2-PSK: the PMK (PBKDF2), the 4-way handshake over the data path, the keys installed (`VDEV_INSTALL_KEY`, `SEC_IND`), the peer authorized; the group key handshake; deauthentication and connection loss: scanning again | `wifi.c`, `wlan.c` (802.11 frames), `wpa.c` (the supplicant), `crypto.c` | `tests/wifi`: `crypto` (published vectors, OpenSSL), `station` (an AP with OpenSSL's crypto: the installed keys checked by CCMP both ways; a wrong PSK; no AP) |
 | 6 | HTT's data path: Ethernet to native Wi-Fi frames in `TX_FRM` (gathered on CE4), `RX_IN_ORD_PADDR_IND`'s buffers from the RX ring to Ethernet, lwIP's interface (DHCP when the link is up) | `wifi.c`, `htt.c`, `wlan.c`, `kernel/net/wifi_dev.c`, `kernel/net/net.c` | `tests/wifi` `station`: lwIP above the driver takes a lease, answers a ping, an ARP broadcast with a new group key |
+| 7a | the regulatory domain: the EEPROM's code from SERVICE_READY as ath's `regd.c` takes it (the Pro1X's 0x406c: a world domain, pair 0x6c), `country=` (AT by default) on top as cfg80211 does with a user's hint, the channel list from it (passive, radar, power, HT40+), `PDEV_SET_REGDOMAIN` | `kernel/modem/regd.c`, `regdb.c` (made by `tools/gen-regdb.py` from Linux's `regd_common.h` and wireless-regdb's `regulatory.db`), `wifi.c` | `tests/wifi` `regd` (28 checks: the phone's EEPROM with AT and without, US, a country EEPROM, 0x8000, 0x68, India, the 5 GHz range, every ath country), `station` (the channel list, the domain pair) |
+| 7b | 802.11n and WMM: HT20/HT40 (short GI, STBC, LDPC as SERVICE_READY has them), the association's HT Capabilities and WMM information element, `PEER_ASSOC` with HT, the AP's WMM parameters (`VDEV_SET_WMM_PARAMS`), the TID of every frame (EAPOL 7, the DSCP's priority, lower under admission control) | `wifi.c`, `wlan.c`, `wmi.c` | `station` (an HT40 WMM AP; `legacy`; `uapsd`: HT20, admission control on VO) |
+| 7c | power save: the firmware's (PS-Poll and null data, U-APSD with `uapsd=on`): `STA_POWERSAVE_MODE` and its parameters as `ath10k_mac_vif_setup_ps` and `ath10k_conf_tx_uapsd`; the host's: slower polling when idle, with `kolibri.wifi=irq` no SoC sleep while frames come | `wifi.c`, `kernel/net/wifi_dev.c`, `kernel/power.c` (`power_hold_awake`), `kernel/arch/arm64/psci.c` | `station` (the parameters and their order, the radio's doze with the AP keeping frames for the TIM, the polling's intervals), `tests/power host` (the held state) |
+| 7d | WPA3-Personal and PMF: SAE (group 19; hunting and pecking or hash-to-element as the AP offers it; the anti-clogging token), the AKM choice (SAE, then PSK-SHA256, then PSK: the transition mode), PMF (MFPC, BIP-CMAC-128 with the IGTK, protected and BIP-checked disconnections, SA Query both ways, the association's comeback) | `kernel/modem/sae.c`, `ecc.c` (P-256), `crypto.c` (SHA-256, the KDF, HKDF, AES-CMAC), `wpa.c`, `wifi.c`, `wlan.c` | `crypto` (57 checks: FIPS 180-2, RFC 4231, 5869, 4493, IEEE 802.11-2020 J.10's SAE vectors both ways, OpenSSL), `station sae`, `h2e`, `mixed`, `psk256` (an AP with its own SAE by OpenSSL) |
 
 `kolibri.wifi` (with `tools/pro1x-kexec.sh -m -w FILE`: the modem, so
 QRTR, and the network) runs all of it on the phone: once WLFW says the
-firmware is ready, the driver starts. Nothing of stages 3-6 has run on the
+firmware is ready, the driver starts. Nothing of stages 3-7 has run on the
 phone yet (below: the device test).
 
 ### Stages 3 and 4, prepared on the PC
@@ -192,8 +196,8 @@ station is up, every 20 ms after). The facts and where they are from:
   with the send flag, in the address's high word, the write index after
   the last piece, as `_ath10k_ce_send_nolock_64`), the frame itself by the
   fragment bank's descriptor; done by `TX_COMPL_IND`.
-- **The station** (`mac.c`): `ath10k_add_interface` (vdev create, power
-  save off), `ath10k_hw_scan` with `ath10k_wmi_start_scan_init`'s values
+- **The station** (`mac.c`): `ath10k_add_interface` (vdev create, the
+  power save parameters: stage 7c), `ath10k_hw_scan` with `ath10k_wmi_start_scan_init`'s values
   (the TLV firmware's inverted probe-request filter flag), the beacons
   and the AP's answers by MGMT_RX (dropped only for a CRC, decryption or
   key cache error, as `ath10k_wmi_event_mgmt_rx`: EXT_INFO, 0x40, is
@@ -201,8 +205,9 @@ station is up, every 20 ms after). The facts and where they are from:
   (`ath10k_vdev_start_restart`; the mode by the channel as
   `chan_to_phymode`: 11g, 11a, channel 14's 11b), the AP's peer and its
   `PEER_MAP` (`ath10k_wait_for_peer_created`), `ath10k_peer_assoc_prepare`
-  for a legacy peer (auth, `need_ptk_4_way` with an RSN element, the
-  rates as `ath10k_mac_bitrate_to_rate`, 11a/b/g, listen interval 1),
+  (auth, `need_ptk_4_way` with an RSN element, the rates as
+  `ath10k_mac_bitrate_to_rate`, 11a/b/g, listen interval 1; HT and QoS:
+  stage 7b),
   `VDEV_UP` with the AID; the keys as `ath10k_set_key` for a station (the
   BSSID as the peer for both, pairwise index 0, the group key's index
   from the KDE), done when HTT's `SEC_IND` comes (`install_key_done`),
@@ -216,11 +221,11 @@ station is up, every 20 ms after). The facts and where they are from:
   message 4's TX completion (else the firmware would encrypt it); EAPOL
   that comes before the association's answer kept (wpa_supplicant's
   `pending_eapol_rx`: they come on different engines); the group key
-  handshake. CCMP for both ciphers, AKM PSK, no PMF (an AP that requires
-  it is skipped, one that offers it is joined without).
+  handshake. CCMP for both ciphers; the other AKMs (PSK-SHA256, SAE) and
+  PMF: stage 7d.
 - **802.11** (`wlan.c`): beacons and probe responses read; the probe
-  request's rates; open authentication; the association with the BSS's
-  rates and our RSN element (no WMM, no HT: 802.11a/b/g rates); native
+  request's rates; open authentication; the association with the rates
+  both have and our RSN element (HT and WMM: stage 7b); native
   Wi-Fi data frames (`ATH10K_HW_TXRX_NATIVE_WIFI`, the decapsulation INIT
   asks for: a 3-address header without QoS control, then LLC/SNAP) to and
   from Ethernet as `ath10k_htt_rx_h_undecap_nwifi` and
@@ -229,20 +234,22 @@ station is up, every 20 ms after). The facts and where they are from:
 
 Not as Linux, on purpose: the RX ring holds 256 buffers (Linux 2047), the
 engines 32 (CE1), 16 (CE2), 4 (the other receive engines) instead of
-filling them; 64 TX ids instead of 1056; the regulatory domain is not set
-(`ath10k_regd_update`'s `PDEV_SET_REGDOMAIN` needs ath's regulatory tables
-for the EEPROM's code, which SERVICE_READY reports and the console shows;
-the firmware keeps its own) and the channel list is the EU's (2.4 GHz
-1-13 at 20 dBm; 5 GHz 36-64 at 23 dBm and 100-140 at 30 dBm, passive and
-DFS from 52 on); no power save; no A-MSDU, no aggregation set up by the
-host; one network, no roaming.
+filling them; 64 TX ids instead of 1056; no A-MSDU, no aggregation set up
+by the host (the firmware does A-MPDU itself: `ath10k_ampdu_action`
+refuses mac80211's); no VHT (802.11ac: the WCN3990 has it; the
+association is HT only); one network, no roaming.
 
 **The tests on the PC** (`make -C tests/wifi`):
 
 - `crypto`: SHA-1, HMAC-SHA1 (RFC 2202), PBKDF2 (RFC 6070), the PMK (IEEE
   802.11 J.4.2), the PRF (J.3.2), AES-128 (FIPS 197), the key wrap (RFC
-  3394), and 200 random cases against OpenSSL; the RSN elements taken and
-  refused (TKIP group, SAE only, MFP required). 22 checks.
+  3394), and 200 random cases against OpenSSL; stage 7d's: SHA-256 (FIPS
+  180-2), HMAC-SHA256 (RFC 4231), HKDF (RFC 5869 A.1), AES-CMAC (RFC 4493),
+  the SHA-256 KDF and CMAC against OpenSSL, P-256 against OpenSSL's
+  prime256v1, SAE against IEEE 802.11-2020 J.10 (hunting and pecking: the
+  commit, KCK, PMK, PMKID; hash-to-element: PT and the PWE), the RSN
+  choice (with `pmf=off`), BIP. 57 checks.
+- `regd`: the regulatory domain (stage 7a). 28 checks.
 - `station`: the whole driver against a simulated WCN3990 (the engines'
   registers as `test.c` has them; HTC, WMI-TLV and HTT as above; CCMP with
   the keys the driver installed: OpenSSL's AES-CCM) and an access point
@@ -252,16 +259,203 @@ host; one network, no roaming.
   installed keys equal to the AP's (frames decrypt both ways), lwIP above
   the driver takes a DHCP lease (192.168.77.100), answers a ping, takes a
   new group key (the group key handshake) and answers an ARP broadcast
-  encrypted with it, is deauthenticated and joins again. 401 checks;
-  `station wrongpsk` (management frames by HTT; message 2's MIC wrong at
-  the AP, never up, tried again), `station noap` (scanning again and
-  again).
+  encrypted with it, is deauthenticated and joins again; with stage 7 an
+  HT40 WMM AP, the power save's parameters and the radio's doze. About 900
+  checks; `station legacy` (no HT, no WMM, `powersave=off`), `station
+  uapsd` (HT20, U-APSD, admission control on VO), `station sae`, `h2e`,
+  `mixed`, `psk256` (stage 7d), `station wrongpsk` (management frames by
+  HTT; message 2's MIC wrong at the AP, never up, tried again), `station
+  noap` (scanning again and again).
 - `qemu`: the kernel's side in QEMU (the Pro1X's tree from
   `tests/power/mkdtb.py --wifi`: a `qcom,wcn3990-wifi` node whose register
   window is RAM, the fake modem's WLFW, the network in the initrd): the
   network read, WLAN_CFG and WLAN_MODE over the fake QRTR, 4 MiB of
   uncached DMA memory below 4 GiB, the engines set up, then waiting for
   READY, which no firmware sends there.
+
+### Stage 7: the refinements, on the PC
+
+Four pieces on top of stages 4-6, each after the Linux code (7.1, the
+Pro1X's tree) or the wpa_supplicant/hostapd code (2.11, BSD licence,
+w1.fi) it follows; the standard texts named are IEEE 802.11-2020 and the
+RFCs. The network's file (`tools/pro1x-kexec.sh -w FILE`) has, besides
+`ssid=` and `psk=` (the passphrase serves WPA2 and WPA3 alike; 64 hex
+digits are a PMK: WPA2 only) and `bssid=`:
+
+| key | values | default |
+| --- | --- | --- |
+| `country=` | two capital letters (ISO 3166), `00` for none | `AT` |
+| `powersave=` | `on`, `off` (as `iw set power_save off`) | `on` (cfg80211's `CONFIG_CFG80211_DEFAULT_PS=y`) |
+| `uapsd=` | `on` (all four ACs), `off` | `off` (mac80211's `IEEE80211_DEFAULT_UAPSD_QUEUES` is 0) |
+| `pmf=` | `on`, `off` (as `ieee80211w=0`), `fw` (also the firmware's peer PMF flag) | `on` (PMF whenever the AP is capable: `ieee80211w=1`) |
+
+**7a, the regulatory domain** (`kernel/modem/regd.c`; ath's `regd.c`,
+ath10k's `mac.c`, cfg80211's `reg.c`):
+
+- The EEPROM's code is SERVICE_READY's (`hal_reg_capabilities.eeprom_rd`,
+  16 bits: `ath10k_mac_init_rd`, no ACPI on ARM). The Pro1X's is 0x406c
+  (Linux's log on the phone: `ath: EEPROM regdomain: 0x406c`, `Country
+  alpha2 being used: 00`, `Regpair used: 0x6c`): the worldwide-roaming
+  flag and WORC_WORLD, a world domain.
+- `__ath_regd_init`: 0x8000 alone becomes 0x64, a code that is neither
+  one of ath's countries nor of its domain pairs is refused (Linux: no
+  wiphy; here: `regulatory domain X: ...`, the driver stops), 0 means the
+  United States; the pair gives `PDEV_SET_REGDOMAIN`'s domain and its
+  conformance test limits (0x6c: `NO_CTL` both), sent after the channel
+  list as `ath10k_regd_update` does (`WMI_UNINIT_DFS_DOMAIN`: the kernel
+  has no `CONFIG_ATH10K_DFS_CERTIFIED`).
+- The channels (ath10k's 14 and 27, at most 30 dBm): a world domain's own
+  rules (0x6c: 1-11 active, 12-13 passive, 5 GHz 5140-5360 and 5460-5860
+  MHz passive at 30 dBm) as the base, the radar range 5260-5700 MHz
+  always passive (`ath_reg_apply_radar_flags`; India 5500-5700); a
+  country's EEPROM: ath's 0x64, then the country's own rules replace it
+  (the driver's hint, `REGULATORY_STRICT_REG`). `country=` comes on top
+  as a user's hint does: cfg80211 adds its flags and takes the smaller
+  power; ath itself does not follow it (`CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS`
+  is off), so the domain pair stays the EEPROM's. A rule counts for a
+  channel when the channel's 20 MHz fit it (or two adjacent rules:
+  `handle_channel_adjacent_rules`), AUTO-BW over contiguous rules, HT40+/-
+  where the channel 20 MHz above/below is usable (`reg_process_ht_flags_channel`);
+  SERVICE_READY's 5 GHz range limits it (`ath10k_mac_update_channel_list`).
+- The countries' rules are wireless-regdb's `regulatory.db` (2026.09.03,
+  the file cfg80211 reads; the 2-6 GHz rules), ath's tables are Linux's
+  `regd_common.h`: both in `kernel/modem/regdb.c`, written by
+  `tools/gen-regdb.py LINUX_TREE REGULATORY_DB OUT`.
+- The phone with AT: 39 channels: 1-11 active at 20 dBm, 12-13 passive,
+  14 off; 36-48 passive at 23 dBm, 52-64 radar at 20 dBm, 100-140 radar at
+  26 dBm, 144 radar at 13 dBm (across AT's 5470-5725 and 5725-5875 MHz),
+  149-169 passive at 13 dBm, 173 off. (Linux on the phone could not load
+  its `regulatory.db`: `cfg80211: loaded regulatory.db is malformed or
+  signature is missing/invalid`; it runs on 0x6c's rules alone, as
+  `country=00` here.)
+- Not done: an AP's Country element as a hint (Linux follows it for a
+  world domain), beacon hints (a beacon seen makes a passive channel
+  active), regdb's WMM rules (ETSI's limits on the EDCA parameters).
+
+**The MAC address**: the Pro1X's firmware reports none in READY (Linux:
+`invalid MAC address; choosing random`, its `wlan0` 16:45:a7:...): a
+random locally administered one, as `ath10k_mac_register`'s
+`eth_random_addr`, new at every start.
+
+**7b, 802.11n and WMM** (`wifi.c`, `wlan.c`, `wmi.c`; mac80211's
+`mlme.c`, `ht.c`, `util.c`, `wme.c`, cfg80211's `util.c`, ath10k's
+`mac.c`, `wmi-tlv.c`, `htt_tx.c`, `htt_rx.c`):
+
+- Our HT capabilities as `ath10k_get_ht_cap` makes them from
+  SERVICE_READY's `ht_cap_info` (short GI 20/40, STBC, LDPC, dynamic
+  SMPS), the RF chains (at most the WCN3990's `max_spatial_stream` 4: the
+  MCS sets), A-MPDU 64K, density 8 us; in the association request as
+  `ieee80211_add_ht_ie` changes them: no 40 MHz when the regulatory
+  domain has no HT40 in the AP's direction, SM power save off.
+- HT only with WMM in the BSS, both HT elements, and the HT Operation's
+  primary channel the BSS's (`ieee80211_determine_ap_chan`); 40 MHz by its
+  secondary channel's offset where the channel allows it, else 20 MHz;
+  `VDEV_START`'s mode (`chan_to_phymode`: 11ng/11na HT20/HT40) and its
+  center 10 MHz off.
+- `PEER_ASSOC` with the AP's HT capabilities (its association answer's,
+  ours masked: `ieee80211_ht_cap_ie_to_sta_ht_cap`) as
+  `ath10k_peer_assoc_h_ht` fills them (HT, 40 MHz, LDPC, STBC, the rate
+  control's flags, the largest A-MPDU, the density, the MCS list, the
+  streams), QoS when the answer has a WMM parameter element (`sta->wme`),
+  the mode (`_h_phymode`); then the peer's SM power save, the peer
+  statistics, `VDEV_UP`, the dummy peer parameter (`ath10k_bss_assoc`).
+- WMM: the information element in the request (QoS info 0, or the U-APSD
+  queues); the AP's parameters from its association answer
+  (`_ieee80211_sta_wmm_params`: AIFSN at least 2, CW from ECW, TXOP;
+  without them `ieee80211_set_wmm_default` with QoS), each AC through
+  `ath10k_conf_tx`: `VDEV_SET_WMM_PARAMS` (all four ACs in BE, BK, VI, VO
+  order, a dummy word before each, TXOP in us) and the AC's power save
+  parameters (`ath10k_conf_tx_uapsd`); at the vdev's creation the defaults
+  without QoS (`ieee80211_do_open`).
+- The frames: native Wi-Fi without QoS control (`ath10k_tx_h_nwifi`
+  takes it out), the TID in HTT's descriptor: with QoS the 802.1d
+  priority (`cfg80211_classify8021d`: the DSCP's top three bits and RFC
+  8325's exceptions; EAPOL 7, the control port), lower while the AP wants
+  admission for it (`ieee80211_downgrade_queue`); without QoS the non-QoS
+  TID 16. Received QoS headers padded to 4 (`ath10k_htt_rx_nwifi_hdrlen`).
+- Not done: VHT (802.11ac), A-MSDU, the 20/40 BSS coexistence.
+
+**7c, power save** (`wifi.c`, `kernel/net/wifi_dev.c`, `kernel/power.c`,
+`kernel/arch/arm64/psci.c`; ath10k's `ath10k_mac_vif_setup_ps`,
+`_recalc_ps_wake_threshold`, `_recalc_ps_poll_count`,
+`ath10k_conf_tx_uapsd`, `ath10k_add_interface`,
+`ath10k_mac_op_assign_vif_chanctx`; mac80211's `ieee80211_recalc_ps_vif`,
+`ieee80211_powersave_allowed`):
+
+- The firmware's: at the vdev's creation the RX wake policy WAKE, the TX
+  wake threshold ALWAYS, the PS-Poll count NO_MAX; at its start the PS
+  mode off; once the port is authorized the inactivity time (the beacon
+  interval in ms: mac80211's `dynamic_ps_timeout` stays 0 for
+  `SUPPORTS_DYNAMIC_PS` hardware, ath10k takes the beacon interval: 102
+  ms for 100 TU) and the PS mode on; at a disconnection off while the vdev
+  is still started. The radio then sleeps between beacons; PS-Poll and
+  null data frames, the TIM and the DTIM are the firmware's.
+- U-APSD with `uapsd=on`: QoS info 0x0f in the WMM element, all ACs'
+  delivery and trigger bits (0xff), the RX wake policy POLL_UAPSD, the TX
+  wake threshold NEVER, the PS-Poll count 3, the firmware's auto trigger
+  off (`STA_UAPSD_AUTO_TRIG`, when SERVICE_READY has service 27 or 28).
+- The host's: polled (the default) every 10 ms on the way up, then every
+  20 ms while frames came in the last second, 200 ms up to 10 s without,
+  1 s after (`wifi_poll_ms`; what comes meanwhile waits in the AP and the
+  firmware: a packet after a quiet time waits up to a second). With
+  `kolibri.wifi=irq`: no polling, a look once a second when idle; and
+  while frames came in the last second no SoC sleep (`power_hold_awake`:
+  `psci_idle` takes the cluster's GDHS, 40000022, instead of its collapse
+  41000044 with the MPM handed over), because in the SoC's sleep the GIC
+  is off and the copy engines' SPIs 358-369 are no MPM pins (the SM6115's
+  `qcom,mpm-pin-map` has none for them); a level interrupt that comes
+  then waits at the engine for the next wake-up by time.
+
+**7d, WPA3-Personal and PMF** (`sae.c`, `ecc.c`, `crypto.c`, `wpa.c`,
+`wifi.c`, `wlan.c`; hostapd/wpa_supplicant 2.11's `src/common/sae.c`,
+`dragonfly.c`, `wpa_common.c`, `src/rsn_supp/wpa.c`, `wpa_ie.c`,
+`wpa_supplicant/sme.c`, `wpa_supplicant.c`; IEEE 802.11-2020 12.4 (SAE),
+12.5.4 (BIP), 12.6.11 (SA Query), Annex J.10 (SAE's test vectors); RFC
+7664 (Dragonfly); mac80211 and ath10k for the PMF frames):
+
+- The profile: `key_mgmt=SAE WPA-PSK-SHA256 WPA-PSK`, `ieee80211w=1`,
+  `sae_pwe=2`. The choice as `wpa_supplicant_set_suites`: SAE before
+  PSK-SHA256 before PSK (an AP of WPA2 and WPA3, the transition mode,
+  gets SAE), PMF when the AP is capable (MFPC) with BIP-CMAC-128 (an AP
+  that requires PMF with another group management cipher is skipped),
+  hash-to-element when the AP's RSNX element has it, else hunting and
+  pecking; an H2E-only BSS (the membership selector 123) without it in
+  its RSNX element is skipped.
+- SAE, group 19 only (P-256, the group WPA3 requires; the AP's status 77
+  ends the attempt): hunting and pecking with at least 40 rounds, a stub
+  password after the find and the blinded residue test
+  (`dragonfly_is_quadratic_residue_blind`); hash-to-element with PT once
+  per SSID and password, the simplified SWU map (z = -10), PWE = val PT;
+  the commit (status 126 for H2E), the AP's anti-clogging token (status
+  76) sent back as it is or in its container (93), the confirm, KCK, PMK,
+  PMKID (not put into the association: `sae_pmkid_in_assoc` 0).
+- The association: the RSN element with the AKM (8 or 6), MFPC, PMKID
+  count 0 and BIP-CMAC-128; the RSNX element (H2E) with SAE; message 2
+  carries both, message 3's RSNX element must be the beacon's. EAPOL-Key
+  version 2 (PSK), 3 (PSK-SHA256), 0 (SAE: "AKM-defined"): the SHA-256 KDF
+  for the PTK, AES-128-CMAC MICs; the IGTK from its KDE (key 4 or 5, the
+  IPN).
+- PMF: ath10k does BIP in software (`ath10k_set_key` returns 1 for
+  AES-CMAC), so the IGTK stays in the driver; the firmware gets the peer
+  PMF flag only with `ATH10K_FW_FEATURE_MFP_SUPPORT`, which the Pro1X's
+  `firmware-5.bin` does not have (Linux's log: `features
+  wowlan,mgmt-tx-by-reference,non-bmi`): no flag, as Linux (`pmf=fw` sets
+  it, for a test). Robust management frames to the AP (SA Query) carry
+  mac80211's CCMP header with our own PN (`IEEE80211_KEY_FLAG_GENERATE_IV_MGMT`)
+  and room for the MIC (ath10k's WMI path adds it), the firmware
+  encrypts them; from the AP the firmware hands them over decrypted, with
+  the Protected bit, the CCMP header and the MIC (ath10k's `wmi.c`), the
+  PN checked against the last. A unicast deauthentication or
+  disassociation counts only protected; an unprotected one is dropped and
+  an SA Query goes to the AP (`sme_event_unprot_disconnect`: every 201 ms,
+  1000 ms at most; answered: still associated; no answer: disconnected).
+  A group one counts only with a valid MMIE (BIP-CMAC-128, the IPN above
+  the last). The AP's SA Queries are answered
+  (`ieee80211_process_sa_query_req`); an association refused for now
+  (status 30) is tried again after its Timeout Interval's comeback time.
+- Not done: SAE groups 20 and 21, password identifiers (only for the test
+  vectors), SAE-PK, the rejected groups element, FT, OCV, beacon
+  protection.
 
 ## The device test (prepared, not run: the phone until 2026-10-31)
 
@@ -291,6 +485,7 @@ each step ending with the watchdog's reset into the boot menu, then
    ```
    ssid=<the network's name>
    psk=<its passphrase>
+   country=AT
    ```
 
    `tools/pro1x-kexec.sh -m -w /root/kolibri/wifi.conf
@@ -309,26 +504,34 @@ each step ending with the watchdog's reset into the boot menu, then
    wifi: copy engines up, waiting for HTC READY
    wifi: HTC ready: N credits of N bytes (one used), N endpoints
    wifi: HTC: HTT on endpoint N (CE4/CE1), WMI on N (CE3/CE2)
-   wifi: SERVICE_READY: firmware build ..., ... regulatory domain X; RX full reorder yes, management frames by WMI
+   wifi: SERVICE_READY: firmware build ..., ... regulatory domain 406c; RX full reorder yes, management frames by WMI
    wifi: host memory N: N KiB at ...
-   wifi: READY: the MAC address xx:xx:..., ABI 53
-   wifi: HTT 3.x
-   wifi: scanning 32 channels for "<SSID>"
+   wifi: READY: the MAC address 00:00:00:00:00:00, ABI 53
+   wifi: invalid MAC address; choosing random xx:xx:...
+   wifi: HTT 3.96
+   wifi: regulatory domain: EEPROM 406c (world, ath's "00"), domain 6c, CTL ff/ff (2/5 GHz); country AT: 39 channels, 28 passive, 16 radar
+   wifi: scanning 39 channels for "<SSID>"
    wifi: joining xx:xx:... on NNNN MHz (channel N, SNR N, ...)
+   wifi: WPA2-PSK                                  (or WPA3-SAE (...), management frame protection)
+   wifi: HT20, WMM                                 (or HT40, no HT; U-APSD offered, not asked for)
    wifi: the AP's peer, id N
-   wifi: authenticated (open system)
+   wifi: authenticated (open system)               (WPA3: SAE commit out, SAE confirm out, authenticated (SAE))
    wifi: associated, AID N
+   wifi: peer HT20 short GI, 11n, N streams, N HT rates; QoS on
    wifi: 4-way handshake: message 2 out
    wifi: 4-way handshake: message 4 out
    wifi: the pairwise key installed
    wifi: the group key N installed
-   wifi: up: "<SSID>" (xx:xx:...), WPA2-PSK CCMP
+   wifi: up: "<SSID>" (xx:xx:...), WPA2-PSK CCMP   (or WPA3-SAE CCMP, PMF)
+   wifi: power save on (inactivity 102 ms, PS-Poll/null data)
    net: wcn3990, MAC xx:xx:..., DHCP
    net: 192.168.x.y, mask ..., gateway ..., DNS ...
    wifi: up; N WMI commands, ... (at the lifetime's end)
    ```
 
-   The MAC address READY reports should be the one Linux's `wlan0` had.
+   READY's MAC address is expected to be zero (Linux chose a random one
+   on the phone); the random one changes at every start (an AP with a MAC
+   filter refuses it; DHCP hands out a new lease).
 3. With the network: the same with `kolibri.nettest=80` added (the
    kernel's self test: a DNS lookup of example.com, an HTTP request to the
    gateway's port 80; a router without a web server answers with an
@@ -337,6 +540,28 @@ each step ending with the watchdog's reset into the boot menu, then
    polling (the engines' SPIs 358-369 level-triggered; a storm would end
    in the watchdog's reset at about 32 s after `copy engines up`: then
    polling stays).
+5. WPA3, if the AP offers it (WPA3-only or WPA2/WPA3): step 2 as it is;
+   expected `wifi: WPA3-SAE (hash-to-element)` or `(hunting and pecking)`,
+   `management frame protection`, `SAE commit out (group 19, ...)`,
+   possibly `the AP asks for its anti-clogging token: commit again`, `SAE
+   confirm out`, `authenticated (SAE)`, `the IGTK N kept (BIP in software,
+   as ath10k)`, `up: ... WPA3-SAE CCMP, PMF`. Then, with the AP's
+   administration: a reboot of the AP while the phone is up should give
+   `an unprotected disconnection: an SA Query to the AP`, then `SA Query:
+   no answer (the AP lost us): disconnected` and a new join. Failing:
+   `the AP's confirm is wrong (the password?)`, `SAE: the AP's commit
+   refused`; with PMF the risks below; `pmf=fw`, then `pmf=off` (WPA2
+   only for an AP that requires PMF) in the file to tell them apart.
+6. Power: step 2 with `kolibri.powertest=10` (the cable out) and nothing
+   running: the power lines (docs/power.md) with Wi-Fi up, the wake-ups
+   about 1/s more than without (the 1 s polling once idle, lwIP's
+   timers); then with `kolibri.wifi=irq`: `SoC sleep held N` only right
+   after traffic, `vlow`/`vmin` counts moving while idle. A ping from the
+   PC (`ping` to the leased address) still answered, with up to 1 s
+   delay after a quiet time. `powersave=off` for comparison (the battery
+   current in the power lines).
+7. Other countries and bands: `country=00` (0x6c's rules alone, 5 GHz all
+   passive), a 5 GHz AP (36-48: `HT40` if the AP uses 40 MHz).
 
 Where it can fail, and what the console then says:
 
@@ -362,12 +587,30 @@ Where it can fail, and what the console then says:
 - **The firmware's state**: `wlfw: the firmware is not ready` (the modem
   restarted under Linux): the board data path, not done.
 - **The network**: `"<SSID>" not found (N networks seen)` (the channel
-  list, a hidden SSID: the scan probes for it), `skipped: ...` (TKIP,
-  SAE/WPA3, MFP required), `EAPOL dropped: message 3's MIC is wrong (the
-  PSK?)`, `association refused (status N)` (an N-only AP: no HT here).
-- **The regulatory domain**: not set; if the firmware's own refuses
-  channels or power, SERVICE_READY's `regulatory domain X` says which code
-  the board has, for the table to be added.
+  list, a hidden SSID: the scan probes for it, but not on passive
+  channels: with AT 12-13 and all of 5 GHz are passive), `skipped: ...`
+  (TKIP, 802.1X, PMF with a cipher other than BIP-CMAC-128, PMF required but `pmf=off`), `EAPOL
+  dropped: message 3's MIC is wrong (the PSK?)`, `association refused
+  (status N)`.
+- **The regulatory domain**: `PDEV_SET_REGDOMAIN` has no answer; a
+  firmware that does not like 0x6c's pair or the channel list's powers
+  would show it as no beacons in the scan (`not found (0 networks seen)`):
+  then `country=00`, which leaves the list as 0x6c's alone.
+- **HT**: `association refused (status N)` right after `HT40` or `HT20`:
+  the AP refuses our HT capabilities; `peer legacy` although the AP has HT:
+  its answer lacked the elements.
+- **PMF on this firmware**: without the peer PMF flag (as Linux here) the
+  firmware may not encrypt our protected SA Query frames or decrypt the
+  AP's: then the AP's SA Queries go unanswered (an AP disconnects us after
+  its own SA Query timeout: `deauthenticated by the AP` with reason 7 or
+  disassociation after a minute or so) or our SA Queries are never
+  answered (`SA Query: no answer` after any spoofed or genuine
+  unprotected deauthentication). Try `pmf=fw` (the flag), then `pmf=off`.
+- **SAE's time**: hunting and pecking takes some ms in the tick's context
+  (40 rounds of the residue test, three scalar multiplications); an AP
+  with a short SAE timeout (hostapd: 1 s per message) should not mind.
+- **Power save**: a firmware that loses frames in PS (pings unanswered
+  after a quiet time, `restarts` growing): `powersave=off`.
 
 ## The stack: lwIP in the kernel
 

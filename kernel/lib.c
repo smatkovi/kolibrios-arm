@@ -2,15 +2,14 @@
 #include <stdarg.h>
 #include "kernel.h"
 
-/* AArch64: arch/arm64/string.S's (unless built with SIMD=c); these then
- * as memset_c, memcpy_c, memmove_c for kolibri.bench (bench.c) */
-#if defined(__aarch64__) && !defined(SIMD_C)
+/* arch/<arch>/string.S's (unless built with SIMD=c); these then as
+ * memset_c, memcpy_c (and on AArch64 memmove_c) for kolibri.bench
+ * (bench.c). ARMv7's memmove stays C, on string.S's memcpy. */
+#ifndef SIMD_C
 #define memset memset_c
 #define memcpy memcpy_c
-#define memmove memmove_c
 void *memset_c(void *d, int c, size_t n);
 void *memcpy_c(void *d, const void *s, size_t n);
-void *memmove_c(void *d, const void *s, size_t n);
 #endif
 void *memset(void *d, int c, size_t n)
 {
@@ -42,7 +41,13 @@ void *memcpy(void *d, const void *s, size_t n)
 	while (n--) *dp++ = *sp++;
 	return d;
 }
+#undef memset
+#undef memcpy
 
+#if defined(__aarch64__) && !defined(SIMD_C)
+#define memmove memmove_c
+void *memmove_c(void *d, const void *s, size_t n);
+#endif
 void *memmove(void *d, const void *s, size_t n)
 {
 	u8 *dp = d;
@@ -52,8 +57,6 @@ void *memmove(void *d, const void *s, size_t n)
 	while (n--) dp[n] = sp[n];
 	return d;
 }
-#undef memset
-#undef memcpy
 #undef memmove
 
 int memcmp(const void *a, const void *b, size_t n)
@@ -179,6 +182,25 @@ int kprintf(const char *fmt, ...)
 	vkprintf(fmt, ap);
 	va_end(ap);
 	return 0;
+}
+
+/* into a buffer instead of the console (kolibri.bench's lines, also for
+ * the screen): at most size - 1 characters, terminated */
+static char *sb;
+static u32 sb_len, sb_size;
+static void sb_putc(char c) { if (sb_len + 1 < sb_size) sb[sb_len++] = c; }
+
+int kvsnprintf(char *buf, u32 size, const char *fmt, va_list ap)
+{
+	void (*keep)(char) = capture;
+	sb = buf;
+	sb_len = 0;
+	sb_size = size;
+	capture = sb_putc;
+	vkprintf(fmt, ap);
+	capture = keep;
+	if (size) buf[sb_len] = 0;
+	return sb_len;
 }
 
 /* the panic's text, also for the screen */

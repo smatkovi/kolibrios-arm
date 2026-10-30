@@ -134,6 +134,18 @@ bool psci_idle(u64 idle_ticks)
 	u32 us = us64 > 0xffffffffu ? 0xffffffffu : (u32)us64;
 	int i = power_dt_choose(&pdt, us, cluster_ok, timer_bcast_ok());
 	if (i < 0) return false;
+	/* the SoC's sleep held off by a device (power_hold_awake): the state
+	 * for an idle just short of the deepest one's residency */
+	if (pdt.st[i].cluster && !power_soc_sleep_ok()) {
+		bool deep = true;
+		for (int j = 0; j < pdt.nstates; j++)
+			if (pdt.st[j].cluster && pdt.st[j].min_us > pdt.st[i].min_us) deep = false;
+		if (deep) {
+			i = power_dt_choose(&pdt, pdt.st[i].min_us - 1, cluster_ok, timer_bcast_ok());
+			pstats.st_held++;
+			if (i < 0) return false;
+		}
+	}
 	const struct idle_state *s = &pdt.st[i];
 	/* a core state with the timer stopping: the broadcast frame wakes it
 	 * (a cluster state goes through the core's) */

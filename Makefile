@@ -8,8 +8,10 @@
 #                              (build/arm64/kernel.bin, an arm64 Image for kexec)
 #   make LOOK=classic          KolibriOS's own panel and menu instead of the
 #                              Hildon shell
-#   make PLATFORM=arm64 SIMD=c the AArch64 kernel without its assembler's
-#                              drawing loops and string functions (docs/asm.md)
+#   make SIMD=c                the kernel without its assembler's drawing loops
+#                              and string functions (NEON; docs/asm.md)
+#   make CMDLINE="..."         arguments built into the kernel, before the boot
+#                              loader's (e.g. PLATFORM=n950 CMDLINE=kolibri.bench)
 #
 # Needs the Arm GNU toolchain (arm-none-eabi-gcc, its libgcc: the Cortex-A8
 # divides in software) and python3; QEMU's qemu-system-arm to run it.
@@ -45,7 +47,7 @@ KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgenera
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
 	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S arch/arm64/fpu.c power.c \
 	fdt.c platform/virt.c platform/virtio_input.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
-	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c modem/regd.c modem/regdb.c \
+	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c modem/regd.c modem/regdb.c modem/ecc.c modem/sae.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
 # the hot loops in assembler (arch/arm64/blit.S with NEON, string.S);
 # SIMD=c builds the kernel with their C versions only (kernel/blit.c,
@@ -73,10 +75,22 @@ ifeq ($(PLATFORM),n950)
 KERNEL_BASE := 0x80008000
 KCFLAGS += -DPLATFORM_N950
 else
-KERNEL_BASE := 0x70100000
+# QEMU loads a raw image (kernel.bin) 64 KiB into the RAM, as a Linux
+# zImage, with its ATAGs (-append: the command line); kernel.elf there too
+KERNEL_BASE := 0x70010000
 endif
-KSRC := $(KCOMMON) arch/armv7/start.S arch/armv7/mmu.c arch/armv7/trap.c \
+KSRC := $(KCOMMON) arch/armv7/start.S arch/armv7/mmu.c arch/armv7/trap.c arch/armv7/fpu.c arch/armv7/vfp.S \
 	platform/realview.c platform/n950.c
+# the hot loops in assembler with NEON (arch/armv7/blit.S, string.S;
+# kolibri.bench's clock, arch/armv7/cycles.c), as on AArch64: SIMD=c
+# builds the kernel with their C versions only, kolibri.simd=c chooses C
+# at the start; the programs' VFP and NEON are lazy either way (fpu.c)
+SIMD ?= neon
+ifeq ($(SIMD),c)
+KCFLAGS += -DSIMD_C
+else
+KSRC += arch/armv7/blit.S arch/armv7/string.S arch/armv7/cycles.c bench.c
+endif
 KLINK = $(CC32) $(LDFLAGS) -T kernel/arch/armv7/kernel.ld -Wl,--defsym,KERNEL_BASE=$(KERNEL_BASE) $(KOBJ) $(LIBGCC) -o $@
 endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
@@ -111,10 +125,15 @@ RD_FILES := $(foreach a,$(APPS) $(CAPPS),$(RD_$(a)))
 
 all: $(B)/kernel.elf $(B)/kernel.bin
 
-$(B)/%.o: kernel/%.c kernel/include/*.h kernel/modem/*.h lib/kos_modem.h kernel/arch/$(ARCH)/arch.h | dirs
+$(B)/%.o: kernel/%.c kernel/include/*.h kernel/modem/*.h lib/kos_modem.h kernel/arch/$(ARCH)/arch.h $(B)/flags | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
-$(B)/%.o: kernel/%.S | dirs
+$(B)/%.o: kernel/%.S $(B)/flags | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
+
+# the compiler's flags in a file, written when they change (SIMD=c and
+# back): the kernel's objects follow them
+$(B)/flags: FORCE | dirs
+	@[ "$$(cat $@ 2> /dev/null)" = "$(KCFLAGS)" ] || echo "$(KCFLAGS)" > $@
 
 $(LWIP)/core/init.c:
 	tools/fetch-lwip.sh
@@ -127,6 +146,14 @@ $(B)/net/%.o: kernel/net/%.c kernel/net/*.h kernel/net/arch/cc.h kernel/include/
 $(B)/lwip/%.o: $(LWIP)/%.c kernel/net/lwipopts.h kernel/net/arch/cc.h | dirs
 	@mkdir -p $(dir $@)
 	$(KCC) $(KCFLAGS) -Wno-unused-but-set-variable -c $< -o $@
+
+# the arguments built in (CMDLINE): a header, written when they change
+CMDLINE ?=
+$(B)/cmdline.h: FORCE | dirs
+	@printf '#define KOLIBRI_CMDLINE "%s"\n' '$(subst ',,$(subst ",\",$(CMDLINE)))' > $@.new
+	@cmp -s $@.new $@ && rm $@.new || mv $@.new $@
+$(B)/main.o: kernel/main.c $(B)/cmdline.h kernel/include/*.h kernel/arch/$(ARCH)/arch.h $(B)/flags | dirs
+	$(KCC) $(KCFLAGS) -include $(B)/cmdline.h -c $< -o $@
 
 $(B)/rd.o: kernel/rd.S $(A)/ramdisk.img | dirs
 	$(KCC) $(KCFLAGS) -DRAMDISK='"$(A)/ramdisk.img"' -c $< -o $@

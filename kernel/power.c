@@ -52,11 +52,12 @@ static void line(const char *what, const struct power_stats *a, const struct pow
 	u64 idle = b->idle_count - a->idle_count;
 	u32 permille = elapsed ? (u32)(idle * 1000 / elapsed) : 0;
 	kprintf("power: %s%s%u s: %u wake-ups (%u.%u/s), timer %u, other %u, idle %u.%u %%, "
-		"wfi %u, core %u, cluster %u, refused %u, resumed %u\n",
+		"wfi %u, core %u, cluster %u, refused %u, resumed %u%s",
 		what, *what ? " " : "", (u32)((elapsed + timer_freq() / 2) / timer_freq()), w, r / 10, r % 10, b->irq_timer - a->irq_timer,
 		b->irq_other - a->irq_other, permille / 10, permille % 10, b->st_wfi - a->st_wfi,
 		b->st_core - a->st_core, b->st_cluster - a->st_cluster, b->st_fail - a->st_fail,
-		b->resumed - a->resumed);
+		b->resumed - a->resumed, b->st_held != a->st_held ? "" : "\n");
+	if (b->st_held != a->st_held) kprintf(", SoC sleep held %u\n", b->st_held - a->st_held);
 	/* the deadlines that woke it, by who (the next tick: the 100 Hz
 	 * tick while something is about to happen) */
 	static const char *const name[WHY_N] = { "tick", "tasks", "platform", "modem", "screen",
@@ -111,6 +112,20 @@ void power_tick(void)
 		if (plat_power_report) plat_power_report(2);
 		minutes = 0;
 	}
+}
+
+static u32 awake_until;
+static bool awake_set;
+
+void power_hold_awake(u32 until)
+{
+	if (!awake_set || (s32)(until - awake_until) > 0) awake_until = until;
+	awake_set = true;
+}
+
+bool power_soc_sleep_ok(void)
+{
+	return !awake_set || (s32)(ticks - awake_until) >= 0;
 }
 
 u32 power_next(void)

@@ -87,9 +87,10 @@ input there).
 | windows, skins, buttons, drawing, text (6x10 and 8x16 fonts), lines, images | runs (QEMU) |
 | Hildon's look: skin 48.8, work area 48.5/48.6, layers 18.25, 18.22, 72.1, reading the screen 36 | runs (QEMU) |
 | keyboard (PS/2 set 2 → set 1), mouse | runs (QEMU) |
-| ramdisk `/sys` (= `/rd/1`): function 70 read, folder, information, start | runs (QEMU) |
-| function 68 heap | allocates, does not free yet |
-| threads (function 51), IPC (60), shared memory, drivers, files that write | not yet |
+| files (function 70, all subfunctions; 30, the current folder): `/sys` = `/rd/1` the ramdisk as folders, writable (copy on write), `/tmp0/1` a RAM disk, on AArch64 the Linux tree; all in RAM (`docs/apps.md`) | runs (QEMU) |
+| function 68 heap | allocates; programs' C library frees and reuses (`lib/libc`) |
+| keyboard in scan codes (66), layouts (26.2), images with a palette (65), the clipboard (54), the wheel, serial ports (68.16 SERIAL) | runs (QEMU) |
+| threads (function 51), IPC (60), shared memory, loadable drivers and libraries (68.19), storage (eMMC, UFS, SD) | not yet |
 | N950: UART3, interrupts, timer, the display as the boot loader left it | written, **not tried on the device** |
 | N950: I2C, keyboard (TWL4030 keypad), touch screen (maXTouch) | written, **not tried on the device** |
 | N950: clock (TWL4030), battery | not yet |
@@ -111,7 +112,9 @@ The system functions done are in `kernel/syscall.c`; the others return
 In C, against `lib/kos.h` (the system functions as inline functions)
 and `lib/crt0.S` (the header and the start). KolibriOS's own programs
 are mostly assembler or C--, which only produce x86 code; programs in C
-can be recompiled. Programs in ARM assembler, KolibriOS's way, with
+can be recompiled. Four of them are here, with their libraries
+(console, box_lib, libini) in C, linked into the programs:
+`docs/apps.md`. Programs in ARM assembler, KolibriOS's way, with
 FASMARM (the flat assembler for ARM) and `lib/kos.inc` (`mcall`, the
 header, KolibriOS's names): `docs/asm.md`.
 
@@ -129,7 +132,11 @@ header, KolibriOS's names): `docs/asm.md`.
 | `messenger` | WhatsApp through Yappari's daemon (a Linux program, function 101): its state, linking by QR code (`lib/qr.h`); the chats next (`docs/messengers.md`) |
 | `hello` | in assembler (FASMARM): a window, two buttons, the clicks and the last key (`docs/asm.md`) |
 | `asmclock` | in assembler: a digital clock, its seconds bar coloured with NEON |
-| `sysbench`, `fptest` | tests: the system call and the task switch timed; the programs' FP/SIMD registers kept (`docs/asm.md`) |
+| `shell` | KolibriOS's command line shell, from its own C sources (`docs/apps.md`) |
+| `terminal` | KolibriOS's terminal on a serial port, translated to C |
+| `kfar` | Kolibri Far, KolibriOS's two-panel file manager, translated to C |
+| `t_edit` | KolibriOS's text editor with syntax colouring, translated to C |
+| `sysbench`, `fptest`, `fstest` | tests: the system call and the task switch timed; the programs' FP/SIMD registers kept (`docs/asm.md`); the file systems and the other functions the ported programs use |
 
 `apps/autorun` lists what the kernel starts.
 
@@ -210,3 +217,13 @@ Linux programs; `tools/signal-host` is AGPL-3.0, as presage and libsignal):
 
 GPL 2 (`LICENSE`), as KolibriOS. The fonts are the Linux kernel's 8x16
 and 6x10 console fonts (GPL 2).
+
+The ported programs and libraries are KolibriOS's (GPL 2), fetched by
+`tools/fetch-kolibrios.sh`, and their translations to C are derived
+from them: the shell by Pavel "Albom" Mamontov and the KolibriOS team
+(Siemargl, Coldy, Leency, rgimad and others), terminal by hidnplayr,
+kfar and the console library by diamond (Evgeny Grechnikov), t_edit by
+IgorA (Igor Afanasiev), box_lib by Alexey Teplov (Lrz), Marat Zakiyanov
+(Mario79), Evtikhov Maxim (Maxxxx32), diamond, hidnplayr and IgorA,
+libini by Alexey "mike.dld" Tsaplin, with the KolibriOS team; the
+launcher's icons of them are KolibriOS's `icons32.png`.

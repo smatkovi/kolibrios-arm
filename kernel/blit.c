@@ -1,6 +1,6 @@
 /* KolibriOS for ARM: the drawing's inner loops in C (blit.h): the
- * ARMv7 kernel's, the AArch64 kernel's with SIMD=c or kolibri.simd=c,
- * and the reference of arch/arm64/blit.S's (tests/asm). */
+ * kernel's with SIMD=c or kolibri.simd=c, and the reference of
+ * arch/arm64/blit.S's and arch/armv7/blit.S's (tests/asm). */
 #include "blit.h"
 
 void fill_c(u32 *p, const u8 *own, int slot, u32 c, u32 n)
@@ -66,13 +66,38 @@ void rot2x_c(void *dst, u32 dst_stride, const u32 *src, u32 src_stride, u32 w,
 	}
 }
 
+/* panel line by panel line: a column of the screen, bottom up; each
+ * pixel a store of its own size */
+void rot90_c(void *dst, u32 dst_stride, const u32 *src, u32 src_stride, u32 w, u32 n, u32 bpp)
+{
+	if (!n) return;
+	for (u32 x = 0; x < w; x++) {
+		const u32 *s = src + (unsigned long)(n - 1) * src_stride + x;
+		if (bpp == 32) {
+			volatile u32 *d = (volatile u32 *)((char *)dst + (unsigned long)x * dst_stride);
+			for (u32 k = 0; k < n; k++, s -= src_stride) d[k] = *s;
+		} else {
+			volatile u16 *d = (volatile u16 *)((char *)dst + (unsigned long)x * dst_stride);
+			for (u32 k = 0; k < n; k++, s -= src_stride) {
+				u32 c = *s;
+				d[k] = ((c >> 8) & 0xf800) | ((c >> 5) & 0x7e0) | ((c >> 3) & 0x1f);
+			}
+		}
+	}
+}
+
 const struct blit_ops blit_c = {
-	"C", fill_c, glyph_c, from_bgr_c, to_bgr_c, rot2x_c,
+	"C", fill_c, glyph_c, from_bgr_c, to_bgr_c, rot2x_c, rot90_c,
 };
 
+/* the assembler's, each architecture its own turn; the other's in C */
 #if defined(__aarch64__) && !defined(SIMD_C)
 const struct blit_ops blit_neon = {
-	"NEON", fill_neon, glyph_neon, from_bgr_neon, to_bgr_neon, rot2x_neon,
+	"NEON", fill_neon, glyph_neon, from_bgr_neon, to_bgr_neon, rot2x_neon, rot90_c,
+};
+#elif defined(__arm__) && !defined(SIMD_C)
+const struct blit_ops blit_neon = {
+	"NEON", fill_neon, glyph_neon, from_bgr_neon, to_bgr_neon, rot2x_c, rot90_neon,
 };
 #endif
 
@@ -80,7 +105,15 @@ const struct blit_ops blit_neon = {
 struct blit_ops blit;
 const char *boot_arg(const char *name);
 
-/* the assembler's unless the build or the command line says C */
+/* kolibri.simd=c: the value runs to the next space */
+static __attribute__((unused)) bool simd_c(void)
+{
+	const char *v = boot_arg("kolibri.simd");
+	return v && v[0] == 'c' && (!v[1] || v[1] == ' ');
+}
+
+/* the assembler's unless the build or the command line says C (or, on
+ * ARMv7, the CPU has no NEON: arch/armv7/fpu.c) */
 void blit_init(void)
 {
 	blit = blit_c;
@@ -89,8 +122,10 @@ void blit_init(void)
 	 * for EL0) */
 	SYSREG_W(cpacr_el1, SYSREG_R(cpacr_el1) | 3ul << 20);
 	asm volatile("isb");
-	const char *v = boot_arg("kolibri.simd");
-	if (!v || strcmp(v, "c")) blit = blit_neon;
+	if (!simd_c()) blit = blit_neon;
+#elif !defined(SIMD_C)
+	extern bool fp_available(void);
+	if (fp_available() && !simd_c()) blit = blit_neon;
 #endif
 	kprintf("drawing: %s\n", blit.name);
 }

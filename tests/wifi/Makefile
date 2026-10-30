@@ -3,7 +3,10 @@
 #  crypto:  SHA-1, HMAC, PBKDF2, the PRF, AES, the key wrap (crypto.c)
 #  regd:    the regulatory domain: ath's EEPROM codes, the channels (regd.c)
 #  station: the whole driver against a simulated WCN3990 and access point,
-#           with lwIP above it (station.c): stages 4-6, three scenarios
+#           with lwIP above it (station.c): stages 4-6, HT/WMM, power save;
+#           WPA3-SAE, PMF; scenarios normal (HT40, WMM), legacy, uapsd,
+#           sae (H&P, PMF required, the token), h2e, mixed (transition),
+#           psk256, wrongpsk, noap
 #  qemu:    the kernel's side in QEMU (qemu.py): the Pro1X's tree with a
 #           Wi-Fi node of RAM, the fake modem's WLFW, the network from the
 #           initrd: WLAN_CFG, WLAN_MODE, the engines, waiting for READY
@@ -12,7 +15,7 @@ M := ../../kernel/modem
 LWIP := ../../third_party/lwip/src
 CFLAGS := -DMODEM_HOST -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
 	-fsanitize=address,undefined -fno-omit-frame-pointer
-WIFI := $(M)/wifi.c $(M)/ce.c $(M)/htc.c $(M)/wmi.c $(M)/htt.c $(M)/wlan.c $(M)/wpa.c $(M)/crypto.c $(M)/regd.c $(M)/regdb.c
+WIFI := $(M)/wifi.c $(M)/ce.c $(M)/htc.c $(M)/wmi.c $(M)/htt.c $(M)/wlan.c $(M)/wpa.c $(M)/crypto.c $(M)/regd.c $(M)/regdb.c $(M)/ecc.c $(M)/sae.c
 HDRS := $(wildcard $(M)/*.h)
 LWIPSRC := $(addprefix $(LWIP)/,core/init.c core/def.c core/dns.c core/inet_chksum.c core/ip.c core/mem.c \
 	core/memp.c core/netif.c core/pbuf.c core/tcp.c core/tcp_in.c core/tcp_out.c core/timeouts.c core/udp.c \
@@ -24,14 +27,20 @@ all: test crypto regd station
 	./crypto
 	./regd
 	./station
+	./station legacy
+	./station uapsd
+	./station sae
+	./station h2e
+	./station mixed
+	./station psk256
 	./station wrongpsk
 	./station noap
 
 test: test.c $(M)/ce.c $(M)/htc.c $(M)/wmi.c $(HDRS)
 	$(CC) $(CFLAGS) test.c $(M)/ce.c $(M)/htc.c $(M)/wmi.c -o $@
 
-crypto: crypto.c crypto_main.c $(M)/crypto.c $(M)/wpa.c $(HDRS)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations crypto.c crypto_main.c $(M)/crypto.c $(M)/wpa.c -lcrypto -o $@
+crypto: crypto.c crypto_main.c $(M)/crypto.c $(M)/wpa.c $(M)/ecc.c $(M)/sae.c $(HDRS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations crypto.c crypto_main.c $(M)/crypto.c $(M)/wpa.c $(M)/ecc.c $(M)/sae.c -lcrypto -o $@
 
 regd: regd.c $(M)/regd.c $(M)/regdb.c $(HDRS)
 	$(CC) $(CFLAGS) regd.c $(M)/regd.c $(M)/regdb.c -o $@
