@@ -555,6 +555,9 @@ void panels_OnKey_f3(void *ebp, u32 eax);
 void panels_OnKey_f4(void *ebp, u32 eax);
 void panels_OnKey_f5(void *ebp, u32 eax);
 void panels_OnKey_shift_f5(void *ebp, u32 eax);
+/* F6, Shift+F6: rename/move (an addition to kfar 0.65: panels.c) */
+void panels_OnKey_f6(void *ebp, u32 eax);
+void panels_OnKey_shift_f6(void *ebp, u32 eax);
 void panels_OnKey_f7(void *ebp, u32 eax);
 void panels_OnKey_f8(void *ebp, u32 eax);
 void panels_OnKey_ctrl_f3_9(void *ebp, u32 eax);

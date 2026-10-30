@@ -496,7 +496,7 @@ struct _FILE {
 	void *hFile;
 	fileinfo fileinfo;      /* fimode, fioffset, fisize, fibuf, the name */
 	char finame[1024];
-	u8 attr[40];
+	u8 attr[40] __attribute__((aligned(4)));   /* (the fileinfo before it is packed) */
 	u8 buf[2048] __attribute__((aligned(512)));
 };
 

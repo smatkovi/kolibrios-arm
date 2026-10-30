@@ -79,8 +79,10 @@ typedef struct filesearch_data {
 	char curfile[1024];
 	char curdir[1024];
 	char lowername[264];
-	u8 dir_area[32 + 304 * search_dir_query_size];
-	u8 filebuf[search_filebuf_size];
+	/* the buffers of function 70 aligned (the fileinfo above is packed;
+	 * the kernel's stores need aligned buffers) */
+	u8 dir_area[32 + 304 * search_dir_query_size] __attribute__((aligned(16)));
+	u8 filebuf[search_filebuf_size] __attribute__((aligned(16)));
 } filesearch_data;
 
 static void panels_OnKey_alt_f7_reinit(filesearch_data *ebp);

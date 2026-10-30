@@ -261,10 +261,16 @@ void redraw(void)
 /* kfar.asm: redraw.resize */
 static void redraw_resize(void)
 {
-	if (wnd_border)
+	if (wnd_border) {
 		kos_call(67, -1, -1, cur_width * font_width + wnd_border * 2 - 1,
 			 cur_height * font_height + skinh + wnd_border - 1, 0);
+		redraw_resize_draw();
+		return;
+	}
+	/* a maximised window without a frame (Hildon's look): no resize,
+	 * so no redraw event follows; the remainders painted here */
 	redraw_resize_draw();
+	draw_window();
 }
 
 /* kfar.asm: redraw.resize_draw */

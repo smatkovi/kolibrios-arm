@@ -164,10 +164,10 @@ const u8 scan2ascii[0x40] =
  * F1-F12 for no modifier, Shift, Ctrl, Ctrl+Shift, Alt, Alt+Shift,
  * Alt+Ctrl, Alt+Ctrl+Shift */
 const key_handler mouse_panels[96] = {
-	0, 0, panels_OnKey_f3, panels_OnKey_f4, panels_OnKey_f5, 0, panels_OnKey_f7, panels_OnKey_f8,
+	0, 0, panels_OnKey_f3, panels_OnKey_f4, panels_OnKey_f5, panels_OnKey_f6, panels_OnKey_f7, panels_OnKey_f8,
 	0, exit_handler, 0, F12,
-	/* Shift */
-	[12 + 4] = panels_OnKey_shift_f5,
+	/* Shift (F6, Shift+F6: an addition, panels.c) */
+	[12 + 4] = panels_OnKey_shift_f5, panels_OnKey_shift_f6,
 	/* Ctrl */
 	[24 + 2] = panels_OnKey_ctrl_f3_9, panels_OnKey_ctrl_f3_9, panels_OnKey_ctrl_f3_9,
 	panels_OnKey_ctrl_f3_9, panels_OnKey_ctrl_f3_9, panels_OnKey_ctrl_f3_9, panels_OnKey_ctrl_f3_9,

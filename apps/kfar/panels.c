@@ -12,7 +12,12 @@
  *
  * Differences: plugin panels do not exist (kfar.h), their branches are
  * left out; PgUp to the first file scrolls the panel (the original
- * compares unsigned there and leaves the cursor above the panel). */
+ * compares unsigned there and leaves the cursor above the panel).
+ *
+ * Added: F6 and Shift+F6, rename or move (kfar 0.65 has only their
+ * names on the key bar): F5's and Shift+F5's dialog and its folders,
+ * then function 70.10 within a volume, a copy and a delete between
+ * volumes (panels_OnKey_f6, move_file). */
 #include "kfar.h"
 
 static const char aMenu[] = "Menu";
@@ -525,6 +530,61 @@ void panels_OnKey_alt_f1_2(void *p, u32 eax)
 	panels_OnKey_done_redraw(ebp);
 }
 
+/* F6, Shift+F6 (an addition, see above): F5's dialog moves */
+static u8 bMove;
+static const char aMoveCaption[] = "Rename/Move";
+static const char aMove1[] = "Rename or move ";
+static const char aMove2[] = " to:";
+static const char aRename[] = "[ Rename ]";
+#define aRenameLength 10
+
+/* the volume of a full name: its length ("/rd/1", "/tmp0/1"; /sys is
+ * /rd/1) and its name in canon */
+static int volume_of(const char *p, char *canon, int size)
+{
+	if (!strncmp(p, "/sys", 4) && (!p[4] || p[4] == '/')) {
+		snprintf(canon, size, "/rd/1");
+		return 4;
+	}
+	int n = 0, slashes = 0;
+	for (; p[n]; n++)
+		if (p[n] == '/' && ++slashes == 3) break;
+	snprintf(canon, size, "%.*s", n, p);
+	return n;
+}
+
+/* the entry e of the panel to CopyDestEditBuf.data (into it if
+ * bDestIsFolder): 70.10 within the volume, else copy_file and, when the
+ * copy is there, delete_file; true: cancel */
+static bool move_file(PanelData *ebp, u8 *e)
+{
+	char from[1024], to[1024], vf[64], vt[64];
+	const char *name = bdfe_name(e);
+	if (snprintf(from, sizeof(from), "%s/%s", ebp->dir, name) >= (int)sizeof(from) ||
+	    snprintf(to, sizeof(to), bDestIsFolder ? "%s/%s" : "%s", CopyDestEditBuf.data, name) >= (int)sizeof(to)) {
+		panels_OnKey_bigfilename();
+		return false;
+	}
+	volume_of(from, vf, sizeof(vf));
+	int pt = volume_of(to, vt, sizeof(vt));
+	if (!strcmpi(vf, vt) && to[pt]) {
+		fileinfo fi = { 10, 0, 0, 0, to + pt, 0, from };
+		for (;;) {
+			u32 err = fs_call(&fi, 0);
+			if (!err) return false;
+			const char *strings[3] = { get_error_msg(err), aCannotWriteFile, to };
+			int r = SayErr(3, strings, 2, RetryOrCancelBtn);
+			if (r) return true;     /* Cancel, Esc */
+		}
+	}
+	/* between volumes: a copy, then the source deleted if the copy is there */
+	if (copy_file(ebp, e)) return true;
+	fileinfo ai = { 5, 0, 0, 0, attrinfo_attr, 0, to };
+	if (fs_call(&ai, 0)) return false;
+	del_bSkipAll = 0;
+	return delete_file(ebp, e);
+}
+
 /* kfar.asm: panels_OnKey.f5_common: the copy's dialog, then the copy;
  * CopyDestEditBuf.data has the proposed destination up to edi */
 static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
@@ -535,13 +595,14 @@ static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
 	*edi = 0;
 	CopyDestEditBuf.pos = edi - CopyDestEditBuf.data;
 	char *t = CopySourceTextBuf;
-	t = strcpy(t, aCopy1) + strlen(aCopy1);
+	const char *a1 = bMove ? aMove1 : aCopy1;
+	t = strcpy(t, a1) + strlen(a1);
 	u32 eax = ebp->selected_num;
 	if (eax) {
 		t += sprintf(t, "%u item", eax);
 		if (eax != 1) *t++ = 's';
 	} else {
-		/* .f5_noselected1 */
+		/* .f5_noselected1 (the move's text has its quotes here only) */
 		*t++ = '"';
 		const char *esi = bdfe_name(get_curfile_folder_entry(ebp));
 		int len = strlen(esi);
@@ -554,10 +615,14 @@ static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
 		}
 		while (*esi) *t++ = *esi++;
 		*t++ = '"';
+		if (bMove) *t = 0;
 	}
 	/* .f5_selected1 */
-	strcpy(t, aCopy2);
+	strcpy(t, bMove ? aMove2 : aCopy2);
 	struct copy_dlgdata *ebx = &copy_dlgdata;
+	ebx->h.dialog.title = bMove ? aMoveCaption : aCopyCaption;
+	ebx->copy.data = (void *)(bMove ? aRename : aCopy);
+	int btnlen = bMove ? aRenameLength : aCopyLength;
 	int w = cur_width - 12;
 	ebx->h.dialog.width = w;
 	w -= 2;
@@ -565,9 +630,9 @@ static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
 	ebx->ename.x2 = w;
 	w = (w >> 1) - 2;
 	ebx->copy.x2 = w;
-	w -= aCopyLength - 1;
+	w -= btnlen - 1;
 	ebx->copy.x1 = w;
-	w += aCopyLength + 3;
+	w += btnlen + 3;
 	ebx->cnl.x1 = w;
 	w += aCancelBLength - 1;
 	ebx->cnl.x2 = w;
@@ -675,14 +740,15 @@ static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
 	copy_bSkipAll3 = 0;
 	/* (plugin_flags & 2: a plugin's GetFiles) */
 	if (!ebp->selected_num) {
-		copy_file(ebp, e);
+		if (bMove) move_file(ebp, e);
+		else copy_file(ebp, e);
 	} else {
 		/* .f5_selected3 */
 		for (int i = 0; i < ebp->numfiles; i++) {
 			u8 *f = ebp->files[i];
 			if (!(bdfe_sel(f) & 1)) continue;
 			bDestIsFolder = dl;
-			if (copy_file(ebp, f)) break;   /* .f5_multiple_cancel */
+			if (bMove ? move_file(ebp, f) : copy_file(ebp, f)) break;   /* .f5_multiple_cancel */
 			bdfe_sel(f) &= ~1;
 			draw_panel(ebp);
 			if (bNeedRestoreName) delete_last_name_from_end(CopyDestEditBuf.data);
@@ -719,6 +785,7 @@ static void panels_OnKey_f5_2(PanelData *ebp, const char *esi)
 void panels_OnKey_f5(void *p, u32 eax)
 {
 	PanelData *ebp = p;
+	bMove = 0;
 	/* todo: copy to plugin panel */
 	if (other_panel(ebp)->hPlugin) return;
 	panels_OnKey_f5_2(ebp, other_panel(ebp)->dir);
@@ -728,8 +795,36 @@ void panels_OnKey_f5(void *p, u32 eax)
 void panels_OnKey_shift_f5(void *p, u32 eax)
 {
 	PanelData *ebp = p;
+	bMove = 0;
 	/* todo: copy to plugin panel */
 	if (ebp->hPlugin) return;
+	if (ebp->selected_num) {
+		panels_OnKey_f5_2(ebp, ebp->dir);
+		return;
+	}
+	const char *esi = bdfe_name(get_curfile_folder_entry(ebp));
+	CopyDestEditBuf.maxlength = CopyDestEditBuf_length;
+	CopyDestEditBuf.start = 0;
+	char *edi = CopyDestEditBuf.data;
+	while (*esi) *edi++ = *esi++;
+	panels_OnKey_f5_common(ebp, edi);
+}
+
+/* F6: rename or move to the other panel (an addition, see above) */
+void panels_OnKey_f6(void *p, u32 eax)
+{
+	PanelData *ebp = p;
+	if (other_panel(ebp)->hPlugin || ebp->hPlugin) return;
+	bMove = 1;
+	panels_OnKey_f5_2(ebp, other_panel(ebp)->dir);
+}
+
+/* Shift+F6: rename in this panel (an addition) */
+void panels_OnKey_shift_f6(void *p, u32 eax)
+{
+	PanelData *ebp = p;
+	if (ebp->hPlugin) return;
+	bMove = 1;
 	if (ebp->selected_num) {
 		panels_OnKey_f5_2(ebp, ebp->dir);
 		return;
@@ -1064,6 +1159,8 @@ const ctrlkey panels_ctrlkeys[] = {
 	K(0x3E, 0, panels_OnKey_f4),
 	K(0x3F, 0, panels_OnKey_f5),
 	K(0x3F, 1, panels_OnKey_shift_f5),
+	K(0x40, 0, panels_OnKey_f6),            /* (an addition) */
+	K(0x40, 1, panels_OnKey_shift_f6),
 	K(0x41, 0, panels_OnKey_f7),
 	K(0x41, 0x100, panels_OnKey_alt_f7),
 	K(0x42, 0, panels_OnKey_f8),
