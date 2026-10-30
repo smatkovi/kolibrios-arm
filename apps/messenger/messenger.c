@@ -132,7 +132,7 @@ static void debug_line(const char *s)
 {
 	static const char *const tag[3] = { "[wa] ", "[tg] ", "[sg] " };
 	for (const char *p = svc >= 0 ? tag[svc] : "[--] "; *p; p++) kos_debug_char(*p);
-	for (unsigned i = 0; s[i] && i < 200; i++) kos_debug_char(s[i]);
+	for (unsigned i = 0; s[i] && i < 640; i++) kos_debug_char(s[i]);       /* a QR code whole */
 	kos_debug_char('\n');
 }
 
@@ -1026,7 +1026,11 @@ static void draw_chat(void)
 	clip(nm, sizeof(nm), chat_name(c), (W - 120) / 16);
 	text_at(96, typing ? 4 : 12, nm, C_TEXT, 2);
 	if (typing) text_at(96, 38, "typing...", C_HI, 0);
-	else if (err[0]) text_at(W - 20 - MIN(clen(err), 40) * 8, 40, err, C_ERR, 0);
+	else if (err[0]) {
+		char e[64];
+		clip(e, sizeof(e), err, (W - 120) / 8);
+		text_at(96, 38, e, C_ERR, 0);
+	}
 	/* the line to write in, Send */
 	int ch = 60, cy = H - ch;
 	kos_rect(0, cy, W, ch, C_BAR);
