@@ -1,1 +1,2 @@
 /sys/terminal
+/sys/fstest wait 2000 run /sys/terminal

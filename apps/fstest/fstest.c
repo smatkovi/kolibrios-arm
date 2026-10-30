@@ -48,7 +48,8 @@ static int list(const char *path, char *out)
 /* fstest expect PATH TEXT...: the file holds TEXT (the words joined by
  * blanks) at its start; fstest expect PATH -: it is not there; fstest
  * expect PATH /: it is a folder; "fstest wait N expect ...": after N
- * hundredths of a second (tests of other programs: tests/apps) */
+ * hundredths of a second; "fstest wait N run PATH": that program started
+ * then (tests of other programs: tests/apps) */
 static int expect(int argc, char **argv)
 {
 	static char want[256], got[1024];
@@ -70,6 +71,11 @@ int main(int argc, char **argv)
 	if (argc >= 6 && !strcmp(argv[1], "wait") && !strcmp(argv[3], "expect")) {
 		kos_delay(atoi(argv[2]));
 		return expect(argc - 2, argv + 2);
+	}
+	if (argc >= 5 && !strcmp(argv[1], "wait") && !strcmp(argv[3], "run")) {
+		kos_delay(atoi(argv[2]));          /* fstest wait N run PATH: a program started later */
+		printf("fstest: run %s: %d\n", argv[4], kos_run(argv[4], argc > 5 ? argv[5] : 0));
+		return 0;
 	}
 	if (argc >= 4 && !strcmp(argv[1], "expect")) return expect(argc, argv);
 

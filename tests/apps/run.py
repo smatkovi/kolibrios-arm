@@ -102,7 +102,7 @@ def test_terminal(img):
         s.settimeout(0.5)
         t0 = time.time()
         sent = False
-        while time.time() - t0 < 30:
+        while time.time() - t0 < 60:
             if not sent and time.time() - t0 > 10:
                 s.sendall(b'Hello from the other end\r\n')
                 sent = True
@@ -117,11 +117,18 @@ def test_terminal(img):
 
     t = threading.Thread(target=peer)
     t.start()
+    # then its console closed by the window's close button (the program
+    # ends without closing the port) and a second terminal (started by
+    # autorun.terminal's fstest at 20 s) opens the port again
     steps = keys('wait:4', 'shot:terminal-settings', 'backspace', '1', 'ret', 'wait:2', 'typed on ARM', 'ret',
-                 'wait:8', 'shot:terminal-session')
-    qemu('realview', f'{OUT}/terminal', steps, extra=f'-serial tcp:127.0.0.1:{port},server=on,wait=off')
+                 'wait:6', 'shot:terminal-session', 'mouse:386,-180', 'click', 'wait:8', 'shot:terminal-again',
+                 'backspace', '1', 'ret', 'wait:2', 'second run', 'ret', 'wait:2', 'shot:terminal-end')
+    log = qemu('realview', f'{OUT}/terminal', steps, extra=f'-serial tcp:127.0.0.1:{port},server=on,wait=off')
     t.join()
-    check(b'typed on ARM\r' in b''.join(got), 'terminal: keys reach UART1')
+    data = b''.join(got)
+    check(b'typed on ARM\r' in data, 'terminal: keys reach UART1')
+    check(b'second run\r' in data and log.count('started terminal') == 2,
+          'terminal: the port free again after the console was closed')
     if img:
         for n in ('terminal-settings', 'terminal-session'):
             shutil.copy(f'{OUT}/terminal/{n}.png', os.path.join(img, n + '.png'))
