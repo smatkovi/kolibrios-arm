@@ -10,7 +10,9 @@
  * HCE, send a UIC command, touch Auto-Hibernate, move a list's base while
  * it runs, ring the doorbell of a stopped list, send a SCSI command other
  * than TEST UNIT READY, INQUIRY, READ CAPACITY(16), READ(16), WRITE(16),
- * misalign a descriptor. LUN 0 is the image (4096-byte blocks, mkdisk.py
+ * misalign a descriptor (Auto-Hibernate may be written once, to ufshcd's
+ * default, when it was off: ufs_sim LUN0.img ahit-off; ahit-keep: the
+ * driver told to leave it off). LUN 0 is the image (4096-byte blocks, mkdisk.py
  * pro1x), LUNs 1-5 small empty ones, each answers its first command with
  * a UNIT ATTENTION. Then the block layer and the container on top: the
  * writes that reach the model's LUNs must all be inside the container's
@@ -44,7 +46,7 @@ static struct {
 	u32 cap, ver, hce, hcs, is, ie, ahit, utrlba, utrlbau, utrldbr, utrlrsr, utmrlba, utmrlbau, utmrlrsr;
 	u32 uicarg[3];
 	bool kept;                     /* started as Linux left it */
-	int violations, requests, uic;
+	int violations, requests, uic, ahit_writes;
 	FILE *lun[NLUN];
 	u64 nblocks[NLUN];
 	bool ua[NLUN];
@@ -209,7 +211,10 @@ static void mwr(void *c, u32 off, u32 v)
 {
 	switch (off) {
 	case 0x18:
-		if (m.kept) violation("Auto-Hibernate written while keeping the link");
+		/* kept: only Auto-Hibernate found off may be set, once, to ufshcd's default */
+		if (m.kept && (m.ahit || v != UFS_AHIT_LINUX || m.ahit_writes))
+			violation("Auto-Hibernate written while keeping the link");
+		m.ahit_writes++;
 		m.ahit = v;
 		break;
 	case 0x20: m.is &= ~v; break;
@@ -303,6 +308,22 @@ int main(int argc, char **argv)
 	static u8 dma[2 << 20] __attribute__((aligned(4096)));
 	hw.dma = (struct dma_mem){ dma, (u64)(addr_t)dma, sizeof(dma) };
 
+	/* Auto-Hibernate left off by Linux: set to 150 ms once (ahit-off), or
+	 * left so (ahit-keep, kolibri.ufsahit=keep) */
+	if (argc > 2) {
+		bool keep = !strcmp(argv[2], "ahit-keep");
+		model_reset(lun0, true, true);
+		m.ahit = 0;
+		hw.keep_link = true;
+		hw.ahit = keep ? 0 : UFS_AHIT_LINUX;
+		CHECK(ufs_start(&hw) == NLUN, "the logical units");
+		CHECK(keep ? m.ahit == 0 && m.ahit_writes == 0 : m.ahit == UFS_AHIT_LINUX && m.ahit_writes == 1,
+		      "Auto-Hibernate %s (AHIT 0x%x, %d writes)", keep ? "left off" : "set to 150 ms", m.ahit, m.ahit_writes);
+		CHECK(m.uic == 0 && m.violations == 0, "no UIC command, no violation (%d)", m.violations);
+		printf("ufs_sim %s %s: %d passed, %d failed\n", argv[1], argv[2], passed, failed);
+		return failed != 0;
+	}
+
 	/* 3: the link down: nothing */
 	model_reset(lun0, true, false);
 	hw.keep_link = true;
@@ -315,6 +336,7 @@ int main(int argc, char **argv)
 	int n = ufs_start(&hw);
 	CHECK(n == NLUN, "%d logical units", n);
 	CHECK(m.uic == 0, "no UIC command");
+	CHECK(m.ahit == (3u << 10 | 1) && m.ahit_writes == 0, "Auto-Hibernate as Linux left it");
 	CHECK(m.utrlba == (u32)(addr_t)dma, "the list in our memory");
 	CHECK(blk_count() == NLUN && blk_get(0)->bsize == 4096, "ufs0 with 4096-byte blocks");
 	blk_scan();

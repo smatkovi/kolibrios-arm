@@ -70,7 +70,7 @@ static void line(const char *what, const struct power_stats *a, const struct pow
 	/* the deadlines that woke it, by who (the next tick: the 100 Hz
 	 * tick while something is about to happen) */
 	static const char *const name[WHY_N] = { "tick", "tasks", "platform", "modem", "screen",
-						 "network", "powertest", "none" };
+						 "network", "powertest", "storage", "none" };
 	kprintf("power:   by deadline:");
 	for (int i = 0; i < WHY_N; i++)
 		if (b->why[i] != a->why[i]) kprintf(" %s %u", name[i], b->why[i] - a->why[i]);

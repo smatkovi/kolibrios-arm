@@ -7,8 +7,10 @@
  *   kolibri.home=ro        (the default) the container checked and shown as
  *                          /hd0/1, read only: nothing at all is written
  *   kolibri.home=rw        the container writable, its blocks the only ones
- *                          the drivers write (the fence, blk.c) */
+ *                          the drivers write (the fence, blk.c)
+ *   kolibri.mmcsleep=off   an eMMC never put to sleep (CMD5) when idle (mmc.c) */
 #include "storage.h"
+#include "mmc.h"
 
 const char *boot_arg(const char *name);
 
@@ -16,6 +18,25 @@ bool storage_off(void)
 {
 	const char *a = boot_arg("kolibri.storage");
 	return a && !strncmp(a, "off", 3);
+}
+
+bool storage_mmc_sleep(void)
+{
+	const char *a = boot_arg("kolibri.mmcsleep");
+	return !a || strncmp(a, "off", 3);
+}
+
+/* the timer's tick (sched.c): the drivers' idle work (an eMMC's sleep);
+ * the ticks until it is due, for the tickless idle */
+void storage_tick(void)
+{
+	mmc_tick();
+}
+
+u32 storage_next(void)
+{
+	u32 ms = mmc_next_ms();
+	return ms == 0xffffffffu ? ms : (ms + 9) / 10;
 }
 
 int storage_home_mode(void)

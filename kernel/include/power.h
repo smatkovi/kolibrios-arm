@@ -17,7 +17,7 @@
  * the next tick */
 u32 sched_next_work(void);
 /* who set the last answer: a task (its slot), or a part of the kernel */
-enum { WHY_TICK, WHY_TASK, WHY_PLAT, WHY_MODEM, WHY_SCREEN, WHY_NET, WHY_POWER, WHY_NONE, WHY_N };
+enum { WHY_TICK, WHY_TASK, WHY_PLAT, WHY_MODEM, WHY_SCREEN, WHY_NET, WHY_POWER, WHY_STORAGE, WHY_NONE, WHY_N };
 extern int next_why, next_why_slot;
 static inline u32 next_min(u32 a, u32 b) { return a < b ? a : b; }
 /* milliseconds from now as ticks, rounded up */

@@ -16,18 +16,22 @@ host: bins
 	python3 run.py host
 ufs: bins
 	python3 run.py ufs
+mmc: bins
+	python3 run.py mmc
 qemu:
 	python3 run.py virtio ufs-qemu emmc realview tamper apps messenger helper
 
-bins: host-bin ufs_sim
+bins: host-bin ufs_sim mmc_sim
 host-bin: host.c $(CORE) $(S)/*.h
 	$(CC) $(CFLAGS) host.c $(CORE) -o host
 ufs_sim: ufs_sim.c $(CORE) $(S)/ufs.c $(S)/*.h
 	$(CC) $(CFLAGS) ufs_sim.c $(CORE) $(S)/ufs.c -o $@
+mmc_sim: mmc_sim.c $(CORE) $(S)/mmc.c $(S)/*.h
+	$(CC) $(CFLAGS) mmc_sim.c $(CORE) $(S)/mmc.c -o $@
 
 -include ext4.mk fat.mk
 
 clean:
-	rm -f host ufs_sim
+	rm -f host ufs_sim mmc_sim
 
-.PHONY: all host ufs qemu bins host-bin clean
+.PHONY: all host ufs mmc qemu bins host-bin clean

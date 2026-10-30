@@ -1749,6 +1749,16 @@ static void ufs_init(void)
 	if (smmu && ufs_nstreams) smmu_bypass_streams(ufs_streams, ufs_nstreams);
 	else kprintf("pro1x: UFS: no SMMU stream in the device tree\n");
 	hw.writable = storage_home_mode() == HOME_RW;
+	/* Auto-Hibernate found off: ufshcd's 150 ms; kolibri.ufsahit=keep
+	 * leaves it off, kolibri.ufsahit=N sets N ms (1-1023) */
+	const char *ah = boot_arg("kolibri.ufsahit");
+	hw.ahit = UFS_AHIT_LINUX;
+	if (ah && !strncmp(ah, "keep", 4)) hw.ahit = 0;
+	else if (ah && *ah >= '1' && *ah <= '9') {
+		u32 ms = 0;
+		for (; *ah >= '0' && *ah <= '9'; ah++) ms = ms * 10 + *ah - '0';
+		hw.ahit = 3u << 10 | MIN(ms, 1023u);
+	}
 	kprintf("pro1x: UFS at %p, DMA %p\n", ufs_pa, (addr_t)hw.dma.pa);
 	ufs_start(&hw);
 }

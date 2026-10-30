@@ -188,10 +188,23 @@ def test_ufs():
     r = subprocess.run([os.path.join(HERE, "ufs_sim"), img], capture_output=True, text=True)
     print("\n".join(l for l in r.stdout.splitlines() if "FAIL" in l or "VIOLATION" in l or l.startswith("ufs_sim")))
     check(r.returncode == 0, "UFS model: the link kept, the LUNs, the container written through it")
+    for mode in ("ahit-off", "ahit-keep"):
+        r = subprocess.run([os.path.join(HERE, "ufs_sim"), img, mode], capture_output=True, text=True)
+        print("\n".join(l for l in r.stdout.splitlines() if "FAIL" in l or "VIOLATION" in l or l.startswith("ufs_sim")))
+        check(r.returncode == 0, "UFS model: Auto-Hibernate found off: " + ("left off" if mode == "ahit-keep" else "150 ms"))
     check(outside_hash(img) == before, "UFS model: nothing changed outside the container")
     fs_checks(img, 4096, [13, 2], [], "UFS model")
     container_checks(img, "UFS model")
     os.unlink(img)
+
+
+def test_mmc():
+    """the eMMC's sleep (CMD5) against a model: mmc_sim's cases"""
+    build_host()
+    for case in ("sleep", "no-awake", "off", "old", "qemu"):
+        r = subprocess.run([os.path.join(HERE, "mmc_sim"), case], capture_output=True, text=True)
+        print("\n".join(l for l in r.stdout.splitlines() if "FAIL" in l or "VIOLATION" in l))
+        check(r.returncode == 0, "eMMC model: " + (r.stdout.strip().splitlines() or ["no output"])[-1])
 
 
 # --- in QEMU -------------------------------------------------------------------
@@ -475,7 +488,7 @@ def kh_map(text):
     return mkdisk.kh.parse_map(text)
 
 
-TESTS = {"host": test_host, "ufs": test_ufs, "virtio": test_virtio, "ufs-qemu": test_ufs_qemu,
+TESTS = {"host": test_host, "ufs": test_ufs, "mmc": test_mmc, "virtio": test_virtio, "ufs-qemu": test_ufs_qemu,
          "emmc": test_emmc, "realview": test_realview, "tamper": test_tamper, "apps": test_apps, "messenger": test_messenger,
          "helper": test_helper}
 

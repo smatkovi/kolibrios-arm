@@ -12,7 +12,9 @@ tests/wifi/station
 tests/wifi/regd
 tests/storage/host
 tests/storage/ufs_sim
+tests/storage/mmc_sim
 tests/storage/ext4_test
 tests/storage/fat_test
 tests/net/net-kos
 tests/net/net-lwip
+__pycache__/

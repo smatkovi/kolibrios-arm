@@ -19,9 +19,17 @@ struct mmc_host {
 	void (*set_width)(void *ctx, int bits);
 	u64 (*now_us)(void);
 	void (*open_drain)(void *ctx, bool on);   /* MMC's identification (or NULL) */
+	void (*idle)(void *ctx, bool idle);       /* the clock to the card off, on (or NULL) */
 };
 
 /* the card started, added as the disk name ("mmc0"); 1, or 0 */
 int mmc_start(struct mmc_host *h, const char *name, bool writable);
+
+/* an eMMC's sleep (CMD5) after a second without requests: from the
+ * timer's tick (storage_tick, dev.c); the ms until then (NEXT_NONE-like
+ * 0xffffffff: asleep, an SD card, or kolibri.mmcsleep=off) */
+void mmc_tick(void);
+u32 mmc_next_ms(void);
+bool storage_mmc_sleep(void);             /* dev.c: not kolibri.mmcsleep=off */
 
 #endif

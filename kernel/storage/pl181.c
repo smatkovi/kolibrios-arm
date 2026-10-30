@@ -105,12 +105,19 @@ static void set_width(void *ctx, int bits)
 {
 }
 
+/* the card asleep: the clock off (MCIClock's enable) */
+static void idle(void *ctx, bool on)
+{
+	struct pl181 *p = ctx;
+	wr(p, CLOCK, on ? 0x3f : 1u << 8 | 0x3f);
+}
+
 int pl181_start(struct pl181 *p, const char *name, bool writable)
 {
 	wr(p, POWER, 0x83);                                         /* on */
 	wr(p, MASK0, 0);
 	set_clock(p, 400000);
 	/* DATALENGTH has 16 bits: 64 blocks (32 KiB) a command */
-	p->host = (struct mmc_host){ p, 1, 64, pcmd, set_clock, set_width, p->now_us, NULL };
+	p->host = (struct mmc_host){ p, 1, 64, pcmd, set_clock, set_width, p->now_us, NULL, idle };
 	return mmc_start(&p->host, name, writable);
 }

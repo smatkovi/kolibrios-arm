@@ -11,8 +11,11 @@
  *    (freebsd/patches/0005, UFSHCI_QUIRK_KEEP_LINK): the controller must
  *    be enabled with a device present, its interrupts off, the request
  *    lists stopped and given our memory, what is pending cleared, the
- *    link and its power mode (and Auto-Hibernate) left as they are; no UIC
- *    command, no reset;
+ *    link and its power mode left as they are; no UIC command, no reset.
+ *    Auto-Hibernate (the controller puts the link to hibernate itself
+ *    after an idle time, and wakes it for the next request) is kept as
+ *    Linux left it, or, found off in a controller that has it, set to
+ *    ufshcd's default, 150 ms (hw->ahit; kolibri.ufsahit);
  *  - QEMU's UFS model (-device ufs, ufs-lu; on virt's PCIe): enabled and
  *    the link started here (DME_LINKSTARTUP), the device by fDeviceInit.
  *
@@ -51,6 +54,7 @@
 #define UICCMDARG3 0x9c
 
 #define CAP_64AS (1u << 24)
+#define CAP_AUTOH8 (1u << 23)
 #define HCS_DP (1u << 0)
 #define HCS_UTRLRDY (1u << 1)
 #define HCS_UTMRLRDY (1u << 2)
@@ -353,6 +357,32 @@ static bool device_init(struct ufs *u)
 	return false;
 }
 
+/* AHIT's idle time in us: the timer times 10^scale */
+static u32 ahit_us(u32 a)
+{
+	u32 us = a & 0x3ff;
+	for (u32 s = a >> 10 & 7; s; s--) us *= 10;
+	return us;
+}
+
+/* Auto-Hibernate: the link to hibernate after the idle time, by the
+ * controller itself (UFSHCI 2.1's AHIT), as Linux's ufshcd has it */
+static void auto_hibern8(struct ufs *u, u32 cap)
+{
+	u32 a = rd(u, AHIT);
+	if (!(cap & CAP_AUTOH8)) {
+		slog("ufs: no Auto-Hibernate in this controller\n");
+	} else if (a & 0x3ff) {
+		slog("ufs: Auto-Hibernate after %u us idle, as it was\n", ahit_us(a));
+	} else if (!u->hw->ahit) {
+		slog("ufs: Auto-Hibernate off, left so (kolibri.ufsahit=keep)\n");
+	} else {
+		wr(u, AHIT, u->hw->ahit);
+		slog("ufs: Auto-Hibernate was off: after %u us idle now (AHIT 0x%x)\n", ahit_us(u->hw->ahit),
+		     rd(u, AHIT));
+	}
+}
+
 int ufs_start(const struct ufs_hw *hw)
 {
 	struct ufs *u = &ufs0;
@@ -418,6 +448,7 @@ int ufs_start(const struct ufs_hw *hw)
 	wr(u, UTMRLRSR, 1);
 	wr(u, UTRLRSR, 1);
 	hw->barrier();
+	auto_hibern8(u, cap);
 	bool ok = false;
 	for (int i = 0; i < 10 && !ok; i++) ok = nop(u);
 	if (!ok) {

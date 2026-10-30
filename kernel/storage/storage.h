@@ -40,6 +40,7 @@ typedef unsigned long addr_t;
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #endif
 u32 rtc_seconds(void);
+char *strncpy0(char *d, const char *s, size_t n);    /* the test's (kernel/lib.c's) */
 #else
 #include "kernel.h"
 #define slog(...) kprintf(__VA_ARGS__)

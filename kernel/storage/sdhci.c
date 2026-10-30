@@ -169,6 +169,15 @@ static void set_width(void *ctx, int bits)
 	wr(s, HCTL, h | (bits == 4 ? 2 : 0));
 }
 
+/* the card asleep: no clock to it (SYSCTL's CEN), the controller's own
+ * kept */
+static void idle(void *ctx, bool on)
+{
+	struct sdhci *s = ctx;
+	u32 v = rd(s, SYSCTL);
+	wr(s, SYSCTL, on ? v & ~4u : v | 4u);
+}
+
 static void open_drain(void *ctx, bool on)
 {
 	struct sdhci *s = ctx;
@@ -214,6 +223,6 @@ int sdhci_start(struct sdhci *s, const char *name, bool writable)
 		wr32(s->base + CON, rd32(s->base + CON) & ~2u);
 		wr(s, STAT, 0xffffffffu);
 	}
-	s->host = (struct mmc_host){ s, 4, 128, scmd, set_clock, set_width, s->now_us, s->omap ? open_drain : NULL };
+	s->host = (struct mmc_host){ s, 4, 128, scmd, set_clock, set_width, s->now_us, s->omap ? open_drain : NULL, idle };
 	return mmc_start(&s->host, name, writable);
 }

@@ -12,7 +12,15 @@
  * ACMD6. Then reads with CMD17/CMD18 (+ CMD12), writes (only the fence's:
  * blk.c) with CMD24/CMD25 (+ CMD12) and CMD13 until the card is back in
  * its transfer state. Nothing else that changes the card: no erase, no
- * EXT_CSD write but the bus width, no boot partition, no RPMB. */
+ * EXT_CSD write but the bus width, no boot partition, no RPMB.
+ *
+ * An eMMC (4.3 and later: EXT_CSD_REV 3, S_A_TIMEOUT given) sleeps after
+ * a second without requests, as ubiboot's Linux 2.6.32 has the N950's
+ * (mmc_card_sleepawake): CMD7 with RCA 0 (deselected: stand-by), CMD5
+ * with the sleep bit, S_A_TIMEOUT waited, the clock to the card off;
+ * before the next request the clock on, CMD5 without it (stand-by
+ * again), CMD7 with its RCA (transfer). The card keeps its settings (the
+ * bus width) through the sleep. kolibri.mmcsleep=off: never. */
 #include "storage.h"
 #include "mmc.h"
 
@@ -25,9 +33,14 @@ struct card {
 	struct blkdev dev;
 	struct mmc_host *h;
 	bool sd, block_addr;
+	bool can_sleep, asleep;         /* CMD5 */
+	u32 sa_us;                      /* S_A_TIMEOUT: a sleep's or an awake's longest */
+	u64 last_us;                    /* the last request's end */
+	u32 sleeps;
 };
 
 static struct card card;
+static bool card_init(struct card *c, struct mmc_host *h, const char *name, u32 *cid, u64 *size);
 
 static int cmd(struct mmc_host *h, u32 idx, u32 arg, u32 rsp, u32 *r)
 {
@@ -45,9 +58,80 @@ static bool wait_tran(struct mmc_host *h, u32 ms)
 	}
 }
 
+static void wait_us(struct mmc_host *h, u32 us)
+{
+	u64 t0 = h->now_us();
+	while (h->now_us() - t0 < us)
+		;
+}
+
+/* CMD5 (SLEEP_AWAKE) with the sleep bit, from stand-by; true: asleep */
+static bool card_sleep(struct card *c)
+{
+	struct mmc_host *h = c->h;
+	u32 r[4];
+	if (cmd(h, 7, 0, MMC_RSP_NONE, NULL)) return false;          /* deselected: stand-by */
+	if (cmd(h, 5, RCA << 16 | 1u << 15, MMC_RSP_R1B, r)) {
+		cmd(h, 7, RCA << 16, MMC_RSP_R1B, r);                 /* back to transfer */
+		return false;
+	}
+	wait_us(h, c->sa_us);
+	if (h->idle) h->idle(h->ctx, true);
+	c->asleep = true;
+	if (!c->sleeps++) slog("mmc: %s asleep after a second without requests (CMD5; S_A_TIMEOUT %u us)\n",
+			       c->dev.name, c->sa_us);
+	return true;
+}
+
+/* CMD5 without the sleep bit, CMD7: in its transfer state again */
+static bool card_awake(struct card *c)
+{
+	struct mmc_host *h = c->h;
+	u32 r[4];
+	if (h->idle) h->idle(h->ctx, false);
+	c->asleep = false;
+	bool ok = !cmd(h, 5, RCA << 16, MMC_RSP_R1B, r);
+	if (ok) {
+		wait_us(h, c->sa_us);
+		ok = !cmd(h, 7, RCA << 16, MMC_RSP_R1B, r) && wait_tran(h, 500);
+	}
+	if (!ok) {
+		/* a card that does not wake (QEMU's model takes only CMD0 in
+		 * its sleep): started anew, no more sleeps */
+		u32 cid[4];
+		u64 sectors;
+		c->can_sleep = false;
+		ok = card_init(c, h, c->dev.name, cid, &sectors);
+		slog("mmc: %s: no awake from its sleep, started anew from CMD0 (%s): no more sleeps\n",
+		     c->dev.name, ok ? "done" : "failed");
+		c->can_sleep = false;
+	}
+	return ok;
+}
+
+void mmc_tick(void)
+{
+	struct card *c = &card;
+	if (!c->h || !c->can_sleep || c->asleep) return;
+	if (c->h->now_us() - c->last_us < 1000000) return;
+	if (!card_sleep(c)) {
+		slog("mmc: %s refuses its sleep (CMD5): no more tries\n", c->dev.name);
+		c->can_sleep = false;
+	}
+}
+
+u32 mmc_next_ms(void)
+{
+	struct card *c = &card;
+	if (!c->h || !c->can_sleep || c->asleep) return 0xffffffffu;
+	u64 d = c->h->now_us() - c->last_us;
+	return d >= 1000000 ? 0 : (u32)((1000000 - d + 999) / 1000);
+}
+
 static int xfer(struct card *c, u64 lba, u32 n, u8 *buf, bool write)
 {
 	struct mmc_host *h = c->h;
+	if (c->asleep) card_awake(c);
 	u32 arg = c->block_addr ? (u32)lba : (u32)(lba * 512);
 	u32 r[4];
 	int e = h->cmd(h->ctx, n > 1 ? (write ? 25 : 18) : (write ? 24 : 17), arg, MMC_RSP_R1, r, buf, n, write);
@@ -61,6 +145,7 @@ static int xfer(struct card *c, u64 lba, u32 n, u8 *buf, bool write)
 		slog("mmc: %s at %u (+%u) failed\n", write ? "write" : "read", (u32)lba, n);
 		wait_tran(h, 500);
 	}
+	c->last_us = h->now_us();
 	return e;
 }
 
@@ -111,11 +196,11 @@ static bool sd_ident(struct mmc_host *h, bool *hc)
 	}
 }
 
-int mmc_start(struct mmc_host *h, const char *name, bool writable)
+/* the card from CMD0 to its transfer state, 4 bits wide: its CID, its
+ * size in 512-byte sectors; false: no card, or one that does not answer */
+static bool card_init(struct card *c, struct mmc_host *h, const char *name, u32 *cid, u64 *size)
 {
-	struct card *c = &card;
 	u32 r[4];
-	if (c->h) return 0;
 	h->set_clock(h->ctx, 400000);
 	h->set_width(h->ctx, 1);
 	cmd(h, 0, 0, MMC_RSP_NONE, NULL);
@@ -130,23 +215,23 @@ int mmc_start(struct mmc_host *h, const char *name, bool writable)
 		if (!mmc_ident(h, &hc)) {
 			if (h->open_drain) h->open_drain(h->ctx, false);
 			slog("mmc: %s: no card answers\n", name);
-			return 0;
+			return false;
 		}
 	}
 	c->block_addr = hc;
-	u32 cid[4], csd[4];
-	if (cmd(h, 2, 0, MMC_RSP_R2, cid)) return 0;
+	u32 csd[4];
+	if (cmd(h, 2, 0, MMC_RSP_R2, cid)) return false;
 	u32 rca = RCA;
 	if (c->sd) {
-		if (cmd(h, 3, 0, MMC_RSP_R6, r)) return 0;
+		if (cmd(h, 3, 0, MMC_RSP_R6, r)) return false;
 		rca = r[0] >> 16;
 	} else {
 		int e = cmd(h, 3, RCA << 16, MMC_RSP_R1, r);
 		if (h->open_drain) h->open_drain(h->ctx, false);
-		if (e) return 0;
+		if (e) return false;
 	}
-	if (cmd(h, 9, rca << 16, MMC_RSP_R2, csd)) return 0;
-	if (cmd(h, 7, rca << 16, MMC_RSP_R1B, r)) return 0;
+	if (cmd(h, 9, rca << 16, MMC_RSP_R2, csd)) return false;
+	if (cmd(h, 7, rca << 16, MMC_RSP_R1B, r)) return false;
 	/* the size: SD's CSD; eMMC's EXT_CSD SEC_COUNT (above 2 GB), or its CSD */
 	u64 sectors = 0;
 	static u8 ext[512];
@@ -164,6 +249,18 @@ int mmc_start(struct mmc_host *h, const char *name, bool writable)
 	if (!c->sd && h->cmd(h->ctx, 8, 0, MMC_RSP_R1, r, ext, 1, false) == 0) {
 		u32 sec = le32(ext + 212);
 		if (sec) sectors = sec;
+		/* the sleep: eMMC 4.3 and later (EXT_CSD_REV 3), S_A_TIMEOUT
+		 * (217): 100 ns times 2^x, 1 to 0x17 */
+		if (ext[192] >= 3 && ext[217] >= 1 && ext[217] <= 0x17 && storage_mmc_sleep()) {
+			c->can_sleep = true;
+			c->sa_us = ((1u << ext[217]) + 9) / 10;
+		}
+		/* QEMU's eMMC model (its CID's name "QEMU!!") takes no command
+		 * in its sleep, not CMD5, and stops at CMD0 (QEMU 11.1: sd.c's
+		 * sd_mode): not put to sleep */
+		if (!memcmp((const u8 *)"QEMU!!", (u8[]){ cid[0] & 0xff, cid[1] >> 24, cid[1] >> 16 & 0xff,
+				cid[1] >> 8 & 0xff, cid[1] & 0xff, cid[2] >> 24 }, 6))
+			c->can_sleep = false;
 	}
 	h->set_clock(h->ctx, c->sd ? 25000000 : 26000000);
 	/* 4 bits wide */
@@ -175,9 +272,21 @@ int mmc_start(struct mmc_host *h, const char *name, bool writable)
 	if (!c->block_addr) cmd(h, 16, 512, MMC_RSP_R1, r);
 	if (!wait_tran(h, 500)) {
 		slog("mmc: %s: the card is not in its transfer state\n", name);
-		return 0;
+		return false;
 	}
+	*size = sectors;
+	return true;
+}
+
+int mmc_start(struct mmc_host *h, const char *name, bool writable)
+{
+	struct card *c = &card;
+	u32 cid[4];
+	u64 sectors;
+	if (c->h) return 0;
+	if (!card_init(c, h, name, cid, &sectors)) return 0;
 	c->h = h;
+	c->last_us = h->now_us();
 	struct blkdev *d = &c->dev;
 	strncpy0(d->name, name, sizeof(d->name));
 	char *w = d->what;

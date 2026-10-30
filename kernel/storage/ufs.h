@@ -12,7 +12,11 @@ struct ufs_hw {
 	struct dma_mem dma;                       /* at least 264 KiB, uncached */
 	bool keep_link;                           /* the Pro1X: the link Linux left up */
 	bool writable;                            /* the write entry given to the block layer (its fence) */
+	u32 ahit;                                 /* Auto-Hibernate found off: set to this (0: left off) */
 };
+/* ufshcd's default Auto-Hibernate: 150 ms idle (AHIT: the timer in bits
+ * 9:0, its scale in 12:10, 3: milliseconds) */
+#define UFS_AHIT_LINUX (3u << 10 | 150)
 
 /* the controller taken over (or brought up), its LUNs added as disks;
  * the number of them */

@@ -170,9 +170,11 @@ void sched_yield(void)
 
 void timer_tick(void)
 {
+	extern void storage_tick(void);
 	ticks++;
 	if (plat->tick) plat->tick();
 	kmodem_tick();
+	storage_tick();
 #ifdef __aarch64__
 	net_tick();
 #endif
@@ -240,6 +242,8 @@ u32 sched_next_work(void)
 	}
 	if (plat->tick) n = n_min(n, plat->next_tick ? plat->next_tick() : 0, WHY_PLAT);
 	n = n_min(n, kmodem_next(), WHY_MODEM);
+	extern u32 storage_next(void);
+	n = n_min(n, storage_next(), WHY_STORAGE);
 	if (scr.dirty_y0 < scr.dirty_y1) n = n_min(n, 1, WHY_SCREEN);
 #ifdef __aarch64__
 	extern u32 net_next(void);
