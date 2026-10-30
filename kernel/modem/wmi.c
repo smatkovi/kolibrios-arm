@@ -27,6 +27,11 @@ static u16 min_len(u16 tag)
 	case WMI_TLV_TAG_STRUCT_HAL_REG_CAPABILITIES: return WMI_HAL_REG_LEN;
 	case WMI_TLV_TAG_STRUCT_WLAN_HOST_MEM_REQ: return WMI_MEM_REQ_LEN;
 	case WMI_TLV_TAG_STRUCT_READY_EVENT: return WMI_RDY_LEN;
+	case WMI_TLV_TAG_STRUCT_SCAN_EVENT: return WMI_SCAN_EVENT_LEN;
+	case WMI_TLV_TAG_STRUCT_MGMT_RX_HDR: return WMI_MGMT_RX_LEN;
+	case WMI_TLV_TAG_STRUCT_VDEV_START_RESPONSE_EVENT: return WMI_VDEV_START_RESP_LEN;
+	case WMI_TLV_TAG_STRUCT_PEER_STA_KICKOUT_EVENT: return WMI_PEER_KICKOUT_LEN;
+	case WMI_TLV_TAG_STRUCT_ROAM_EVENT: return WMI_ROAM_LEN;
 	default: return 0;
 	}
 }
@@ -234,4 +239,398 @@ int wmi_init_cmd(u8 *out, u32 cap, const struct wmi_res_cfg *c, const struct wmi
 		p += WMI_TLV_HDR + WMI_MEM_CHUNK_LEN;
 	}
 	return (int)len;
+}
+
+/* --- the commands of a station -------------------------------------------- */
+
+/* a command's header and its first TLV; the TLV's value zeroed */
+static u8 *cmd_start(u8 *o, u32 id, u16 tag, u16 len)
+{
+	wmi_put_hdr(o, id);
+	wmi_put_tlv(o + WMI_HDR_LEN, tag, len);
+	mzero(o + WMI_HDR_LEN + WMI_TLV_HDR, len);
+	return o + WMI_HDR_LEN + WMI_TLV_HDR;
+}
+
+static void put_mac(u8 *p, const u8 *mac)
+{
+	mcopy(p, mac, 6);
+	p[6] = p[7] = 0;
+}
+
+static u32 round4(u32 n) { return (n + 3) & ~3u; }
+
+u32 wmi_pdev_set_param(u8 *o, u32 id, u32 value)
+{
+	u8 *c = cmd_start(o, WMI_TLV_PDEV_SET_PARAM_CMDID, WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD, WMI_PDEV_SET_PARAM_LEN);
+	put32(c + 4, id);                       /* pdev_id 0 */
+	put32(c + 8, value);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PDEV_SET_PARAM_LEN;
+}
+
+u32 wmi_pdev_set_rd(u8 *o, u32 rd, u32 rd2g, u32 rd5g, u32 ctl2g, u32 ctl5g, u32 dfs)
+{
+	(void)dfs;                              /* (not in the TLV form's structure) */
+	u8 *c = cmd_start(o, WMI_TLV_PDEV_SET_REGDOMAIN_CMDID, WMI_TLV_TAG_STRUCT_PDEV_SET_REGDOMAIN_CMD, WMI_PDEV_SET_RD_LEN);
+	put32(c + 4, rd);
+	put32(c + 8, rd2g);
+	put32(c + 12, rd5g);
+	put32(c + 16, ctl2g);
+	put32(c + 20, ctl5g);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PDEV_SET_RD_LEN;
+}
+
+/* ath10k_wmi_put_wmi_channel for a 20 MHz channel; ath10k_update_channel_list's
+ * flags (HT and VHT allowed, IBSS where not passive, passive on DFS) */
+static void put_channel(u8 *ch, const struct wmi_chan *c)
+{
+	u32 flags = 0x800 | 0x1000;             /* WMI_CHAN_FLAG_ALLOW_HT, _ALLOW_VHT */
+	bool passive = c->passive || c->dfs;
+	if (passive) flags |= WMI_CHAN_FLAG_PASSIVE;
+	else flags |= 0x100;                    /* WMI_CHAN_FLAG_ADHOC_ALLOWED */
+	if (c->dfs) flags |= WMI_CHAN_FLAG_DFS;
+	mzero(ch, WMI_CHANNEL_LEN);
+	put32(ch, c->freq);                     /* mhz */
+	put32(ch + 4, c->freq);                 /* band_center_freq1 */
+	put32(ch + 12, c->mode | flags);        /* the mode in the low byte, the flags around it */
+	ch[16] = 0;                             /* min_power */
+	ch[17] = c->max_power;
+	ch[18] = c->reg_power;
+	ch[20] = 0;                             /* antenna_max */
+	ch[21] = c->max_power;                  /* max_tx_power */
+}
+
+u32 wmi_scan_chan_list(u8 *o, const struct wmi_chan *c, u32 n)
+{
+	u8 *p = cmd_start(o, WMI_TLV_SCAN_CHAN_LIST_CMDID, WMI_TLV_TAG_STRUCT_SCAN_CHAN_LIST_CMD, 4);
+	put32(p, n);
+	p += 4;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_STRUCT, (u16)(n * (WMI_TLV_HDR + WMI_CHANNEL_LEN)));
+	p += WMI_TLV_HDR;
+	for (u32 i = 0; i < n; i++) {
+		wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_CHANNEL, WMI_CHANNEL_LEN);
+		put_channel(p + WMI_TLV_HDR, &c[i]);
+		p += WMI_TLV_HDR + WMI_CHANNEL_LEN;
+	}
+	return (u32)(p - o);
+}
+
+u32 wmi_start_scan(u8 *o, u32 vdev, u32 scan_id, const u16 *freqs, u32 nfreq, const u8 *ssid, u32 ssid_len,
+		   const u8 *ie, u32 ie_len)
+{
+	u8 *c = cmd_start(o, WMI_TLV_START_SCAN_CMDID, WMI_TLV_TAG_STRUCT_START_SCAN_CMD, WMI_START_SCAN_LEN);
+	u32 nssid = ssid ? 1 : 0;
+	/* wmi_start_scan_common: ath10k_wmi_start_scan_init's values */
+	put32(c, WMI_HOST_SCAN_REQ_ID_PREFIX | scan_id);
+	put32(c + 4, WMI_HOST_SCAN_REQUESTOR_ID_PREFIX | 1);
+	put32(c + 8, vdev);
+	put32(c + 12, WMI_SCAN_PRIORITY_LOW);
+	put32(c + 16, WMI_SCAN_EVENT_STARTED | WMI_SCAN_EVENT_COMPLETED | WMI_SCAN_EVENT_BSS_CHANNEL |
+		      WMI_SCAN_EVENT_FOREIGN_CHANNEL | WMI_SCAN_EVENT_FOREIGN_CHANNEL_EXIT | WMI_SCAN_EVENT_DEQUEUED);
+	put32(c + 20, 50);                      /* dwell_time_active */
+	put32(c + 24, 150);                     /* dwell_time_passive */
+	put32(c + 28, 50);                      /* min_rest_time */
+	put32(c + 32, 500);                     /* max_rest_time */
+	put32(c + 48, 20000);                   /* max_scan_time */
+	put32(c + 52, 5);                       /* probe_delay */
+	u32 flags = WMI_SCAN_CHAN_STAT_EVENT | (nssid ? 0 : 1);   /* WMI_SCAN_FLAG_PASSIVE without an SSID */
+	put32(c + 56, flags ^ WMI_SCAN_FILTER_PROBE_REQ);        /* the TLV firmware's inverted flag */
+	put32(c + 64, nfreq);
+	put32(c + 68, 1);                       /* num_bssids: the broadcast address */
+	put32(c + 72, nssid);
+	put32(c + 76, ie_len);
+	put32(c + 80, 3);                       /* num_probes */
+	u8 *p = c + WMI_START_SCAN_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_UINT32, (u16)(4 * nfreq));
+	p += WMI_TLV_HDR;
+	for (u32 i = 0; i < nfreq; i++, p += 4) put32(p, freqs[i]);
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_FIXED_STRUCT, (u16)(WMI_SSID_LEN * nssid));
+	p += WMI_TLV_HDR;
+	if (nssid) {
+		mzero(p, WMI_SSID_LEN);
+		put32(p, ssid_len);
+		mcopy(p + 4, ssid, MIN(ssid_len, 32u));
+		p += WMI_SSID_LEN;
+	}
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_FIXED_STRUCT, WMI_MAC_ADDR_LEN);
+	p += WMI_TLV_HDR;
+	put_mac(p, (const u8 *)"\xff\xff\xff\xff\xff\xff");
+	p += WMI_MAC_ADDR_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)round4(ie_len));
+	p += WMI_TLV_HDR;
+	mzero(p, round4(ie_len));
+	mcopy(p, ie, ie_len);
+	p += round4(ie_len);
+	return (u32)(p - o);
+}
+
+u32 wmi_vdev_create(u8 *o, u32 vdev, u32 type, u32 subtype, const u8 mac[6])
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_CREATE_CMDID, WMI_TLV_TAG_STRUCT_VDEV_CREATE_CMD, WMI_VDEV_CREATE_LEN);
+	put32(c, vdev);
+	put32(c + 4, type);
+	put32(c + 8, subtype);
+	put_mac(c + 12, mac);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_VDEV_CREATE_LEN;
+}
+
+u32 wmi_vdev_start(u8 *o, u32 vdev, u32 bcn_int, u32 dtim, const struct wmi_chan *ch)
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_START_REQUEST_CMDID, WMI_TLV_TAG_STRUCT_VDEV_START_REQUEST_CMD, WMI_VDEV_START_LEN);
+	put32(c, vdev);
+	put32(c + 8, bcn_int);
+	put32(c + 12, dtim);
+	/* flags 0, no SSID (a station's), rate, power, no NoA, hw ack on */
+	u8 *p = c + WMI_VDEV_START_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_CHANNEL, WMI_CHANNEL_LEN);
+	put_channel(p + WMI_TLV_HDR, ch);
+	p += WMI_TLV_HDR + WMI_CHANNEL_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_STRUCT, 0);        /* the NoA descriptors: none */
+	p += WMI_TLV_HDR;
+	return (u32)(p - o);
+}
+
+u32 wmi_vdev_up(u8 *o, u32 vdev, u32 aid, const u8 bssid[6])
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_UP_CMDID, WMI_TLV_TAG_STRUCT_VDEV_UP_CMD, WMI_VDEV_UP_LEN);
+	put32(c, vdev);
+	put32(c + 4, aid);
+	put_mac(c + 8, bssid);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_VDEV_UP_LEN;
+}
+
+u32 wmi_vdev_set_param(u8 *o, u32 vdev, u32 id, u32 value)
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_SET_PARAM_CMDID, WMI_TLV_TAG_STRUCT_VDEV_SET_PARAM_CMD, WMI_VDEV_SET_PARAM_LEN);
+	put32(c, vdev);
+	put32(c + 4, id);
+	put32(c + 8, value);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_VDEV_SET_PARAM_LEN;
+}
+
+u32 wmi_install_key(u8 *o, u32 vdev, const u8 mac[6], u32 idx, u32 flags, u32 cipher, const u8 *key, u32 len)
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_INSTALL_KEY_CMDID, WMI_TLV_TAG_STRUCT_VDEV_INSTALL_KEY_CMD, WMI_INSTALL_KEY_LEN);
+	put32(c, vdev);
+	put_mac(c + 4, mac);
+	put32(c + 12, idx);
+	put32(c + 16, flags);
+	put32(c + 20, cipher);
+	put32(c + 80, len);
+	/* key_txmic_len, key_rxmic_len: 0 for CCMP */
+	u8 *p = c + WMI_INSTALL_KEY_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)round4(len));
+	p += WMI_TLV_HDR;
+	mzero(p, round4(len));
+	if (key) mcopy(p, key, len);
+	p += round4(len);
+	return (u32)(p - o);
+}
+
+u32 wmi_vdev_down(u8 *o, u32 vdev)
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_DOWN_CMDID, WMI_TLV_TAG_STRUCT_VDEV_DOWN_CMD, 4);
+	put32(c, vdev);
+	return WMI_HDR_LEN + WMI_TLV_HDR + 4;
+}
+
+u32 wmi_vdev_stop(u8 *o, u32 vdev)
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_STOP_CMDID, WMI_TLV_TAG_STRUCT_VDEV_STOP_CMD, 4);
+	put32(c, vdev);
+	return WMI_HDR_LEN + WMI_TLV_HDR + 4;
+}
+
+u32 wmi_peer_delete(u8 *o, u32 vdev, const u8 mac[6])
+{
+	u8 *c = cmd_start(o, WMI_TLV_PEER_DELETE_CMDID, WMI_TLV_TAG_STRUCT_PEER_DELETE_CMD, WMI_PEER_DELETE_LEN);
+	put32(c, vdev);
+	put_mac(c + 4, mac);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PEER_DELETE_LEN;
+}
+
+u32 wmi_peer_create(u8 *o, u32 vdev, const u8 mac[6], u32 type)
+{
+	u8 *c = cmd_start(o, WMI_TLV_PEER_CREATE_CMDID, WMI_TLV_TAG_STRUCT_PEER_CREATE_CMD, WMI_PEER_CREATE_LEN);
+	put32(c, vdev);
+	put_mac(c + 4, mac);
+	put32(c + 12, type);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PEER_CREATE_LEN;
+}
+
+u32 wmi_peer_set_param(u8 *o, u32 vdev, const u8 mac[6], u32 id, u32 value)
+{
+	u8 *c = cmd_start(o, WMI_TLV_PEER_SET_PARAM_CMDID, WMI_TLV_TAG_STRUCT_PEER_SET_PARAM_CMD, WMI_PEER_SET_PARAM_LEN);
+	put32(c, vdev);
+	put_mac(c + 4, mac);
+	put32(c + 12, id);
+	put32(c + 16, value);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PEER_SET_PARAM_LEN;
+}
+
+u32 wmi_peer_assoc(u8 *o, u32 vdev, const u8 mac[6], u32 aid, u32 flags, u32 caps, u32 listen, u32 phymode,
+		   const u8 *rates, u32 nrates)
+{
+	u8 *c = cmd_start(o, WMI_TLV_PEER_ASSOC_CMDID, WMI_TLV_TAG_STRUCT_PEER_ASSOC_COMPLETE_CMD, WMI_PEER_ASSOC_LEN);
+	put_mac(c, mac);
+	put32(c + 8, vdev);
+	put32(c + 12, 1);                       /* new_assoc */
+	put32(c + 16, aid);
+	put32(c + 20, flags);
+	put32(c + 24, caps);
+	put32(c + 28, listen);
+	put32(c + 48, 1);                       /* nss: ath10k_peer_assoc_h_basic */
+	put32(c + 56, phymode);
+	put32(c + 68, nrates);
+	put32(c + 72, 0);                       /* no HT rates */
+	u8 *p = c + WMI_PEER_ASSOC_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)round4(nrates));
+	p += WMI_TLV_HDR;
+	mzero(p, round4(nrates));
+	mcopy(p, rates, nrates);
+	p += round4(nrates);
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, 0);
+	p += WMI_TLV_HDR;
+	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_VHT_RATE_SET, WMI_VHT_RATE_SET_LEN);
+	mzero(p + WMI_TLV_HDR, WMI_VHT_RATE_SET_LEN);
+	p += WMI_TLV_HDR + WMI_VHT_RATE_SET_LEN;
+	return (u32)(p - o);
+}
+
+u32 wmi_sta_ps_mode(u8 *o, u32 vdev, u32 mode)
+{
+	u8 *c = cmd_start(o, WMI_TLV_STA_POWERSAVE_MODE_CMDID, WMI_TLV_TAG_STRUCT_STA_POWERSAVE_MODE_CMD, WMI_STA_PS_MODE_LEN);
+	put32(c, vdev);
+	put32(c + 4, mode);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_STA_PS_MODE_LEN;
+}
+
+u32 wmi_sta_ps_param(u8 *o, u32 vdev, u32 id, u32 value)
+{
+	u8 *c = cmd_start(o, WMI_TLV_STA_POWERSAVE_PARAM_CMDID, WMI_TLV_TAG_STRUCT_STA_POWERSAVE_PARAM_CMD, WMI_STA_PS_PARAM_LEN);
+	put32(c, vdev);
+	put32(c + 4, id);
+	put32(c + 8, value);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_STA_PS_PARAM_LEN;
+}
+
+u32 wmi_mgmt_tx(u8 *o, u32 vdev, u32 desc_id, u64 pa, const u8 *frame, u32 len)
+{
+	u8 *c = cmd_start(o, WMI_TLV_MGMT_TX_SEND_CMD, WMI_TLV_TAG_STRUCT_MGMT_TX_CMD, WMI_MGMT_TX_LEN);
+	u32 buf = round4(MIN(len, (u32)WMI_MGMT_TX_FRAME_MAX));
+	put32(c, vdev);
+	put32(c + 4, desc_id);
+	put32(c + 8, 0);                        /* chanfreq: the vdev's */
+	put64(c + 12, pa);
+	put32(c + 20, len);                     /* frame_len */
+	put32(c + 24, buf);                     /* buf_len */
+	u8 *p = c + WMI_MGMT_TX_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)buf);
+	p += WMI_TLV_HDR;
+	mzero(p, buf);
+	mcopy(p, frame, MIN(len, buf));
+	p += buf;
+	return (u32)(p - o);
+}
+
+/* --- events ------------------------------------------------------------------ */
+
+struct find { u16 tag; const u8 *v; u16 len; const u8 *bytes; u16 blen; };
+
+static int find_tlv(u16 tag, const u8 *v, u16 len, void *arg)
+{
+	struct find *f = arg;
+	if (tag == f->tag && !f->v) f->v = v, f->len = len;
+	if (tag == WMI_TLV_TAG_ARRAY_BYTE && !f->bytes) f->bytes = v, f->blen = len;
+	return 0;
+}
+
+static const u8 *find(const u8 *p, u32 len, u16 tag, struct find *f)
+{
+	mzero(f, sizeof(*f));
+	f->tag = tag;
+	if (wmi_tlv_each(p, len, find_tlv, f)) return NULL;
+	return f->v;
+}
+
+int wmi_scan_event(const u8 *p, u32 len, struct wmi_scan_ev *e)
+{
+	struct find f;
+	const u8 *v = find(p, len, WMI_TLV_TAG_STRUCT_SCAN_EVENT, &f);
+	if (!v) return -1;
+	e->type = get32(v);
+	e->reason = get32(v + 4);
+	e->freq = get32(v + 8);
+	e->req_id = get32(v + 12);
+	e->scan_id = get32(v + 16);
+	e->vdev = get32(v + 20);
+	return 0;
+}
+
+int wmi_mgmt_rx(const u8 *p, u32 len, struct wmi_mgmt_rx *e)
+{
+	struct find f;
+	const u8 *v = find(p, len, WMI_TLV_TAG_STRUCT_MGMT_RX_HDR, &f);
+	if (!v || !f.bytes) return -1;
+	e->channel = get32(v);
+	e->snr = get32(v + 4);
+	e->rate = get32(v + 8);
+	e->phy_mode = get32(v + 12);
+	e->len = get32(v + 16);
+	e->status = get32(v + 20);
+	e->frame = f.bytes;
+	return e->len <= f.blen ? 0 : -1;
+}
+
+int wmi_vdev_start_resp(const u8 *p, u32 len, struct wmi_vdev_start_resp *e)
+{
+	struct find f;
+	const u8 *v = find(p, len, WMI_TLV_TAG_STRUCT_VDEV_START_RESPONSE_EVENT, &f);
+	if (!v) return -1;
+	e->vdev = get32(v);
+	e->req_id = get32(v + 4);
+	e->resp_type = get32(v + 8);
+	e->status = get32(v + 12);
+	return 0;
+}
+
+struct bundle { const u8 *num, *ids, *status; u16 nids, nstatus; };
+
+static int bundle_tlv(u16 tag, const u8 *v, u16 len, void *arg)
+{
+	struct bundle *b = arg;
+	if (tag == WMI_TLV_TAG_STRUCT_MGMT_TX_COMPL_BUNDLE_EVENT && len >= 4) b->num = v;
+	else if (tag == WMI_TLV_TAG_ARRAY_UINT32) {
+		/* (ath10k_wmi_tlv_mgmt_tx_bundle_compl_parse: the ids, the
+		 * statuses, then the PPDU ids and the ACK RSSIs) */
+		if (!b->ids) b->ids = v, b->nids = len / 4;
+		else if (!b->status) b->status = v, b->nstatus = len / 4;
+	}
+	return 0;
+}
+
+int wmi_mgmt_tx_compl(const u8 *p, u32 len, bool bundle, void (*fn)(u32 id, u32 status, void *arg), void *arg)
+{
+	if (!bundle) {
+		struct find f;
+		const u8 *v = find(p, len, WMI_TLV_TAG_STRUCT_MGMT_TX_COMPL_EVENT, &f);
+		if (!v || f.len < 8) return -1;
+		fn(get32(v), get32(v + 4), arg);
+		return 0;
+	}
+	struct bundle b = { 0 };
+	if (wmi_tlv_each(p, len, bundle_tlv, &b) || !b.num || !b.ids || !b.status) return -1;
+	u32 n = get32(b.num);
+	if (n > b.nids || n > b.nstatus) return -1;
+	for (u32 i = 0; i < n; i++) fn(get32(b.ids + 4 * i), get32(b.status + 4 * i), arg);
+	return 0;
+}
+
+int wmi_peer_kickout(const u8 *p, u32 len, u8 mac[6])
+{
+	struct find f;
+	const u8 *v = find(p, len, WMI_TLV_TAG_STRUCT_PEER_STA_KICKOUT_EVENT, &f);
+	if (!v) return -1;
+	mcopy(mac, v, 6);
+	return 0;
 }

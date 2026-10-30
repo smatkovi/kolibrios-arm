@@ -113,6 +113,11 @@ int ce_init(const struct ce_hw *hw);
  * Linux's _ath10k_ce_send_nolock_64), so ce_send_done must have taken the
  * completions before the ring goes round once more */
 int ce_send(u32 ce, u64 pa, u32 nbytes, u32 transfer_id, void *ctx);
+/* a piece of a gathered transfer (gather: more follow; the write index
+ * moves with the last), as ath10k_snoc_hif_tx_sg sends HTT's TX_FRM; a
+ * piece taken back when a later one does not fit */
+int ce_send_sg(u32 ce, u64 pa, u32 nbytes, u32 transfer_id, bool gather, void *ctx);
+void ce_send_revert(u32 ce);
 /* the next sent buffer the target is done with: 0 (*ctx), -1 (none yet) */
 int ce_send_done(u32 ce, void **ctx);
 /* an empty buffer for the target to fill: 0, -1 (the ring full) */

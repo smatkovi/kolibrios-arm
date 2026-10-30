@@ -205,7 +205,7 @@ int ce_init(const struct ce_hw *h)
 	return 0;
 }
 
-int ce_send(u32 id, u64 pa, u32 nbytes, u32 transfer_id, void *ctx)
+int ce_send_sg(u32 id, u64 pa, u32 nbytes, u32 transfer_id, bool gather, void *ctx)
 {
 	if (id >= CE_COUNT || !ce[id].src.n) return -1;
 	struct ring *r = &ce[id].src;
@@ -213,12 +213,36 @@ int ce_send(u32 id, u64 pa, u32 nbytes, u32 transfer_id, void *ctx)
 	u32 sw = rri[id] & 0xffff;
 	if ((int)DELTA(r->mask, r->wr, sw - 1) <= 0) return -1;
 	u32 flags = transfer_id << 4 & 0xfff0;            /* CE_DESC_FLAGS_META_DATA (wcn3990_values) */
-	desc_put(r, r->wr, (u32)pa, (u32)(pa >> 32) & 0x1f, (u16)nbytes, (u16)flags);
+	/* _ath10k_ce_send_nolock_64: a gathered piece has CE_DESC_FLAGS_GATHER
+	 * in its flags and, in the address's high word, the send flag
+	 * (CE_SEND_FLAG_GATHER, 0x10000) and CE_WCN3990_DESC_FLAGS_GATHER */
+	u32 hi = (u32)(pa >> 32) & 0x1f;
+	if (gather) {
+		flags |= 1;
+		hi |= 0x00010000u | CE_GATHER;
+	}
+	desc_put(r, r->wr, (u32)pa, hi, (u16)nbytes, (u16)flags);
 	r->ctx[r->wr] = ctx;
 	r->wr = (r->wr + 1) & r->mask;
-	sm_barrier();
-	hw.wr(CE_SHADOW_SR(id), r->wr);
+	/* the write index only after the last piece */
+	if (!gather) {
+		sm_barrier();
+		hw.wr(CE_SHADOW_SR(id), r->wr);
+	}
 	return 0;
+}
+
+int ce_send(u32 id, u64 pa, u32 nbytes, u32 transfer_id, void *ctx)
+{
+	return ce_send_sg(id, pa, nbytes, transfer_id, false, ctx);
+}
+
+void ce_send_revert(u32 id)
+{
+	if (id >= CE_COUNT || !ce[id].src.n) return;
+	struct ring *r = &ce[id].src;
+	r->wr = (r->wr - 1) & r->mask;
+	r->ctx[r->wr] = 0;
 }
 
 int ce_send_done(u32 id, void **ctx)

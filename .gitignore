@@ -5,3 +5,5 @@ third_party/
 tests/linux/hello/hello
 tests/linux/nettest/nettest
 tests/wifi/test
+tests/wifi/crypto
+tests/wifi/station
