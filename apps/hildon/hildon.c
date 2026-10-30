@@ -616,6 +616,12 @@ static void launch(int i)
 static void close_app(int slot)
 {
 	if (slot == self_slot || !slot) return;
+	/* asked again while it was asking something itself: ended now */
+	if (closing == -slot && kos_uptime() - closing_tick < 3000) {
+		kos_kill_slot(slot);
+		closing = 0;
+		return;
+	}
 	kos_activate_slot(slot);
 	kos_send_button(1);
 	closing = slot;
@@ -658,10 +664,20 @@ static void follow(void)
 	scan();
 	watch_modem();
 	int a = kos_active_slot();
-	if (closing && app_index(closing) < 0) closing = 0;
-	if (closing && kos_uptime() - closing_tick > 200) {
-		kos_kill_slot(closing);
-		closing = 0;
+	if (closing && app_index(closing > 0 ? closing : -closing) < 0) closing = 0;
+	if (closing > 0 && kos_uptime() - closing_tick > 200) {
+		/* still there after 2 s: waiting in its event loop, it answered
+		 * the close with a question of its own (t_edit's "Save
+		 * changes?"), and the close button ends it at once from now on;
+		 * busy, it is ended */
+		kos_thread_info(info, closing);
+		if (*(u16 *)(info + 50) == 5) {
+			closing = -closing;
+			closing_tick = kos_uptime();
+		} else {
+			kos_kill_slot(closing);
+			closing = 0;
+		}
 	}
 	/* a new window: a program just started, to the front (whether it
 	 * or the shell defined its window first) */
