@@ -170,6 +170,9 @@ static u32 dll_load(struct task *t, const char *path)
 		case DT_REL: rel = val; break;
 		case DT_RELSZ: relsz = val; break;
 		case DT_JMPREL: jmprel = val; break;
+		case DT_PLTREL:
+			if (val != DT_REL) { kprintf("%s: RELA relocations\n", path); return 0; }
+			break;
 		case DT_PLTRELSZ: pltrelsz = val; break;
 		default: break;
 		}
@@ -187,7 +190,7 @@ static u32 dll_load(struct task *t, const char *path)
 	u32 exports = 0;
 	for (u32 i = 1; i < nsym; i++) {
 		u32 n = syms[i].name;
-		if (n < strsz && syms[i].shndx && !strncmp((const char *)img + strtab + n, "EXPORTS", 8))
+		if (n + 8 <= strsz && syms[i].shndx && !memcmp(img + strtab + n, "EXPORTS", 8))
 			exports = base + syms[i].value;
 	}
 	if (!exports) {

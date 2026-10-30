@@ -331,6 +331,16 @@ static void test_ipc(void)
 
 #define SHM_NAME "threadtest-area"
 
+static volatile u8 *volatile ro_view;
+static volatile u32 ro_written;
+static void t_write_ro(void)
+{
+	ro_view[0] = 0;                          /* faults: the thread ends here */
+	ro_written = 1;
+	kos_exit();
+}
+
+
 static void test_processes(void)
 {
 	*(u32 *)main_ipc = 0;
@@ -374,9 +384,18 @@ static void test_processes(void)
 	check(wait_gone(child), "the other process ended", child, 0);
 
 	/* a read-only area: opening it for writing is refused */
-	void *ro = kos_shm_open("threadtest-ro", 4096, KOS_SHM_CREATE | KOS_SHM_READ, &e2);
+	u8 *ro = kos_shm_open("threadtest-ro", 4096, KOS_SHM_CREATE | KOS_SHM_READ, &e2);
 	b = kos_shm_open("threadtest-ro", 0, KOS_SHM_OPEN | KOS_SHM_WRITE, &e2);
 	check(ro && !b && e2 == 10, "68.22 SHM_WRITE on a read-only area: E_ACCESS", (int)b, e2);
+	if (ro) {
+		ro[0] = 0x5a;                    /* the creator may write */
+		ro_view = (volatile u8 *)kos_shm_open("threadtest-ro", 0, KOS_SHM_OPEN | KOS_SHM_READ, &e2);
+		int tid = ro_view ? kos_thread_create(t_write_ro, STACK(1)) : -1;
+		check(ro_view && ro_view[0] == 0x5a && wait_gone(tid) && ro_view[0] == 0x5a && ro_written == 0,
+		      "a read-only mapping: read, a write faults (the thread ends)", ro_view ? ro_view[0] : 0, ro_written);
+		check(kos_call(60, 1, (u32)ro_view, 64, 0, 0) == (u32)-1, "60.1 refuses a read-only area as the buffer", 0, 0);
+		kos_shm_close("threadtest-ro");
+	}
 	kos_shm_close("threadtest-ro");
 	kos_shm_close(SHM_NAME);
 	b = kos_shm_open(SHM_NAME, 0, KOS_SHM_OPEN, &e2);
