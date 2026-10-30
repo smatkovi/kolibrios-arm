@@ -47,6 +47,7 @@ import sys
 import uuid as uuidlib
 
 FS_IOC_FIEMAP = 0xC020660B
+FIBMAP, FIGETBSZ = 1, 2
 FIEMAP_FLAG_SYNC = 0x1
 FIEMAP_EXTENT_LAST = 0x1
 # not usable as raw blocks: unknown place, not on disk yet, encoded,
@@ -62,7 +63,7 @@ HDR_MAGIC = b"KOLIBRI-HOME 1\0"
 HDR_OFF = 65536            # in the FAT's reserved sectors (32 of 4096 bytes)
 SECTOR = 4096
 CHUNK = 4 << 20
-MAX_RANGES = 64            # KolibriOS's fence (FMAP_MAX)
+MAX_RANGES = 1024          # KolibriOS's fence (FMAP_MAX)
 MIN_SIZE = 32 << 20
 
 
@@ -118,12 +119,39 @@ def fiemap(path):
                 return extents
 
 
+def fibmap(path):
+    """vfat has no FIEMAP: the file's blocks one by one (FIBMAP, as root),
+    as extents of one block; 0 is a hole"""
+    out = []
+    with open(path, "rb") as f:
+        bsz = array.array("i", [0])
+        fcntl.ioctl(f.fileno(), FIGETBSZ, bsz, True)
+        bs = bsz[0]
+        n = (os.fstat(f.fileno()).st_size + bs - 1) // bs
+        for i in range(n):
+            b = array.array("i", [i])
+            fcntl.ioctl(f.fileno(), FIBMAP, b, True)
+            if b[0] <= 0:
+                raise SystemExit("%s: block %d is not on the disk" % (path, i))
+            out.append((i * bs, b[0] * bs, bs, FIEMAP_EXTENT_LAST if i == n - 1 else 0))
+    return out
+
+
+def extents(path):
+    try:
+        return fiemap(path)
+    except OSError as e:
+        if e.errno != 95:        # EOPNOTSUPP: vfat
+            raise
+        return fibmap(path)
+
+
 def ranges(path):
     """The file's blocks as (offset on the partition, length), adjacent
     ones joined; refuses a file that is not fully written out."""
     size = os.stat(path).st_size
     out, pos = [], 0
-    for lo, ph, ln, fl in fiemap(path):
+    for lo, ph, ln, fl in extents(path):
         if fl & FIEMAP_EXTENT_BAD:
             raise SystemExit("%s: extent at %d has flags 0x%x (not plain written blocks)" % (path, lo, fl))
         if lo != pos:
@@ -226,7 +254,7 @@ def fat_first_cluster(img):
     rootents = struct.unpack_from("<H", bs, 17)[0]
     fatsz = struct.unpack_from("<H", bs, 22)[0] or struct.unpack_from("<I", bs, 36)[0]
     data = (rsvd + nfats * fatsz + (rootents * 32 + bps - 1) // bps) * bps
-    ph = fiemap(img)[0][1]
+    ph = extents(img)[0][1]
     if (ph - data) % (bps * spc):
         raise SystemExit("%s: its first block is not at a cluster's start" % img)
     return (ph - data) // (bps * spc) + 2
@@ -241,7 +269,8 @@ def write_map(img, mapfile, fs, uid):
     st = os.stat(img)
     rs = ranges(img)
     if len(rs) > MAX_RANGES:
-        raise SystemExit("%s: in %d pieces on the partition, more than %d" % (img, len(rs), MAX_RANGES))
+        raise SystemExit("%s: in %d pieces on the partition, more than %d (a smaller --size, or a "
+                         "partition with more room in one piece)" % (img, len(rs), MAX_RANGES))
     if rs[0][1] < HDR_OFF + 4096:
         raise SystemExit("%s: its first piece is too small" % img)
     tmp = mapfile + ".tmp"
@@ -278,7 +307,7 @@ def cmd_create(a):
         raise SystemExit("%s is there already (kolibri-home remove first: KolibriOS's files in it "
                          "go with it)" % img)
     st = os.statvfs(a.host)
-    if st.f_bavail * st.f_frsize < size + (256 << 20):
+    if st.f_bavail * st.f_frsize < size + (32 << 20):
         raise SystemExit("%s: not enough room for %d MiB" % (a.host, size >> 20))
     os.makedirs(d, exist_ok=True)
     uid = uuidlib.uuid4().bytes
