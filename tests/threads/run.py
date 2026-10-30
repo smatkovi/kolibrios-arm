@@ -16,7 +16,8 @@ import sys
 
 TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = os.path.join(TOP, 'tests', 'threads')
-OUT = '/tmp/kolibri-threads-test'
+# the output, per worktree (KOLIBRI_THREADS_OUT: elsewhere)
+OUT = os.environ.get('KOLIBRI_THREADS_OUT', '/tmp/kolibri-threads-test-' + os.path.basename(TOP))
 failed = []
 
 
