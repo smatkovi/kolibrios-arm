@@ -102,6 +102,11 @@ static void autorun(void)
 				char *params = NULL;
 				for (char *p = line; *p; p++)
 					if (*p == ' ') { *p = 0; params = p + 1; break; }
+				/* the Hildon shell: its look from the start, so the
+				 * programs started beside it see its colours (48.3)
+				 * before it sets its skin (48.8) */
+				u32 ll = strlen(line);
+				if (ll >= 8 && !strcmp(line + ll - 8, "/@hildon")) wm_set_look(LOOK_HILDON);
 				if (load_program(line, params, NULL) < 0)
 					kprintf("autorun: %s not started\n", line);
 			}

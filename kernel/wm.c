@@ -385,6 +385,29 @@ void wm_remove(struct task *t)
 	}
 }
 
+/* a line of the screen inverted, where the slot owns it */
+static void negate_line(int x, int y, int w, int h, int slot)
+{
+	static u8 px[3 * 4096];
+	if (w <= 0 || h <= 0 || w * h > 4096) return;
+	if (x < 0 || y < 0 || x + w > scr.w || y + h > scr.h) return;
+	gfx_read(px, x, y, w, h);
+	for (int i = 0; i < 3 * w * h; i++) px[i] ^= 0xff;
+	gfx_image(x, y, w, h, px, slot);
+}
+
+/* a button pressed or let go: its frame inverted, as KolibriOS's kernel
+ * does (negative_button), the face and what the program drew on it kept */
+void wm_button_press_draw(struct task *t, struct button *b)
+{
+	if (b->noframe) return;
+	int s = t->slot;
+	negate_line(b->x, b->y, b->w, 1, s);
+	negate_line(b->x, b->y + b->h - 1, b->w, 1, s);
+	negate_line(b->x, b->y + 1, 1, b->h - 2, s);
+	negate_line(b->x + b->w - 1, b->y + 1, 1, b->h - 2, s);
+}
+
 void wm_button_draw(struct task *t, struct button *b, bool pressed)
 {
 	int s = t->slot;
@@ -468,7 +491,7 @@ void wm_mouse(int x, int y, int buttons, int changed)
 				press_slot = slot;
 				press_idx = bi;
 				press_buttons = buttons;
-				wm_button_draw(t, &w->btn[bi], true);
+				wm_button_press_draw(t, &w->btn[bi]);
 			} else if ((w->style == 3 || w->style == 4 || w->style == 0 || w->style == 2) &&
 				   w->movable && mouse_y < w->y + SKIN_H) {
 				drag_slot = slot;
@@ -482,7 +505,7 @@ void wm_mouse(int x, int y, int buttons, int changed)
 			struct task *p = &tasks[press_slot];
 			if (p->state != T_FREE && press_idx < p->win.nbtn) {
 				struct button *b = &p->win.btn[press_idx];
-				wm_button_draw(p, b, false);
+				wm_button_press_draw(p, b);
 				if (mouse_x >= b->x && mouse_x < b->x + b->w &&
 				    mouse_y >= b->y && mouse_y < b->y + b->h)
 					button_event(p, b->id, press_buttons);

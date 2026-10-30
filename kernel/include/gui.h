@@ -72,6 +72,7 @@ void wm_redraw_background(int x, int y, int w, int h);
 void wm_mouse(int x, int y, int buttons, int changed);
 void wm_key(u32 value);                   /* to the active window */
 void wm_button_draw(struct task *t, struct button *b, bool pressed);
+void wm_button_press_draw(struct task *t, struct button *b);   /* its frame inverted */
 /* the window's origin for drawing (relative to the frame or the work area) */
 void wm_origin(struct task *t, int *ox, int *oy);
 extern int mouse_x, mouse_y, mouse_buttons;
