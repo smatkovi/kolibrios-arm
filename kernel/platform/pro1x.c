@@ -33,6 +33,11 @@
  *  - the power key (the PMIC's PON over SPMI): the standby, the display
  *    off and the SoC asleep, ended by the power key or any key.
  *
+ *  - the UFS (kernel/storage/ufs.c) on the link Linux left up, its SMMU
+ *    context's translation off as the display's: the partitions read
+ *    only, the container on userdata (docs/storage.md); kolibri.storage=off
+ *    leaves it alone.
+ *
  * kolibri.noinput leaves the keyboard and the touch screen alone,
  * kolibri.nopowerkey the power key. The clock (the PMIC's RTC, over
  * SPMI) is not driven: the time starts at 0. */
@@ -50,6 +55,8 @@
 #include "power.h"
 #include "powerdt.h"
 #include "blit.h"
+#include "../storage/storage.h"
+#include "../storage/ufs.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -100,6 +107,9 @@ static addr_t wifi_pa;                  /* the WCN3990's membase */
 static u32 wifi_size, wifi_intid[12], wifi_nirq, wifi_streams[2][2];
 static int wifi_nstreams;
 static addr_t prng_pa, gcc_pa, rpmram_pa;
+static addr_t ufs_pa;                   /* the UFS host controller (qcom,ufshc), its SMMU stream */
+static u32 ufs_streams[2][2];
+static int ufs_nstreams;
 static u32 rpmram_size, rpm_bit = 32;
 
 static addr_t io_va(addr_t pa)
@@ -1704,6 +1714,42 @@ static void mpm_woken(void)
 	}
 }
 
+/* the UFS: as Linux left it (kexec), its SMMU context's translation off,
+ * DMA memory below 4 GiB (kernel/storage/ufs.c) */
+bool storage_off(void);
+int storage_home_mode(void);
+bool storage_dma(struct dma_mem *m, u32 mb, u64 limit);
+static u32 ufs_rd(void *c, u32 off) { (void)c; return rd32(io_va(ufs_pa) + off); }
+static void ufs_wr(void *c, u32 off, u32 v) { (void)c; wr32(io_va(ufs_pa) + off, v); }
+static u64 now_us(void)
+{
+	u64 c = SYSREG_R(cntvct_el0), f = SYSREG_R(cntfrq_el0);
+	return c / f * 1000000 + c % f * 1000000 / f;     /* no overflow after days up */
+}
+static void dsb(void) { asm volatile("dsb sy" ::: "memory"); }
+
+static void ufs_init(void)
+{
+	if (storage_off()) {
+		kprintf("pro1x: storage left alone (kolibri.storage=off)\n");
+		return;
+	}
+	if (!ufs_pa) {
+		kprintf("pro1x: no qcom,ufshc in the device tree\n");
+		return;
+	}
+	static struct ufs_hw hw = { .rd = ufs_rd, .wr = ufs_wr, .now_us = now_us, .barrier = dsb, .keep_link = true };
+	if (!storage_dma(&hw.dma, 2, 1ull << 32)) {
+		kprintf("pro1x: no DMA memory below 4 GiB for the UFS\n");
+		return;
+	}
+	if (smmu && ufs_nstreams) smmu_bypass_streams(ufs_streams, ufs_nstreams);
+	else kprintf("pro1x: UFS: no SMMU stream in the device tree\n");
+	hw.writable = storage_home_mode() == HOME_RW;
+	kprintf("pro1x: UFS at %p, DMA %p\n", ufs_pa, (addr_t)hw.dma.pa);
+	ufs_start(&hw);
+}
+
 static void p_other_irq(u32 id);
 static void tlmm_irq_init(void);
 
@@ -1716,6 +1762,7 @@ static void p_init(void)
 	if (powertest || battery_arg) pmic_up();
 	gic3_init(gicd, gicr, p_other_irq);
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
+	ufs_init();
 	pon_init();
 	prng_init();
 	if (wifi) {
@@ -2053,6 +2100,25 @@ bool pro1x_probe(const void *fdt)
 			wifi_streams[wifi_nstreams][0] = cell(p, i + 1);
 			wifi_streams[wifi_nstreams][1] = cell(p, i + 2);
 			wifi_nstreams++;
+		}
+	}
+
+	/* the UFS host controller (its "std" registers) and its SMMU stream */
+	int un = fdt_find_compatible(fdt, "qcom,ufshc", -1, &ac, &sc);
+	if (un >= 0 && fdt_reg(fdt, un, ac, sc, 0, &a, &s) && s <= 0x10000) {
+		ufs_pa = a;
+		add_io(a, s, MAP_DEVICE);
+		p = fdt_prop(fdt, un, "iommus", &len);
+		if (p && len >= 12 && !smmu) {          /* its SMMU, if the display's did not say */
+			int sm = fdt_find_phandle(fdt, cell(p, 0));
+			int sac = 2, ssc = 2;
+			if (sm >= 0 && fdt_find_compatible(fdt, "arm,mmu-500", sm - 1, &sac, &ssc) == sm)
+				reg_io(fdt, sm, sac, ssc, 0, &smmu, MAP_DEVICE);
+		}
+		for (int i = 0; p && i + 3 <= len / 4 && ufs_nstreams < 2; i += 3) {
+			ufs_streams[ufs_nstreams][0] = cell(p, i + 1);
+			ufs_streams[ufs_nstreams][1] = cell(p, i + 2);
+			ufs_nstreams++;
 		}
 	}
 

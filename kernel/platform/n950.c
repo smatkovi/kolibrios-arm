@@ -15,9 +15,14 @@
  *     key map is omap3-n950.dts's (tools/n950-keymap.py)
  *   - the touch screen: Atmel maXTouch (I2C2, 0x4b), T9 messages through
  *     T5, polled; the first finger is the mouse with its left button
+ *   - the eMMC (MMC2, an OMAP3 HSMMC): its clocks and supply (VEMMC, GPIO
+ *     157) on, the controller reset, the card started anew (sdhci.c,
+ *     mmc.c); its partitions read only, the container (docs/storage.md)
  * Not yet: the RTC (TWL4030), the battery. */
 #include "kernel.h"
 #include "blit.h"
+#include "../storage/storage.h"
+#include "../storage/sdhci.h"
 
 #define UART3 0x49020000u
 #define INTC 0x48200000u
@@ -59,6 +64,60 @@ static void n9_early_init(void)
 {
 }
 
+/* --- the eMMC ----------------------------------------------------------- */
+
+#define MMC2 0x480b4000u
+#define CM_FCLKEN1_CORE 0x48004a00u
+#define CM_ICLKEN1_CORE 0x48004a10u
+#define CM_IDLEST1_CORE 0x48004a20u
+#define CM_FCLKEN_PER 0x48005000u
+#define CM_ICLKEN_PER 0x48005010u
+#define GPIO5 0x49056000u
+#define EN_MMC2 (1u << 25)
+#define VEMMC_PIN 29                   /* GPIO 157: gpio5's 29th, VEMMC's enable */
+#define SYNC32K 0x48320010u            /* the 32 kHz counter */
+
+static u64 now_us(void)
+{
+	static u32 last;
+	static u64 high;
+	u32 v = rd32(SYNC32K);
+	if (v < last) high += 1ull << 32;
+	last = v;
+	return ((high | v) * 15625) >> 9;     /* * 10^6 / 32768 */
+}
+
+bool storage_off(void);
+int storage_home_mode(void);
+
+static void emmc_init(void)
+{
+	wr32(CM_ICLKEN1_CORE, rd32(CM_ICLKEN1_CORE) | EN_MMC2);
+	wr32(CM_FCLKEN1_CORE, rd32(CM_FCLKEN1_CORE) | EN_MMC2);
+	for (int i = 0; i < 100000 && (rd32(CM_IDLEST1_CORE) & EN_MMC2); i++)
+		;
+	if (rd32(CM_IDLEST1_CORE) & EN_MMC2) {
+		kprintf("n950: MMC2's clocks do not come on: no eMMC\n");
+		return;
+	}
+	/* the supply: after a second without requests ubiboot's Linux may
+	 * have switched it off */
+	wr32(CM_ICLKEN_PER, rd32(CM_ICLKEN_PER) | (1u << 16));
+	wr32(CM_FCLKEN_PER, rd32(CM_FCLKEN_PER) | (1u << 16));
+	bool was_on = rd32(GPIO5 + 0x03c) & (1u << VEMMC_PIN);    /* DATAOUT */
+	wr32(GPIO5 + 0x094, 1u << VEMMC_PIN);                     /* SETDATAOUT */
+	wr32(GPIO5 + 0x034, rd32(GPIO5 + 0x034) & ~(1u << VEMMC_PIN));   /* OE: an output */
+	kprintf("n950: VEMMC %s\n", was_on ? "was on" : "switched on");
+	u64 t0 = now_us();
+	while (now_us() - t0 < (was_on ? 1000 : 10000))
+		;
+	static struct sdhci hs;
+	hs.base = MMC2;
+	hs.omap = true;
+	hs.now_us = now_us;
+	sdhci_start(&hs, "mmc0", storage_home_mode() == HOME_RW);
+}
+
 static void n9_init(void)
 {
 	/* the INTC: GPTIMER1 only, for now */
@@ -73,6 +132,7 @@ static void n9_init(void)
 	wr32(GPT1 + 0x1c, 2);                         /* TIER: overflow */
 	wr32(GPT1 + 0x24, 3);                         /* TCLR: start, reload */
 	touch_init();
+	if (!storage_off()) emmc_init();
 }
 
 static void n9_irq(void)

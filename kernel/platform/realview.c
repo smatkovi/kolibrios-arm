@@ -1,9 +1,12 @@
 /* KolibriOS for ARM: QEMU's realview-pb-a8 (a Cortex-A8 like the N950's):
  * PL011 UART, SP804 timer, GIC, PL111 display, PL050 keyboard and mouse,
- * PL031 clock. The development platform:
+ * PL031 clock, PL181 card slot (storage tests: -drive if=sd, or
+ * -device emmc,bus=sd-bus). The development platform:
  *
  *   qemu-system-arm -M realview-pb-a8 -m 256 -kernel build/realview/kernel.elf */
 #include "kernel.h"
+#include "../storage/storage.h"
+#include "../storage/pl181.h"
 
 #define IO_PA 0x10000000u
 #define IO_VA 0xf0000000u
@@ -18,6 +21,8 @@
 #define CLCD 0x10020000u
 #define GICC 0x1e000000u
 #define GICD 0x1e001000u
+#define MMCI 0x10005000u
+#define SYS_24MHZ 0x1000005cu
 
 #define IRQ_TIMER0 (32 + 4)
 #define IRQ_KMI_KBD (32 + 20)
@@ -59,6 +64,20 @@ static void kmi_send(addr_t base, u8 b)
 	wr32(base + 0x08, b);
 }
 
+/* the 24 MHz counter as microseconds, its wraps counted */
+static u64 now_us(void)
+{
+	static u32 last;
+	static u64 high;
+	u32 v = rd32(io(SYS_24MHZ));
+	if (v < last) high += 1ull << 32;
+	last = v;
+	return (high | v) / 24;
+}
+
+bool storage_off(void);
+int storage_home_mode(void);
+
 static void rv_init(void)
 {
 	addr_t d = io(GICD), c = io(GICC);
@@ -77,6 +96,13 @@ static void rv_init(void)
 	kmi_send(io(KMI_MOUSE), 0xf4);
 	gic_enable(IRQ_KMI_KBD);
 	gic_enable(IRQ_KMI_MOUSE);
+	/* the card slot (kernel/storage) */
+	if (!storage_off()) {
+		static struct pl181 mmci;
+		mmci.base = io(MMCI);
+		mmci.now_us = now_us;
+		pl181_start(&mmci, "mmc0", storage_home_mode() == HOME_RW);
+	}
 }
 
 static u8 mpkt[3];

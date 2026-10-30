@@ -32,7 +32,10 @@ ACFLAGS := $(CFLAGS) -Ilib -fno-strict-aliasing
 LDFLAGS := -nostdlib -Wl,--no-warn-rwx-segments
 LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 
-KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c serial.c loader.c main.c \
+# storage (docs/storage.md): the block layer, the file systems, the
+# container; the drivers by kernel below
+STORAGE := storage/blk.c storage/ext4.c storage/fat.c storage/home.c storage/dev.c storage/mmc.c storage/sdhci.c
+KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c serial.c loader.c main.c $(STORAGE) \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
 	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c modem/ce.c
@@ -48,7 +51,8 @@ KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/ar
 	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S arch/arm64/fpu.c power.c \
 	fdt.c platform/virt.c platform/virtio_input.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
 	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c modem/regd.c modem/regdb.c modem/ecc.c modem/sae.c \
-	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
+	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S \
+	storage/virtio_blk.c storage/pci.c storage/ufs.c
 # the hot loops in assembler (arch/arm64/blit.S with NEON, string.S);
 # SIMD=c builds the kernel with their C versions only (kernel/blit.c,
 # lib.c); kolibri.simd=c on the command line chooses C at the start
@@ -80,7 +84,7 @@ else
 KERNEL_BASE := 0x70010000
 endif
 KSRC := $(KCOMMON) arch/armv7/start.S arch/armv7/mmu.c arch/armv7/trap.c arch/armv7/fpu.c arch/armv7/vfp.S \
-	platform/realview.c platform/n950.c
+	platform/realview.c platform/n950.c storage/pl181.c
 # the hot loops in assembler with NEON (arch/armv7/blit.S, string.S;
 # kolibri.bench's clock, arch/armv7/cycles.c), as on AArch64: SIMD=c
 # builds the kernel with their C versions only, kolibri.simd=c chooses C
@@ -125,7 +129,7 @@ RD_FILES := $(foreach a,$(APPS) $(CAPPS),$(RD_$(a)))
 
 all: $(B)/kernel.elf $(B)/kernel.bin
 
-$(B)/%.o: kernel/%.c kernel/include/*.h kernel/modem/*.h lib/kos_modem.h kernel/arch/$(ARCH)/arch.h $(B)/flags | dirs
+$(B)/%.o: kernel/%.c kernel/include/*.h kernel/modem/*.h kernel/storage/*.h lib/kos_modem.h kernel/arch/$(ARCH)/arch.h $(B)/flags | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
 $(B)/%.o: kernel/%.S $(B)/flags | dirs
 	$(KCC) $(KCFLAGS) -c $< -o $@
@@ -259,7 +263,7 @@ $(A)/look: FORCE | dirs
 FORCE:
 
 dirs:
-	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/net $(B)/linux $(B)/arch/$(ARCH) $(A)/lib
+	@mkdir -p $(B)/platform $(B)/fonts $(B)/modem $(B)/net $(B)/linux $(B)/storage $(B)/arch/$(ARCH) $(A)/lib
 
 QEMU := qemu-system-arm -M realview-pb-a8 -m 256 -rtc base=localtime -serial stdio
 run: all
