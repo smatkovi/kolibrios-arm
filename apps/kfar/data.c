@@ -591,10 +591,12 @@ u8 bEndSlash, bDestIsFolder, bNeedRestoreName;
 const char header[] = "Kolibri Far " version;
 const char nomem_draw[] = "No memory for redraw.";
 
-/* the folders at the start: the original's right panel is /hd0/1, which
- * KolibriOS for ARM has not; its RAM disk instead */
+/* the folders at the start: the original's right panel is /hd0/1, here
+ * the persistent home when there is one (docs/storage.md), else the RAM
+ * disk (kfar.c chooses) */
 const char def_left_dir[] = "/sys";
 const char def_right_dir[] = "/tmp0/1";
+const char home_right_dir[] = "/hd0/1";
 
 u8 bSilentFolderMode = 1;
 u8 bQuickSearchMode = 0;

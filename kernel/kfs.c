@@ -11,6 +11,11 @@
  *                     the kernel's copy until it is written (copy on
  *                     write); what is written is lost at a reset
  *   /tmp0/1           an empty RAM disk (KolibriOS's tmpdisk's name)
+ *   /ufs0/13, /mmc0/1, /vd0/2 ...
+ *                     the partitions of the disks with a file system on
+ *                     them (kernel/storage: ext2/3/4, FAT), read only
+ *   /hd0/1            the container on one of them (kernel/storage/home.c):
+ *                     FAT, writable with kolibri.home=rw, kept across resets
  *   /linux/..., and any other absolute path on AArch64: the Linux
  *                     personality's tree (kernel/linux/file.c: /home/user,
  *                     /tmp, ...), in RAM too
@@ -20,6 +25,7 @@
  * cp866 or UTF-8 as the program writes them; a UTF-16 path (encoding
  * byte 2) is turned into UTF-8. */
 #include "gui.h"
+#include "storage/storage.h"
 
 /* a program's buffers need not be aligned: words stored and read so the
  * compiler cannot merge them into strd/ldrd (which fault on ARMv7) */
@@ -31,13 +37,7 @@ static inline u32 get32(const void *p) { const struct __attribute__((packed)) w 
 #define PTRS (4096 / sizeof(addr_t))
 #define RESERVE_KB (16 * 1024)          /* the RAM disks leave this much free */
 
-/* KolibriOS's error codes */
-enum { E_OK = 0, E_UNSUPPORTED = 2, E_UNKNOWN_FS = 3, E_NOT_FOUND = 5, E_EOF = 6, E_POINTER = 7,
-       E_DISK_FULL = 8, E_FS = 9, E_ACCESS = 10, E_DEVICE = 11, E_MEMORY = 12 };
-
-#define A_RO 0x01
-#define A_DIR 0x10
-#define A_ARCH 0x20
+/* KolibriOS's error codes and attributes: storage.h */
 
 struct knode {
 	char name[NAME_MAX];
@@ -386,7 +386,46 @@ static int absolute(const char *base, const char *path, char *out)
 	return E_OK;
 }
 
-enum { V_NONE, V_ROOT, V_RDDEV, V_TMPDEV, V_TREE, V_LINUX };
+enum { V_NONE, V_ROOT, V_RDDEV, V_TMPDEV, V_TREE, V_LINUX, V_DISK, V_BLK };
+
+/* volume()'s answer for the disks: the disk (V_DISK: its index, -1 the
+ * container's "hd0"), the volume (V_BLK) */
+static int cur_disk;
+static struct vol *cur_vol;
+
+/* a disk's volume that has a file system: the i-th (V_DISK's entries) */
+static struct vol *disk_vol(int disk, u32 i)
+{
+	if (disk < 0) return i == 0 ? home_vol() : NULL;
+	struct blkdev *d = blk_get(disk);
+	for (int k = 0; k < vol_count(); k++) {
+		struct vol *v = vol_get(k);
+		if (v->disk == d && v->fs && !v->host && i-- == 0) return v;
+	}
+	return NULL;
+}
+
+/* the path on a disk's volume: "/ufs0/13/a/b" */
+static int disk_volume(const char *s, u32 l, const char *after, const char **rest)
+{
+	int disk = -2;
+	if (home_vol() && name_is("hd0", s, l)) disk = -1;
+	for (int i = 0; disk == -2 && i < blk_count(); i++)
+		if (name_is(blk_get(i)->name, s, l) && disk_vol(i, 0)) disk = i;
+	if (disk == -2) return V_NONE;
+	cur_disk = disk;
+	if (!*after) return V_DISK;
+	const char *e = after;
+	while (*e && *e != '/') e++;
+	for (u32 i = 0; (cur_vol = disk_vol(disk, i)); i++) {
+		const char *num = disk < 0 ? "1" : cur_vol->name + strlen(blk_get(disk)->name) + 1;
+		if (strlen(num) == (u32)(e - after) && !memcmp(num, after, e - after)) {
+			*rest = *e ? e + 1 : e;
+			return V_BLK;
+		}
+	}
+	return V_NONE;
+}
 
 /* which volume an absolute path is on; for a tree its root and the path
  * inside it, for the Linux tree its path there */
@@ -410,6 +449,8 @@ static int volume(const char *abs, struct knode **root, const char **rest)
 		*rest = after[1] ? after + 2 : after + 1;
 		return V_TREE;
 	}
+	int dv = disk_volume(s, l, after, rest);
+	if (dv != V_NONE || name_is("hd0", s, l)) return dv;   /* hd0: the container's, or nothing */
 #ifdef __aarch64__
 	if (name_is("linux", s, l)) {
 		*rest = *e ? e : "/";
@@ -506,7 +547,8 @@ static void bdfe(u8 *e, u32 attr, u64 size, u32 ct, u32 at, u32 mt, const char *
 #define EAX r[0]
 #define EBX r[1]
 
-/* the virtual folders' entries */
+/* the virtual folders' entries: "/" (the RAM disks, the disks with a
+ * file system, hd0), "/rd", "/tmp0", a disk's partitions */
 static const char *virtual_entry(int vol, u32 i)
 {
 	static const char *const root[] = { "rd", "tmp0",
@@ -514,8 +556,143 @@ static const char *virtual_entry(int vol, u32 i)
 		"linux",
 #endif
 	};
-	if (vol == V_ROOT) return i < ARRAY_SIZE(root) ? root[i] : NULL;
+	if (vol == V_ROOT) {
+		if (i < ARRAY_SIZE(root)) return root[i];
+		i -= ARRAY_SIZE(root);
+		for (int k = 0; k < blk_count(); k++)
+			if (disk_vol(k, 0) && i-- == 0) return blk_get(k)->name;
+		return i == 0 && home_vol() ? "hd0" : NULL;
+	}
+	if (vol == V_DISK) {
+		struct vol *v = disk_vol(cur_disk, i);
+		return !v ? NULL : cur_disk < 0 ? "1" : v->name + strlen(blk_get(cur_disk)->name) + 1;
+	}
 	return i == 0 ? "1" : NULL;
+}
+
+/* --- the disks' volumes (kernel/storage) ------------------------------------ */
+
+struct emit_ctx {
+	u8 *hd;
+	u32 esize, enc, skip, count, got;
+};
+
+static void emit_entry(void *c, const struct vdirent *e)
+{
+	struct emit_ctx *x = c;
+	if (x->skip) { x->skip--; return; }
+	if (x->got < x->count)
+		bdfe(x->hd + 32 + x->esize * x->got++, e->attr, e->attr & A_DIR ? 0 : e->size,
+		     e->ctime, e->atime, e->mtime, e->name, x->enc);
+}
+
+static bool vol_writes(const struct vol *v)
+{
+	return v->writable && v->fs && v->fs->write;
+}
+
+/* the folder a path is in ("a/b" for "a/b/c", "" for "c") */
+static void parent_of(const char *path, char *out)
+{
+	strncpy0(out, path, PATH_MAX);
+	u32 n = strlen(out);
+	while (n && out[n - 1] != '/') n--;
+	out[n ? n - 1 : 0] = 0;
+}
+
+/* 70.10's new name: relative to the old one's folder, with a '/' first
+ * to the volume's root; *out without the '/' first */
+static int vol_rename_to(const char *from, const char *to, char *out)
+{
+	char base[PATH_MAX + 1], full[PATH_MAX];
+	base[0] = '/';
+	parent_of(from, base + 1);
+	if (absolute(to[0] == '/' ? "/" : base, to[0] == '/' ? to + 1 : to, full)) return E_NOT_FOUND;
+	if (!full[1]) return E_ACCESS;         /* the root */
+	strncpy0(out, full + 1, PATH_MAX);
+	return E_OK;
+}
+
+static void vol_file(struct task *t, u32 *r, struct vol *v, u32 sub, const char *path, u64 off, u32 size, u32 buf)
+{
+	const struct fsops *fs = v->fs;
+	struct vdirent e;
+	int x;
+	if ((sub == 2 || sub == 3 || sub == 4 || sub == 6 || sub == 8 || sub == 9 || sub == 10) && !vol_writes(v)) {
+		EAX = E_ACCESS;
+		EBX = 0;
+		return;
+	}
+	switch (sub) {
+	case 0: {
+		u8 *d = uptr(t, buf, size);
+		u32 got = 0;
+		if (!d && size) { EAX = E_POINTER; EBX = -1; return; }
+		x = fs->read(v, path, off, size, d, &got);
+		if (x) { EAX = x; EBX = -1; return; }
+		EAX = got < size ? E_EOF : E_OK;
+		EBX = got;
+		return;
+	}
+	case 2: case 3: {
+		const u8 *d = size ? uptr(t, buf, size) : (const u8 *)"";
+		u32 done = 0;
+		if (!d) { EAX = E_POINTER; EBX = 0; return; }
+		if (!*path) { EAX = E_ACCESS; EBX = 0; return; }
+		EAX = fs->write(v, path, sub == 2 ? 0 : off, size, d, sub == 2, &done);
+		EBX = done;
+		return;
+	}
+	case 4:
+		EAX = fs->truncate(v, path, off);
+		return;
+	case 5: {
+		u8 *d = uptr(t, buf, 40);
+		if (!d) { EAX = E_POINTER; return; }
+		if ((x = fs->info(v, path, &e))) { EAX = x; return; }
+		bdfe(d, e.attr, e.attr & A_DIR ? 0 : e.size, e.ctime, e.atime, e.mtime, NULL, 1);
+		if (!*path) memcpy(d + 32, &(u64){ v->nblocks * v->bsize }, 8);    /* the root: the partition's size */
+		EAX = E_OK;
+		return;
+	}
+	case 6: {
+		const u8 *d = uptr(t, buf, 32);
+		if (!d) { EAX = E_POINTER; return; }
+		if (!*path) { EAX = E_ACCESS; return; }
+		memset(&e, 0, sizeof(e));
+		e.attr = get32(d);
+		e.ctime = get_time(d + 8);
+		e.atime = get_time(d + 16);
+		e.mtime = get_time(d + 24);
+		EAX = fs->setattr(v, path, &e);
+		return;
+	}
+	case 8:
+		EAX = *path ? fs->remove(v, path) : E_ACCESS;
+		return;
+	case 9: {                              /* a folder, with the ones above it */
+		char p[PATH_MAX];
+		u32 n = strlen(path);
+		for (u32 i = 0; i <= n; i++) {
+			if (i < n && path[i] != '/') continue;
+			memcpy(p, path, i);
+			p[i] = 0;
+			if (!i) continue;
+			if ((x = fs->mkdir(v, p))) { EAX = x; return; }
+		}
+		EAX = E_OK;
+		return;
+	}
+	case 10: {
+		char to[PATH_MAX], dst[PATH_MAX];
+		if (!*path) { EAX = E_ACCESS; return; }
+		if ((x = user_path(t, buf, to))) { EAX = x; return; }
+		if ((x = vol_rename_to(path, to, dst))) { EAX = x; return; }
+		EAX = fs->rename(v, path, dst);
+		return;
+	}
+	}
+	EAX = E_UNSUPPORTED;
 }
 
 static void read_folder(struct task *t, u32 *r, int vol, struct knode *dirn, const char *lpath,
@@ -531,13 +708,26 @@ static void read_folder(struct task *t, u32 *r, int vol, struct knode *dirn, con
 #ifdef __aarch64__
 		    vol == V_LINUX ? strcmp(lpath, "/") != 0 :
 #endif
-		    false;
+		    vol == V_BLK ? *lpath != 0 : false;
+	if (vol == V_BLK) {                    /* the folder first: no dots for a file */
+		struct vdirent de;
+		int x = cur_vol->fs->info(cur_vol, lpath, &de);
+		if (!x && !(de.attr & A_DIR)) x = E_ACCESS;
+		if (x) { EAX = x; EBX = 0; return; }
+	}
 	if (dots) {
 		for (int i = 0; i < 2; i++, total++)
 			if (total >= first && got < count)
 				bdfe(hd + 32 + esize * got++, A_DIR, 0, 0, 0, 0, i ? ".." : ".", enc);
 	}
-	if (vol == V_TREE) {
+	if (vol == V_BLK) {
+		u32 skip = first > total ? first - total : 0, n = 0;
+		struct emit_ctx x = { hd + esize * got, esize, enc, 0, count - got, 0 };
+		int e = cur_vol->fs->readdir(cur_vol, lpath, skip, count - got, emit_entry, &x, &n);
+		if (e) { EAX = e; EBX = 0; return; }
+		got += x.got;
+		total += n;
+	} else if (vol == V_TREE) {
 		for (struct knode *c = dirn->child; c; c = c->next, total++)
 			if (total >= first && got < count)
 				bdfe(hd + 32 + esize * got++, c->attr, c->attr & A_DIR ? 0 : c->size,
@@ -670,6 +860,107 @@ static void linux_file(struct task *t, u32 *r, u32 sub, const char *lp, u64 off,
 }
 #endif
 
+/* --- the settings kept: the ramdisk's *.ini files and settings/ written
+ * to the persistent home too (its sys/ folder: /hd0/1/sys/kfar.ini), and
+ * put over the ramdisk's at the start (kfs_settings_init) ---------------- */
+
+#define HOME_SYS "sys"
+
+static bool is_setting(const char *rest)
+{
+	u32 n = strlen(rest);
+	if (!strncmp(rest, "settings/", 9)) return true;
+	return n > 4 && lower(rest[n - 4]) == '.' && lower(rest[n - 3]) == 'i' && lower(rest[n - 2]) == 'n' &&
+	       lower(rest[n - 1]) == 'i';
+}
+
+/* the ramdisk's file n (its path rest) written to the home as it is now */
+static void setting_keep(struct knode *n, const char *rest)
+{
+	struct vol *h = home_vol();
+	if (!h || !vol_writes(h) || !is_setting(rest) || (n->attr & A_DIR)) return;
+	static char p[PATH_MAX];
+	static u8 chunk[4096];
+	u32 l = strlen(HOME_SYS);
+	memcpy(p, HOME_SYS, l);
+	p[l] = '/';
+	strncpy0(p + l + 1, rest, sizeof(p) - l - 1);
+	for (u32 i = 0; p[i]; i++)                     /* the folders above it */
+		if (p[i] == '/') {
+			p[i] = 0;
+			h->fs->mkdir(h, p);
+			p[i] = '/';
+		}
+	u64 at = 0;
+	int e = E_OK;
+	do {
+		u32 k = node_read(n, chunk, sizeof(chunk), at), done = 0;
+		e = h->fs->write(h, p, at, k, chunk, at == 0, &done);
+		at += k;
+		if (!k) break;
+	} while (!e && at < n->size);
+	if (e) kprintf("kfs: /sys/%s not kept (%d)\n", rest, e);
+	if (h->fs->sync) h->fs->sync(h);
+}
+
+struct names_ctx { char (*n)[NAME_MAX]; u32 *attr; u32 max, got; };
+
+static void name_entry(void *c, const struct vdirent *e)
+{
+	struct names_ctx *x = c;
+	if (x->got == x->max) return;
+	strncpy0(x->n[x->got], e->name, NAME_MAX);
+	x->attr[x->got++] = e->attr;
+}
+
+/* the home's sys/... over the ramdisk's folder dir */
+static void settings_load(struct vol *h, const char *path, struct knode *dir, int depth)
+{
+	static char names[4][64][NAME_MAX];
+	static u32 attrs[4][64];
+	static u8 chunk[4096];
+	if (depth >= 4) return;
+	struct names_ctx x = { names[depth], attrs[depth], 64, 0 };
+	u32 total;
+	if (h->fs->readdir(h, path, 0, 64, name_entry, &x, &total)) return;
+	for (u32 i = 0; i < x.got; i++) {
+		char p[PATH_MAX];
+		const char *nm = names[depth][i];
+		u32 pl = strlen(path), nl = strlen(nm);
+		if (pl + nl + 2 >= sizeof(p)) continue;
+		memcpy(p, path, pl);
+		p[pl] = '/';
+		memcpy(p + pl + 1, nm, nl + 1);
+		struct knode *c = child(dir, nm, nl);
+		if (attrs[depth][i] & A_DIR) {
+			if (!c) c = node_new(dir, nm, nl, true);
+			if (c && (c->attr & A_DIR)) settings_load(h, p, c, depth + 1);
+			continue;
+		}
+		if (!c) c = node_new(dir, nm, nl, false);
+		if (!c || (c->attr & A_DIR)) continue;
+		if (c->ro) c->ro = NULL;
+		else node_drop(c, 0);
+		c->size = 0;
+		u64 at = 0;
+		for (;;) {
+			u32 got = 0, done;
+			if (h->fs->read(h, p, at, sizeof(chunk), chunk, &got) || !got) break;
+			node_write(c, chunk, got, at, &done);
+			at += got;
+		}
+		kprintf("kfs: /sys%s from the home (%u bytes)\n", p + strlen(HOME_SYS), (u32)at);
+	}
+}
+
+void kfs_settings_init(void)
+{
+	struct vol *h = home_vol();
+	struct vdirent e;
+	if (h && vol_writes(h) && h->fs->info(h, HOME_SYS, &e) == E_OK && (e.attr & A_DIR))
+		settings_load(h, HOME_SYS, &rd_root, 0);
+}
+
 /* function 70 */
 void kfs_syscall(struct task *t, u32 *r)
 {
@@ -711,7 +1002,16 @@ void kfs_syscall(struct task *t, u32 *r)
 		return;
 	}
 #endif
-	if (vol != V_TREE) {                   /* "/", "/rd", "/tmp0" */
+	if (vol == V_BLK) {
+		if (sub == 1) read_folder(t, r, vol, NULL, rest, off_lo, flags, size, buf);
+		else vol_file(t, r, cur_vol, sub, rest, off, size, buf);
+		/* what the file system keeps in memory (FAT's free count) to the
+		 * disk after each change: the next reset may come at any time */
+		if (sub >= 2 && sub != 5 && sub != 7 && vol_writes(cur_vol) && cur_vol->fs->sync)
+			cur_vol->fs->sync(cur_vol);
+		return;
+	}
+	if (vol != V_TREE) {                   /* "/", "/rd", "/tmp0", a disk */
 		if (sub == 1) read_folder(t, r, vol, NULL, NULL, off_lo, flags, size, buf);
 		else if (sub == 5) {
 			u8 *d = uptr(t, buf, 40);
@@ -762,12 +1062,14 @@ void kfs_syscall(struct task *t, u32 *r)
 		u32 done;
 		EAX = node_write(n, d, size, sub == 2 ? 0 : off, &done);
 		EBX = done;
+		if (root == &rd_root) setting_keep(n, rest);
 		return;
 	}
 	case 4:                                /* the size */
 		if (!n) { EAX = E_NOT_FOUND; return; }
 		if (n->attr & A_DIR) { EAX = E_ACCESS; return; }
 		EAX = node_resize(n, off);
+		if (root == &rd_root) setting_keep(n, rest);
 		return;
 	case 5: {                              /* information */
 		if (!n) { EAX = E_NOT_FOUND; return; }
@@ -861,13 +1163,29 @@ void kfs_cur_dir(struct task *t, u32 *r)
 
 /* a file by its absolute path (from the kernel: /sys, /rd/1, /tmp0/1):
  * its bytes when they are the kernel's (*data), else the node to read */
+static struct blkfile {
+	struct vol *v;
+	char path[PATH_MAX];
+} blkfile;
+
 int kfs_file(const char *path, const u8 **data, void **node, u32 *size)
 {
 	char abs[PATH_MAX];
 	if (absolute("/sys", path, abs)) return -E_NOT_FOUND;
 	struct knode *root;
 	const char *rest;
-	if (volume(abs, &root, &rest) != V_TREE) return -E_NOT_FOUND;
+	int vol = volume(abs, &root, &rest);
+	if (vol == V_BLK) {                    /* a program on a disk's volume */
+		struct vdirent e;
+		if (cur_vol->fs->info(cur_vol, rest, &e) || (e.attr & A_DIR)) return -E_NOT_FOUND;
+		blkfile.v = cur_vol;
+		strncpy0(blkfile.path, rest, sizeof(blkfile.path));
+		*data = NULL;
+		*node = &blkfile;
+		*size = e.size > 0xffffffffu ? 0xffffffffu : (u32)e.size;
+		return 0;
+	}
+	if (vol != V_TREE) return -E_NOT_FOUND;
 	struct knode *n = walk(root, rest, NULL, NULL);
 	if (!n || (n->attr & A_DIR)) return -E_NOT_FOUND;
 	*data = n->ro;
@@ -878,5 +1196,10 @@ int kfs_file(const char *path, const u8 **data, void **node, u32 *size)
 
 u32 kfs_read(void *node, void *buf, u32 len, u32 off)
 {
+	if (node == &blkfile) {
+		u32 got = 0;
+		if (blkfile.v->fs->read(blkfile.v, blkfile.path, off, len, buf, &got)) return 0;
+		return got;
+	}
 	return node_read(node, buf, len, off);
 }

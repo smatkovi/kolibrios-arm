@@ -145,6 +145,11 @@ void kmain(void)
 	extern void kfs_init(void);
 	kfs_init();
 	plat->init();
+	/* the disks the platform's drivers found: their partitions and file
+	 * systems (read only), the container (kernel/storage, docs/storage.md) */
+	extern void storage_start(void), kfs_settings_init(void);
+	storage_start();
+	kfs_settings_init();
 	/* the modem: the Pro1X's starts in its platform; in QEMU a fake one */
 #ifdef __aarch64__
 	if (plat == &platform_virt) kmodem_fake();

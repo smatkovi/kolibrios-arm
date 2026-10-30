@@ -142,7 +142,13 @@ int main(int argc, char **argv)
 	/* .noini */
 	editor_calc_datasize();
 	strcpy(panel1.dir, def_left_dir);
-	strcpy(panel2.dir, def_right_dir);
+	/* the original's /hd0/1: the persistent home, if KolibriOS has one */
+	{
+		extern const char home_right_dir[];
+		static u8 info[40] __attribute__((aligned(4)));
+		struct kos_fileinfo fi = { 5, 0, 0, 0, (u32)info, 0, home_right_dir };
+		strcpy(panel2.dir, kos_call(70, (u32)&fi, 0, 0, 0, 0) == 0 ? home_right_dir : def_right_dir);
+	}
 	draw_keybar();
 	draw_cmdbar();
 	prev_dir[0] = 0;

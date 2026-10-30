@@ -24,7 +24,9 @@
  * type, Enter sends, Up/Down and Page Up/Down scroll, Escape goes back;
  * Ctrl+Q ends the program. Everything is a finger wide for the touch
  * screen too. The chats (with their newest messages) are kept per service
- * in /home/user/.local/share/messenger/SERVICE/chats.json (the Linux
+ * in /hd0/1/messenger/SERVICE/chats.json, the persistent home on the
+ * phone's storage (docs/storage.md), when KolibriOS has one it may write;
+ * else in /home/user/.local/share/messenger/SERVICE/chats.json (the Linux
  * personality's RAM file system: kept while KolibriOS runs, lost when it
  * ends, as the backends' own stores). The backends' lines go to the debug
  * board too. */
@@ -61,6 +63,7 @@ static const char *const svc_bin[3] = { "/bin/yappari-wa", "/bin/purple-host", "
 static int svc = S_NONE, pick;
 
 #define DATA_DIR "/home/user/.local/share/messenger"
+#define HOME_DIR "/hd0/1/messenger"      /* the persistent home's, if writable */
 static char dir[96], file[128];
 
 /* --- the backend ---------------------------------------------------------- */
@@ -843,7 +846,9 @@ static bool poll_backend(void)
 static void start_service(int s)
 {
 	svc = s;
-	ksprintf(dir, "%s/%s", DATA_DIR, svc_dir[svc]);
+	/* the persistent home if its folder can be made there (kolibri.home=rw) */
+	ksprintf(dir, "%s/%s", HOME_DIR, svc_dir[svc]);
+	if (kos_create_folder(dir)) ksprintf(dir, "%s/%s", DATA_DIR, svc_dir[svc]);
 	ksprintf(file, "%s/chats.json", dir);
 	kos_set_caption(svc_name[svc]);
 	load();
