@@ -261,7 +261,7 @@ What a static Go program does at start and while running, measured with
 | signals | `rt_sigaction`, `rt_sigprocmask`, `sigaltstack` (recorded), `tgkill` (Go's preemption by `SIGURG`: dropped; Go then preempts at function entries) | no delivery yet; a fault ends the process with a register dump |
 | files | `openat`, `read`, `write`, `pread64`, `pwrite64`, `close`, `fstat`/`newfstatat`, `lseek`, `fcntl` (locks always granted: one process per file), `getdents64`, `mkdirat`, `unlinkat`, `renameat`, `ftruncate`, `fsync`, `readlinkat`, `getcwd` | the ramdisk read-only under `/`, a RAM file system for `/tmp`, `/var` and `$HOME`; `/dev/null`, `/dev/urandom`; `/etc/resolv.conf` from the DHCP lease; the CA bundle `/etc/ssl/certs/ca-certificates.crt` on the ramdisk |
 | network | `socket` (TCP, UDP, v4), `connect` (non-blocking: `EINPROGRESS`), `getsockopt(SO_ERROR)`, `setsockopt`, `getsockname`, `getpeername`, `sendto`, `recvfrom`, `read`, `write`, `shutdown` | sockets on lwIP's raw API, readiness to epoll |
-| other | `getrandom`, `uname`, `prlimit64`, `getpid`, `getuid` and friends | a ChaCha20 generator seeded from virtio-rng in QEMU, on the phone from the SoC's PRNG (to do: until then the seed is weak and linking must not be trusted) |
+| other | `getrandom`, `uname`, `prlimit64`, `getpid`, `getuid` and friends | the kernel's generator ([rng.md](rng.md)): ChaCha20 with fast key erasure, seeded on the phone from the SoC's PRNG and kexec's seed from Linux, in QEMU from virtio-rng; `getrandom` and `/dev/urandom` wait for the seed; each program's first use said on the console |
 
 Not planned: `fork`/`exec` (neither backend runs programs), shared
 memory between processes, `ptrace`.
@@ -472,13 +472,18 @@ The rest was there: threads (`clone`, futexes), `epoll` and `eventfd`
 - [x] the signal host (`tools/signal-host/`, presage): on the PC under `qemu-aarch64` and in
   QEMU (`make run-signal`), the messenger's Signal mode shows the linking QR code from Signal's
   server (below)
-- [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), randomness, persistence
+- [x] randomness ([rng.md](rng.md)): the SoC's PRNG and kexec's seed on the phone, waiting for
+  the seed; in QEMU all three backends take their random bytes from it (`make -C tests/rng
+  qemu` with the backends); on the phone the check of 2026-10-31 (`kolibri.rngtest`)
+- [ ] the phone: Wi-Fi ([pro1x-network.md](pro1x-network.md)), persistence
 
 In QEMU (`make run-messenger YAPPARI_WA=<yappari-wa for linux/arm64>`): `messenger` starts the
 daemon, which connects to WhatsApp through lwIP and Go's TLS and hands over its QR codes (a new
 one every 20 seconds); a screenshot of QEMU's screen decodes with `zbarimg` to the daemon's code
-of that moment. Linking itself was not tried (no account is used in tests), and must not be
-until the random numbers come from hardware (`getrandom`, above).
+of that moment. Linking itself was not tried (no account is used in tests). On the Pro1X it
+may be, as far as the random numbers go, once its console shows `rng: seeded from the SoC's
+PRNG (...), the boot loader's seed (...)` ([rng.md](rng.md), "On the devices"); never while
+it says `rng: WEAK`.
 
 Signal, the same way (`tests/linux/qrcheck.py`, which waits for the backend's code on the
 serial console, takes QEMU's screenshot and decodes it with `zbarimg`):
@@ -493,5 +498,5 @@ qrcheck: the same
 ```
 
 The address is a real one from Signal's server (`chat.signal.org`'s provisioning socket needs
-no account). It was not scanned: linking a real account waits for the phone's hardware
-random numbers and the user.
+no account). It was not scanned: linking a real account waits for the phone's check of its
+random numbers ([rng.md](rng.md)) and the user.

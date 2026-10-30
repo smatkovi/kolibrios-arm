@@ -24,7 +24,8 @@ realview) and runs:
   messengers    with PURPLE_HOST, SIGNAL_HOST, YAPPARI_WA (paths) in the
                 environment: each backend started by the messenger takes
                 its first random bytes from the kernel's generator (the
-                network: QEMU's user networking)
+                network: QEMU's user networking; Telegram logs in with a
+                number of its reserved test range, 99966...)
 
     qemu.py [SCENARIO...]          all but messengers when none given
 """
@@ -247,7 +248,9 @@ def pro1x_all():
 
 
 def messengers():
-    hosts = [('PURPLE_HOST', 'purple-host', 'telegram'), ('SIGNAL_HOST', 'signal-host', 'signal'),
+    # Telegram: a login at once with a number of Telegram's reserved test
+    # range (99966..., not anyone's), so that TDLib starts and connects
+    hosts = [('PURPLE_HOST', 'purple-host', 'telegram,+9996610000'), ('SIGNAL_HOST', 'signal-host', 'signal'),
              ('YAPPARI_WA', 'yappari-wa', 'whatsapp')]
     files = [f'bin/{n}={os.environ[e]}' for e, n, _ in hosts if os.environ.get(e)]
     if not files:
