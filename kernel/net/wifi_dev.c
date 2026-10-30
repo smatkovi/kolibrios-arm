@@ -43,15 +43,12 @@ static void *dalloc32(u32 size, u64 *pa) { return dalloc_aligned(size, pa, 4096)
 static void enable(void) { wlfw_wlan_enable(wifi_wlan_enabled); }
 static u32 now_ms(void) { return ticks * 10; }
 
-/* the SNonce: from the hardware (the SoC's PRNG); without it a warning
- * and lwIP's mixed counter (not for real keys) */
+/* the SNonce, SAE's scalars and masks, the random MAC address: the
+ * kernel's generator (rng.c), seeded before the Wi-Fi starts
+ * (wifi_dev_start) */
 static void rnd(void *p, u32 n)
 {
-	static bool warned;
-	if (rng_hw(p, n) == n) return;
-	if (!warned) kprintf("wifi: no hardware random numbers: the nonces are weak\n");
-	warned = true;
-	for (u32 i = 0; i < n; i++) ((u8 *)p)[i] = (u8)net_rand();
+	if (!rng_bytes(p, n)) panic("wifi: random numbers without a seed");
 }
 
 static void rx(const u8 *eth, u32 len)
@@ -113,6 +110,13 @@ bool wifi_dev_start(addr_t membase_va, u32 dma_mb, bool use_irqs, const char *co
 	static struct wifi_conf conf;
 	const char *why;
 	if (started) return true;
+	/* the handshakes' nonces and SAE's scalars: only from a seeded generator */
+	u8 probe;
+	if (!rng_bytes(&probe, 1)) {
+		kprintf("wifi: the random number generator has no seed: no Wi-Fi\n");
+		return false;
+	}
+	if (rng_weak()) kprintf("wifi: WARNING: the random numbers are seeded from timing jitter only\n");
 	if (wifi_conf_parse(conf_text, conf_len, &conf, &why)) {
 		kprintf("wifi: the network's configuration: %s\n", why);
 		return false;

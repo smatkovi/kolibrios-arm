@@ -25,20 +25,11 @@ u32 sys_now(void)
 }
 
 /* lwIP's random numbers (DHCP transaction ids, TCP sequence numbers,
- * DNS ids): the counter mixed */
+ * DNS ids, local ports): the kernel's generator (rng.c), which never
+ * makes lwIP wait */
 u32 net_rand(void)
 {
-	static u64 s;
-	static bool seeded;
-	if (!seeded) {
-		rng_hw(&s, sizeof(s));
-		seeded = true;
-	}
-	s += SYSREG_R(cntvct_el0) | 1;
-	u64 z = s * 0x9e3779b97f4a7c15ull;
-	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-	z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-	return (u32)(z ^ (z >> 31));
+	return rng_u32();
 }
 
 static void print_ip(const char *what, const ip4_addr_t *a)

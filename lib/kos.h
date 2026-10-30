@@ -236,6 +236,13 @@ static inline void *kos_shm_open(const char *name, u32 size, u32 flags, u32 *edx
 static inline void kos_shm_close(const char *name) { kos_call(68, 23, (u32)name, 0, 0, 0); }
 /* a library's export table ({ name, value } pairs, 0-terminated) or NULL */
 static inline void *kos_load_dll(const char *path) { return (void *)kos_call(68, 19, (u32)path, 0, 0, 0); }
+/* KolibriOS for ARM, function 102.1: len (at most 4096) bytes from the
+ * kernel's random number generator (docs/rng.md); 0, or -1 while it has
+ * no seed */
+static inline int kos_random(void *buf, u32 len)
+{
+	return kos_call(102, 1, (u32)buf, len, 0, 0) == len ? 0 : -1;
+}
 
 /* klib.c */
 void *memset(void *d, int c, unsigned n);

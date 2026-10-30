@@ -119,6 +119,9 @@ const struct platform *arch_platform(void)
 		p = &platform_virt;
 	}
 	power_dt_parse(fdt, SYSREG_R(mpidr_el1), &pdt);
+	/* kexec's (or QEMU's) seed for the random numbers, wiped in the tree */
+	extern void rng_fdt_seed(void *fdt);
+	rng_fdt_seed((void *)fdt);
 	timer_probe();
 	psci_probe();
 	return p;

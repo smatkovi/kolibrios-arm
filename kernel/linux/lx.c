@@ -121,7 +121,7 @@ static u64 build_stack(struct lx_proc *p, const char *path, const char *args,
 	for (int i = 0; i < envc; i++) e_str[i] = PUSH_STR(env[i]);
 	u64 plat_s = PUSH_STR("aarch64");
 	u8 rnd[16];
-	lx_random(rnd, sizeof(rnd));
+	rng_bytes_insecure(rnd, sizeof(rnd));
 	sp -= 16;
 	lx_copy_out(p, sp, rnd, 16);
 	u64 rnd_va = sp;
@@ -170,6 +170,10 @@ int lx_exec(const char *path, const struct rd_file *f, const char *args, struct 
 		if (p) lx_proc_free_memory(p);
 		return -30;
 	}
+	const char *fname = path;
+	for (const char *c = path; *c; c++)
+		if (*c == '/') fname = c + 1;
+	strncpy0(p->name, fname, sizeof(p->name));
 	for (int i = 0; i < h->phnum; i++) {
 		const struct phdr *s = &ph[i];
 		if (s->type != PT_LOAD || !s->memsz) continue;

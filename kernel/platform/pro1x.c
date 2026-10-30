@@ -52,6 +52,7 @@
 #include "../modem/wlfw.h"
 #include "net.h"
 #include "rng.h"
+#include "qcom_prng.h"
 #include "power.h"
 #include "powerdt.h"
 #include "blit.h"
@@ -1058,40 +1059,29 @@ static void modem_init(void)
 	}
 }
 
-/* the PRNG (qcom,prng-ee: the firmware set it up): its AHB clock voted on
- * in the GCC, then a word whenever its status says one is there */
-#define GCC_VOTE 0x79004                /* APCS clock branch enable vote */
-#define GCC_PRNG_BIT 13
-#define GCC_PRNG_CBCR 0x21004           /* bit 31: the clock is off */
+/* the PRNG (qcom,prng-ee: TrustZone set it up), read as Linux's qcom-rng
+ * reads it, its AHB clock voted on in the GCC around each read
+ * (qcom_prng.c); a source of the kernel's generator (rng.c) */
+static void prng_wr32(addr_t a, u32 v) { wr32(a, v); }
+static struct qprng prng = { .rd = rd32, .wr = prng_wr32, .udelay = udelay };
 
 static u32 prng_read(void *out, u32 len)
 {
-	addr_t p = io_va(prng_pa);
-	u32 done = 0;
-	while (done < len) {
-		u32 i;
-		for (i = 0; i < 100000 && !(rd32(p + 4) & 1); i++)
-			;
-		if (!(rd32(p + 4) & 1)) break;
-		u32 v = rd32(p), n = MIN(4u, len - done);
-		memcpy((u8 *)out + done, &v, n);
-		done += n;
-	}
-	return done;
+	u32 z = prng.zeros, t = prng.timeouts, c = prng.clock_stuck, n = qprng_read(&prng, out, len);
+	static u32 said;
+	if ((prng.zeros != z || prng.timeouts != t || prng.clock_stuck != c) && (said++ < 5 || said % 1000 == 0))
+		kprintf("pro1x: the PRNG: %s (%u words so far, %u zero words, %u timeouts, the clock stuck %u times)\n",
+			prng.zeros != z ? "a zero word" : prng.timeouts != t ? "no word for 10 ms" : "its clock does not come on",
+			prng.words, prng.zeros, prng.timeouts, prng.clock_stuck);
+	return n;
 }
 
 static void prng_init(void)
 {
 	if (!prng_pa || !gcc_pa) return;
-	addr_t g = io_va(gcc_pa);
-	wr32(g + GCC_VOTE, rd32(g + GCC_VOTE) | 1u << GCC_PRNG_BIT);
-	for (int i = 0; i < 100000 && (rd32(g + GCC_PRNG_CBCR) & 1u << 31); i++)
-		;
-	if (rd32(g + GCC_PRNG_CBCR) & 1u << 31) {
-		kprintf("pro1x: the PRNG's clock does not come on\n");
-		return;
-	}
-	rng_register("the SoC's PRNG", prng_read);
+	prng.base = io_va(prng_pa);
+	prng.gcc = io_va(gcc_pa);
+	rng_register("the SoC's PRNG", prng_read, RNG_FULL);
 }
 
 /* the RPM: kicked through the IPC register, waited for by the counter */
