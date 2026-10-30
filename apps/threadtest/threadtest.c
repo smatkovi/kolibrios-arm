@@ -14,6 +14,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <kos.h>
+#include <kos_dll.h>
+#include <libini.h>
 
 static int failed;
 
@@ -464,6 +466,13 @@ static void *find_export(struct kexport *e, const char *name)
 	return NULL;
 }
 
+static void *volatile dll_from_thread;
+static void t_dll(void)
+{
+	dll_from_thread = kos_load_dll("/sys/lib/libini.obj");
+	kos_exit();
+}
+
 static void test_dll(void)
 {
 	struct kexport *e = kos_load_dll("/sys/lib/libini.obj");
@@ -480,6 +489,26 @@ static void test_dll(void)
 	check(get_str != NULL && buf[0], "a function called through the export table", buf[0], 0);
 	check(kos_load_dll("/sys/lib/none.obj") == NULL, "68.19 of no file: 0", 0, 0);
 	check(kos_load_dll("/sys/threadtest") == NULL, "68.19 of a program, not a library: 0", 0, 0);
+
+	/* the program's own import of libini (LIBS_threadtest): its stub
+	 * jumps to the same function (DLL=0: linked in, the address is the
+	 * program's own) */
+	char buf2[64] = "";
+	ini_get_str("/sys/kfar.ini", "Panels", "SortMode", buf2, sizeof(buf2), "none");
+	check(!strcmp(buf, buf2), "the import table's stub calls the library", buf2[0], buf[0]);
+
+	/* dll.Load of a list of its own: a name the library lacks fails */
+	static void *tab_ok[] = { "ini_get_int", NULL }, *tab_bad[] = { "ini_get_nothing", NULL };
+	static const struct kos_import imp_ok[] = { { tab_ok, "libini.obj" }, { NULL, NULL } };
+	static const struct kos_import imp_bad[] = { { tab_bad, "libini.obj" }, { NULL, NULL } };
+	check(dll_load(imp_ok) == 0 && tab_ok[0] == find_export(e, "ini_get_int"), "dll_load resolves a table by name", 0, 0);
+	check(dll_load(imp_bad) == 1, "dll_load of a name not exported: 1", 0, 0);
+
+	/* another thread of the process gets the same table */
+	dll_from_thread = NULL;
+	int tid = kos_thread_create(t_dll, STACK(1));
+	wait_gone(tid);
+	check(dll_from_thread == e, "68.19 in another thread: the process's table", (int)dll_from_thread, (int)e);
 }
 
 /* --- the shell's console (shell_api.h's buffer: a command byte, the data,

@@ -3,5 +3,7 @@
 # board ("threadtest:"), tests/threads runs it on both kernels
 CAPPS += threadtest
 SRC_threadtest := apps/threadtest/threadtest.c
+# libini: loaded by 68.19 through the import table (DLL=0: linked in)
+LIBS_threadtest := libini
 MEM_threadtest := 0x200000
 CFLAGS_threadtest := -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast

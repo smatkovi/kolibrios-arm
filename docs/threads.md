@@ -159,7 +159,10 @@ VFP/NEON registers kept per thread, a window per thread; IPC ping-pong
 between threads (200 rounds), the error codes, event 7; between two
 processes (it starts itself again) IPC and shared memory, the access
 rules, a process whose main thread ended while another runs on; 68.19
-of libini.obj, the same table again, a function called through it.
+of libini.obj, the same table again (also from another thread), a
+function called through it and through the program's own import stub,
+`dll_load` on lists of its own (a name not exported fails). The
+shell's test (`tests/apps`) runs `threadtest shellapi` in its console.
 `tests/threads` runs it on both kernels:
 
 ```sh
