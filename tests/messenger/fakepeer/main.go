@@ -79,18 +79,28 @@ type fixture struct {
 	live     string // the chat (and sender) of the live messages
 }
 
-func newID(service string) string {
+// an id: History's by their place in the fixtures (the same at every
+// start, as a real history's), the others by the time and a count
+func newID(service string, fixed int) string {
 	mu.Lock()
 	seq++
-	n := seq
+	n := int64(seq)
 	mu.Unlock()
+	if fixed > 0 {
+		n = int64(fixed)
+	} else {
+		n += time.Now().Unix() << 16
+	}
 	switch service {
 	case "whatsapp":
-		return fmt.Sprintf("3EB0FA4E%012X", n)
+		return fmt.Sprintf("3EB0%016X", n)
 	case "telegram":
-		return fmt.Sprintf("tg-%d", n)
+		return fmt.Sprintf("tg-%x", n)
 	}
-	return fmt.Sprintf("%d", time.Now().UnixMilli()+int64(n))
+	if fixed > 0 {
+		return fmt.Sprintf("%d", 1700000000000+n)
+	}
+	return fmt.Sprintf("%d", time.Now().UnixMilli()+n&0xffff)
 }
 
 func fixtures(service string) fixture {
@@ -128,7 +138,7 @@ func fixtures(service string) fixture {
 
 // a message in the protocol's shape: id, chat, sender, pushname, time,
 // fromMe, kind, text, mime type, size
-func message(name, service string, f fixture, chat, from string, t time.Time, outgoing bool, text string) {
+func message(name, service string, f fixture, fixed int, chat, from string, t time.Time, outgoing bool, text string) {
 	push := ""
 	for _, ct := range f.contacts {
 		if ct.ID == from {
@@ -138,7 +148,7 @@ func message(name, service string, f fixture, chat, from string, t time.Time, ou
 	if outgoing {
 		from = f.account
 	}
-	signal(name, newID(service), chat, from, push, t.Unix(), outgoing, "text", text, "", 0)
+	signal(name, newID(service, fixed), chat, from, push, t.Unix(), outgoing, "text", text, "", 0)
 }
 
 func str(raw json.RawMessage) string {
@@ -171,14 +181,14 @@ func main() {
 	var once sync.Once
 	start := func() {
 		now := time.Now()
-		for _, h := range f.history {
-			message("History", *service, f, h.Chat, h.From, now.Add(-h.Ago), h.Out, h.Text)
+		for i, h := range f.history {
+			message("History", *service, f, i+1, h.Chat, h.From, now.Add(-h.Ago), h.Out, h.Text)
 		}
 		if *every > 0 {
 			go func() {
 				for n := 1; ; n++ {
 					time.Sleep(time.Duration(*every) * time.Second)
-					message("Message", *service, f, f.live, f.live, time.Now(), false, fmt.Sprintf("Live message %d", n))
+					message("Message", *service, f, 0, f.live, f.live, time.Now(), false, fmt.Sprintf("Live message %d", n))
 				}
 			}()
 		}
@@ -218,7 +228,7 @@ func main() {
 			}
 			id, chat, text := str(c.Args[0]), str(c.Args[1]), str(c.Args[2])
 			if id == "" {
-				id = newID(*service)
+				id = newID(*service, 0)
 			}
 			fmt.Fprintf(os.Stderr, "fakepeer: SendText %s %q\n", chat, text)
 			reply(c.ID, id)
@@ -233,7 +243,7 @@ func main() {
 				if strings.HasSuffix(chat, "@g.us") || strings.HasPrefix(chat, "chat") || strings.HasPrefix(chat, "group:") {
 					from = f.contacts[0].ID
 				}
-				message("Message", *service, f, chat, from, time.Now(), false, "Re: "+text)
+				message("Message", *service, f, 0, chat, from, time.Now(), false, "Re: "+text)
 			}()
 		case "MarkRead":
 			fmt.Fprintf(os.Stderr, "fakepeer: MarkRead %s\n", in.Text())

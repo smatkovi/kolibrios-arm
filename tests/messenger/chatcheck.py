@@ -6,7 +6,12 @@ screenshots (docs/messengers.md):
 
 KERNEL: build/arm64/kernel.bin with tests/messenger/fakepeer as the
 backends (make test-chats builds it); SERVICE: whatsapp, telegram or
-signal. QEMU's virt runs it with a keyboard (virtio-keyboard-device, typed
+signal. SERVICE telegram-purple instead: the real purple-host (libpurple,
+tdlib-purple) with its test protocol, the kernel built with
+/etc/purple-host-test on its ramdisk (make test-chats PURPLE_HOST=...):
+its first messages, sending through libpurple (the message back with
+SendText's id, its Receipt, the reply), the chats kept and the account
+logged in again by itself after the restart. QEMU's virt runs it with a keyboard (virtio-keyboard-device, typed
 through the monitor's sendkey) and the messenger started for SERVICE; the
 screenshots (OUTDIR, a temporary directory by default) are searched for
 the texts that must be there, drawn here from the kernel's own fonts
@@ -39,6 +44,12 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 kernel, service = sys.argv[1], sys.argv[2]
+# telegram-purple: the real purple-host with its test protocol (the kernel
+# built with /etc/purple-host-test on its ramdisk), logging in as "tester"
+real = service == 'telegram-purple'
+if real:
+    service = 'telegram'
+
 out = sys.argv[3] if len(sys.argv) > 3 else tempfile.mkdtemp(prefix='kos-chats-' + service + '-')
 os.makedirs(out, exist_ok=True)
 NUMBER = {'whatsapp': '1', 'telegram': '2', 'signal': '3'}[service]
@@ -109,8 +120,8 @@ cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', 'cortex-a53', 
        '-device', 'ramfb', '-display', 'none', '-global', 'virtio-mmio.force-legacy=false',
        '-device', 'virtio-rng-device', '-device', 'virtio-keyboard-device',
        '-serial', 'file:' + log, '-monitor', 'unix:' + sock + ',server,nowait', '-kernel', kernel,
-       '-append', 'kolibri.run=/sys/messenger kolibri.args=' + service]
-print('chatcheck:', service, out)
+       '-append', 'kolibri.run=/sys/messenger kolibri.args=' + service + (',tester' if real else '')]
+print('chatcheck:', service + (' (purple-host, its test protocol)' if real else ''), out)
 q = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 for _ in range(100):
     if os.path.exists(sock):
@@ -193,7 +204,79 @@ def lives():
     return len(set(re.findall(r'Live message (\d+)', serial())))
 
 
-try:
+def restart():
+    """Ctrl+Q, then through the launcher: Enter, "mes", Enter, the service"""
+    monitor('sendkey ctrl-q')
+    check(wait(r'messenger: \d+ chats kept in /home/user/.local/share/messenger/' + service, 15) is not None,
+          'the chats written when it ended')
+    time.sleep(2)
+    monitor('sendkey ret')
+    time.sleep(1.5)
+    type_text('mes')
+    time.sleep(0.5)
+    monitor('sendkey ret')
+    time.sleep(3)
+    img = shot('again')
+    check(has(img, 'Which service?', DIM), 'started again from the launcher: it asks which service')
+    monitor('sendkey ' + NUMBER)
+    m = wait(r'messenger: (\d+) chats from /home/user/.local/share/messenger/' + service, 15)
+    check(m is not None and int(m.group(1)) >= 2, 'the chats read back (%s)' % (m.group(1) if m else 'none'))
+    time.sleep(2)
+    return shot('kept')
+
+
+def purple():
+    # 1. the list: the test protocol's first messages through libpurple
+    check(wait(r'\[tg\] .*"Hallo from the test protocol"', 120) is not None, 'logged in, the first messages')
+    time.sleep(2)
+    img = shot('list')
+    for name in ('Anna Berger', 'Chor Probe'):
+        check(has(img, name, scale=2), f'the list: "{name}"')
+    check(has(img, 'Hallo from the test protocol'), 'the list: Anna\'s message, unread')
+    check(has(img, 'Bernhard Koller: Probe morgen 19:00'), 'the list: the group\'s, with its sender')
+    check(has(img, '1', xmin=700), 'the list: an unread count')
+    # 2. Anna's chat, the newest
+    monitor('sendkey home')
+    monitor('sendkey ret')
+    time.sleep(2)
+    img = shot('chat')
+    check(has(img, 'Anna Berger', scale=2) and has(img, 'Hallo from the test protocol'), 'the chat')
+    # 3. sending through libpurple: back with SendText's id, the Receipt, the reply
+    type_text('hello kolibri')
+    monitor('sendkey ret')
+    m = wait(r'\[tg\] \{"id":\d+,"result":\["(tg-[0-9a-f-]+)"\]\}', 20)
+    check(m is not None, 'SendText: purple-host\'s id')
+    mid = m.group(1) if m else 'none'
+    check(wait(r'\[tg\] \{"signal":"Message","args":\["%s","id1001","tester","",\d+,true,"text","hello kolibri"' % mid,
+               20) is not None, 'the message back from libpurple with that id')
+    check(wait(r'\[tg\] \{"signal":"Receipt","args":\["id1001","",\["%s"\],"server"' % mid, 20) is not None,
+          'its Receipt')
+    check(wait(r'\[tg\] .*"Re: hello kolibri"', 20) is not None, 'the reply')
+    time.sleep(2)
+    img = shot('sent')
+    check(has(img, 'hello kolibri') and has(img, 'Re: hello kolibri'), 'the chat: sent, the reply')
+    check(has(img, ' sent', STAMP), 'the chat: the message "sent" (once, not twice)')
+    check(len(find(img, 'hello kolibri', WHITE)) == 2, 'the chat: "hello kolibri" in two bubbles only (%d)' %
+          len(find(img, 'hello kolibri', WHITE)))
+    # 4. back
+    monitor('sendkey esc')
+    time.sleep(1.5)
+    img = shot('back')
+    check(has(img, 'Re: hello kolibri', DIM), 'the list: Anna\'s chat read')
+    # 5. again: kept, and logged in again by itself (accounts.xml)
+    img = restart()
+    check(has(img, 'Anna Berger', scale=2) and has(img, 'Chor Probe', scale=2), 'the list kept')
+    monitor('sendkey home')
+    monitor('sendkey ret')
+    time.sleep(2)
+    img = shot('kept-chat')
+    check(has(img, 'hello kolibri') and has(img, 'Re: hello kolibri'),
+          'Anna\'s chat kept: what was sent and the reply (the test protocol\'s new greeting after them)')
+    check(wait(r'\[tg\] \{"id":\d+,"result":\["(connecting|connected)","tester"\]\}', 20) is not None,
+          'purple-host started again: the account logged in by itself')
+
+
+def fake():
     # 1. the chat list
     check(wait(r'Live message 1"', 90) is not None, 'the first live message from the backend')
     time.sleep(2)
@@ -243,25 +326,13 @@ try:
     check(has(img, 'Re: hello kolibri', DIM), 'the list: Anna\'s chat read, its last message')
 
     # 5. the messenger again: the chats kept
-    monitor('sendkey ctrl-q')
-    check(wait(r'messenger: \d+ chats kept in /home/user/.local/share/messenger/' + service, 15) is not None,
-          'the chats written when it ended')
-    time.sleep(2)
-    monitor('sendkey ret')
-    time.sleep(1.5)
-    type_text('mes')
-    time.sleep(0.5)
-    monitor('sendkey ret')
-    time.sleep(3)
-    img = shot('again')
-    check(has(img, 'Which service?', DIM), 'started again from the launcher: it asks which service')
-    monitor('sendkey ' + NUMBER)
-    m = wait(r'messenger: (\d+) chats from /home/user/.local/share/messenger/' + service, 15)
-    check(m is not None and int(m.group(1)) >= 4, 'the chats read back (%s)' % (m.group(1) if m else 'none'))
-    time.sleep(2)
-    img = shot('kept')
+    img = restart()
     check(has(img, 'Re: hello kolibri', DIM), 'the list: the reply kept (the new backend does not know it)')
     check(has(img, 'Anna Berger', scale=2) and has(img, 'Clara', scale=2), 'the list: the names kept')
+
+
+try:
+    purple() if real else fake()
 finally:
     q.terminate()
     q.wait()

@@ -215,11 +215,15 @@ run-chats: $(FAKEPEER)
 		-append "kolibri.run=/sys/messenger$(if $(MESSENGER_SERVICE), kolibri.args=$(MESSENGER_SERVICE))"
 # the same, checked by screenshots (tests/messenger/chatcheck.py), and the
 # JSON reader and the real backends' protocol on the PC (tests/messenger/Makefile)
+# (PURPLE_HOST=...: also the real purple-host with its test protocol)
 test-chats: $(FAKEPEER)
+	$(MAKE) -C tests/messenger PURPLE_HOST=$(PURPLE_HOST) SIGNAL_HOST=$(SIGNAL_HOST) YAPPARI_WA=$(YAPPARI_WA)
 	$(MAKE) PLATFORM=arm64 LINUX_FILES="$(FAKEPEER_FILES)" all
 	python3 tests/messenger/chatcheck.py build/arm64/kernel.bin whatsapp
 	python3 tests/messenger/chatcheck.py build/arm64/kernel.bin telegram
 	python3 tests/messenger/chatcheck.py build/arm64/kernel.bin signal
+	$(if $(PURPLE_HOST),$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/purple-host=$(PURPLE_HOST) etc/purple-host-test=tests/messenger/purple-host-test" all)
+	$(if $(PURPLE_HOST),python3 tests/messenger/chatcheck.py build/arm64/kernel.bin telegram-purple)
 
 clean:
 	rm -rf build

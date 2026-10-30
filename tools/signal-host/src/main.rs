@@ -1,7 +1,8 @@
 //! signal-host: the Signal backend of KolibriOS's messenger
 //! (docs/messengers.md). presage (whisperfish's Signal client library, on
 //! Signal's libsignal) as a linked device, its store in SQLite, speaking
-//! the JSON lines of `yappari-wa -stdio` on standard input and output:
+//! the JSON lines of `yappari-wa -stdio` on standard input and output (the
+//! same methods and signals where Yappari has them):
 //!
 //! ```text
 //! in:  {"id": 1, "call": "Status", "args": []}
@@ -9,20 +10,32 @@
 //! in:  {"id": 2, "call": "GetQR", "args": []}
 //! out: {"signal": "QRCode", "args": ["sgnl://linkdevice?uuid=...&pub_key=..."]}
 //!      {"id": 2, "result": ["sgnl://linkdevice?uuid=...&pub_key=..."]}
-//! in:  {"id": 3, "call": "SendText", "args": ["<ACI uuid> or group:<hex master key>", "hello"]}
-//! out: {"id": 3, "result": [1761750000000]}
+//! in:  {"id": 3, "call": "SendText", "args": ["", "<ACI uuid> or group:<hex master key>", "hello"]}
+//! out: {"id": 3, "result": ["1761750000000"]}       (the message's id: its timestamp)
+//!      {"signal": "Receipt", "args": ["<chat>", "", ["1761750000000"], "server", 1761750000]}
+//! in:  {"id": 4, "call": "GetContacts", "args": []}
+//! out: {"id": 4, "result": [[["<ACI uuid>", "<name>", ""], ...]]}
+//! in:  {"id": 5, "call": "GetGroups", "args": []}
+//! out: {"id": 5, "result": [[["group:<hex master key>", "<title>"], ...]]}
 //! out: {"signal": "StateChanged", "args": ["connected"]}
 //!      {"signal": "Message", "args": ["<timestamp ms>", "<chat>", "<sender>", "", 1761750000, false, "text", "hi", "", 0]}
+//!      {"signal": "History", "args": [... as Message: the store's, at the start]}
+//!      {"signal": "Receipt", "args": ["<chat>", "<sender>", ["<timestamp ms>"], "delivered" or "read", 1761750000]}
+//!      {"signal": "ChatState", "args": ["<chat>", "<sender>", true]}
 //!      {"signal": "Error", "args": ["..."]}
 //! ```
 //!
 //! GetQR starts linking: Signal's server hands out a provisioning address
 //! (the QR code the phone's Signal scans: Settings, Linked devices); when
 //! the server closes it unscanned (after about 90 s), a new one follows
-//! (another QRCode signal). Once linked, the messages are received and stored. The
-//! program ends with its standard input; its log goes to standard error
-//! (RUST_LOG, warnings by default). The store:
-//! `$XDG_DATA_HOME/signal-host/store.db` (`$HOME/.local/share/...`).
+//! (another QRCode signal). Once linked, the messages are received and
+//! stored; at a start with a linked store, the newest 40 of each contact's
+//! and group's are given as History signals first. SendText also takes
+//! (chat, text); its id argument is not used (a Signal message is known by
+//! its timestamp). MarkRead(chat, sender, ids) is accepted and does
+//! nothing yet (no read receipts sent). The program ends with its standard
+//! input; its log goes to standard error (RUST_LOG, warnings by default).
+//! The store: `$XDG_DATA_HOME/signal-host/store.db` (`$HOME/.local/share/...`).
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -38,7 +51,8 @@ use presage::manager::Registered;
 use presage::model::identity::OnNewIdentity;
 use presage::model::messages::Received;
 use presage::proto::sync_message::{Content as SyncContent, Sent};
-use presage::proto::SyncMessage;
+use presage::proto::{receipt_message, typing_message, ReceiptMessage, SyncMessage, TypingMessage};
+use presage::store::{ContentsStore, Thread};
 use presage::Manager;
 use presage_store_sqlite::SqliteStore;
 use serde_json::{json, Value};
@@ -149,7 +163,9 @@ fn chat_of_group(d: &DataMessage) -> Option<String> {
     Some(format!("group:{}", key.iter().map(|b| format!("{b:02x}")).collect::<String>()))
 }
 
-fn message(c: &Content) {
+/// a message as a signal (Message, or History for the store's); receipts
+/// and typing as Receipt and ChatState (live ones only)
+fn message(c: &Content, name: &str) {
     let sender = c.metadata.sender.raw_uuid().to_string();
     let (chat, from_me, d) = match &c.body {
         ContentBody::DataMessage(d) => (chat_of_group(d).unwrap_or_else(|| sender.clone()), false, d),
@@ -166,14 +182,68 @@ fn message(c: &Content) {
             true,
             d,
         ),
+        ContentBody::ReceiptMessage(ReceiptMessage { r#type, timestamp }) if name == "Message" => {
+            let kind = match r#type.and_then(|t| receipt_message::Type::try_from(t).ok()) {
+                Some(receipt_message::Type::Delivery) => "delivered",
+                Some(receipt_message::Type::Read) | Some(receipt_message::Type::Viewed) => "read",
+                None => return,
+            };
+            let ids: Vec<String> = timestamp.iter().map(|t| t.to_string()).collect();
+            signal("Receipt", json!([sender, sender, ids, kind, now_ms() / 1000]));
+            return;
+        }
+        // a person's typing (a group's carries the group's id, not its key)
+        ContentBody::TypingMessage(TypingMessage { action, group_id: None, .. }) if name == "Message" => {
+            let started = action.and_then(|a| typing_message::Action::try_from(a).ok())
+                == Some(typing_message::Action::Started);
+            signal("ChatState", json!([sender, sender, started]));
+            return;
+        }
         _ => return,
     };
     let Some(text) = &d.body else { return };
     let ms = c.metadata.client_timestamp.timestamp_millis();
     signal(
-        "Message",
+        name,
         json!([ms.to_string(), chat, sender, "", ms / 1000, from_me, "text", text, "", 0]),
     );
+}
+
+/// the store's newest messages of every contact and group, as History
+async fn history(store: &SqliteStore) {
+    let mut threads = Vec::new();
+    if let Ok(contacts) = store.contacts().await {
+        threads.extend(contacts.flatten().map(|c| Thread::Contact(ServiceId::Aci(c.uuid.into()))));
+    }
+    if let Ok(groups) = store.groups().await {
+        threads.extend(groups.flatten().map(|(key, _)| Thread::Group(key)));
+    }
+    for t in threads {
+        let Ok(msgs) = store.messages(&t, ..).await else { continue };
+        let msgs: Vec<Content> = msgs.flatten().collect();
+        for c in msgs.iter().skip(msgs.len().saturating_sub(40)) {
+            message(c, "History");
+        }
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// [[uuid, name, ""]...] or [["group:<key>", title]...] from the store
+async fn names(store: &SqliteStore, groups: bool) -> Result<Value, String> {
+    let mut out = Vec::new();
+    if groups {
+        for (key, g) in store.groups().await.map_err(|e| e.to_string())?.flatten() {
+            out.push(json!([format!("group:{}", hex(&key)), g.title]));
+        }
+    } else {
+        for c in store.contacts().await.map_err(|e| e.to_string())?.flatten() {
+            out.push(json!([c.uuid.to_string(), c.name, ""]));
+        }
+    }
+    Ok(json!([out]))
 }
 
 /// the messages, as long as the connection holds; then again
@@ -191,7 +261,7 @@ async fn receive(h: H, mut m: Manager<SqliteStore, Registered>) {
                             "Error",
                             json!([format!("a message from {} not decrypted", id.raw_uuid())]),
                         ),
-                        Received::Content(c) => message(&c),
+                        Received::Content(c) => message(&c, "Message"),
                     }
                 }
             }
@@ -227,7 +297,7 @@ async fn send_text(h: H, chat: String, text: String) -> Result<Value, String> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    Ok(json!([ts]))
+    Ok(json!([ts.to_string()]))
 }
 
 fn string_arg(args: &[Value], i: usize) -> Option<String> {
@@ -262,15 +332,30 @@ fn call(h: &H, line: &str) {
             }
         }
         "SendText" => {
-            let (Some(chat), Some(text)) = (string_arg(&args, 0), string_arg(&args, 1)) else {
-                return reply(&id, Err("SendText takes 2 arguments".into()));
+            // (id, chat, text) as Yappari's, or (chat, text)
+            let skip = if args.len() == 3 { 1 } else { 0 };
+            let (Some(chat), Some(text)) = (string_arg(&args, skip), string_arg(&args, skip + 1)) else {
+                return reply(&id, Err("SendText takes 3 arguments: id, chat, text".into()));
             };
             let h = h.clone();
             spawn_local(async move {
-                let r = send_text(h, chat, text).await;
+                let r = send_text(h, chat.clone(), text).await;
+                let sent = r.as_ref().ok().and_then(|v| v[0].as_str().map(String::from));
                 reply(&id, r);
+                if let Some(ts) = sent {
+                    let secs = ts.parse::<u64>().unwrap_or(0) / 1000;
+                    signal("Receipt", json!([chat, "", [ts], "server", secs]));
+                }
             });
         }
+        "GetContacts" | "GetGroups" => {
+            let store = h.borrow().store.clone();
+            let groups = v.get("call").and_then(|c| c.as_str()) == Some("GetGroups");
+            spawn_local(async move {
+                reply(&id, names(&store, groups).await);
+            });
+        }
+        "MarkRead" => reply(&id, Ok(json!([]))),
         other => reply(&id, Err(format!("no method \"{other}\""))),
     }
 }
@@ -298,6 +383,7 @@ async fn run() -> Result<(), String> {
     }));
     if let Ok(m) = Manager::load_registered(store.clone()).await {
         h.borrow_mut().state = "connecting";
+        history(&store).await;
         spawn_local(receive(h.clone(), m));
     }
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
