@@ -1,0 +1,61 @@
+# KolibriOS for ARM: the shell's three x86-only places (cpuid, the driver list by
+# inline assembler, the wait for a console program's shared memory).
+# Applied to the sources with LF line ends by apps/shell/app.mk.
+diff -ruN a/cmd/cmd_lsmod.c b/cmd/cmd_lsmod.c
+--- a/cmd/cmd_lsmod.c
++++ b/cmd/cmd_lsmod.c
+@@ -9,6 +9,11 @@
+ 	};
+ 
+ int cmd_lsmod(char param[]) {
++#if defined(__arm__)
++    /* KolibriOS for ARM: its drivers are in the kernel (no 68.31) */
++    printf("  No drivers loaded: KolibriOS for ARM has them in its kernel.\n\r");
++    return TRUE;
++#else
+     struct service_str* fd;
+ 	struct service_str* bk;
+ 	struct service_str srv_str;
+@@ -30,4 +35,5 @@
+ 	};
+ 	
+     return TRUE;
++#endif
+ }
+diff -ruN a/cmd/cmd_ver.c b/cmd/cmd_ver.c
+--- a/cmd/cmd_ver.c
++++ b/cmd/cmd_ver.c
+@@ -19,6 +19,10 @@
+ }
+ 
+ void get_str_cpu_info(char *str) {
++#if defined(__arm__)
++    /* KolibriOS for ARM: no cpuid, the programs are ARMv7 */
++    strcpy(str, "ARM");
++#else
+     unsigned a, b, c, d;
+ 
+     asm ("cpuid" :
+@@ -43,6 +47,7 @@
+     str[10] = (c&0x00ff0000)	>> 16;
+     str[11] = (c&0xff000000)	>> 24;
+     str[12] = '\0';
++#endif
+ }
+ 
+ int cmd_ver(char param[]) {
+diff -ruN a/modules/module_program_console.c b/modules/module_program_console.c
+--- a/modules/module_program_console.c
++++ b/modules/module_program_console.c
+@@ -2,6 +2,11 @@
+ 
+ 
+ int program_console(int pid) {
++#if defined(__arm__)
++    /* KolibriOS for ARM has no named shared memory (68.22): the
++     * program runs in a window of its own */
++    return 0;
++#endif
+     char name[32];
+     struct shell_shm_buffer *buffer;
+     char *buf1k;
