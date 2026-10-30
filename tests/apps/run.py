@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tests/apps: KolibriOS's ported programs in QEMU (make -C tests/apps).
 
-    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar, t_edit (all: none given)
+    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar, kfar_arc, t_edit (all: none given)
 
 Each builds the kernel with an autorun of its own (tests/apps/autorun.*),
 runs it through scripts/qemu-shot.py, types with keys.py's steps and
@@ -151,6 +151,29 @@ def test_kfar(img):
         shutil.copy(f'{OUT}/kfar/kfar-delete.png', os.path.join(img, 'kfar-delete.png'))
 
 
+def test_kfar_arc(img):
+    # kfar's plugin kfar_arc (/sys/lib/kfar_arc.obj) on /sys/arc.zip and
+    # /sys/arc.7z (apps/kfar/mkarc.py): Enter opens the zip, its folder
+    # sub, F3 on a file in it, F5 copies the file out, ".." back, F5 copies
+    # the folder sub (GetFiles), ".." at the root closes it; Enter opens
+    # the 7z, F5 copies big.txt (LZMA, its CRC checked) and stored.txt
+    # (Copy); fstest (autorun.kfar_arc) looks at /tmp0/1 at 60 s
+    make('realview', 'autorun.kfar_arc')
+    steps = keys('wait:4', 'alt-a', 'rc.z', 'ret', 'wait:2', 'shot:kfar-archive', 'down', 'down', 'ret', 'wait:1',
+                 'down', 'down', 'f3', 'wait:2', 'shot:kfar-archive-view', 'esc', 'wait:1', 'f5', 'wait:1', 'ret',
+                 'wait:2', 'home', 'ret', 'wait:1', 'f5', 'wait:1', 'ret', 'wait:3', 'home', 'ret', 'wait:1',
+                 'shot:kfar-archive-closed', 'alt-a', 'rc.7', 'ret', 'wait:3', 'shot:kfar-archive-7z', 'alt-b', 'ig',
+                 'f5', 'wait:1', 'ret', 'wait:3', 'alt-s', 'to', 'f5', 'wait:1', 'ret', 'wait:2',
+                 'shot:kfar-archive-copied', 'wait:25')
+    log = qemu('realview', f'{OUT}/kfar_arc', steps)
+    n_ok = log.count('fstest: expect ok')
+    check(n_ok == 5 and 'expect FAIL' not in log,
+          f'kfar_arc: zip and 7z opened, F3 in them, files and a folder copied out ({n_ok} of 5 as expected)')
+    if img:
+        for n in ('kfar-archive', 'kfar-archive-7z'):
+            shutil.copy(f'{OUT}/kfar_arc/{n}.png', os.path.join(img, n + '.png'))
+
+
 class Mouse:
     """qemu-shot.py's relative mouse steps to screen positions (realview's
     PS/2 mouse: steps of at most 100 pixels, the first move to the corner)"""
@@ -200,7 +223,7 @@ if args[:1] == ['--img']:
     img = os.path.join(TOP, args[1])
     args = args[2:]
 tests = {'fstest': test_fstest, 'shell': test_shell, 'terminal': test_terminal, 'kfar': test_kfar,
-         't_edit': test_t_edit}
+         'kfar_arc': test_kfar_arc, 't_edit': test_t_edit}
 for name in args or tests:
     tests[name](img)
 make('realview', '../../apps/autorun')

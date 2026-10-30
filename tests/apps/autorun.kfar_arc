@@ -1,0 +1,6 @@
+/sys/kfar
+/sys/fstest wait 6000 expect /tmp0/1/inner.txt Hello from inside the archive
+/sys/fstest wait 6000 expect /tmp0/1/sub/inner.txt Hello from inside the archive
+/sys/fstest wait 6000 expect /tmp0/1/sub/deeper/note.txt A note in a folder that is only in the names.
+/sys/fstest wait 6000 expect /tmp0/1/big.txt 00001 606 arm 924 573 178 459 literal stream
+/sys/fstest wait 6000 expect /tmp0/1/stored.txt A file of the 7z archive that is only copied.
