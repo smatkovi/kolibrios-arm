@@ -46,8 +46,9 @@ static int list(const char *path, char *out)
 }
 
 /* fstest expect PATH TEXT...: the file holds TEXT (the words joined by
- * blanks) at its start; fstest expect PATH -: it is not there (tests of
- * other programs: tests/apps) */
+ * blanks) at its start; fstest expect PATH -: it is not there; fstest
+ * expect PATH /: it is a folder; "fstest wait N expect ...": after N
+ * hundredths of a second (tests of other programs: tests/apps) */
 static int expect(int argc, char **argv)
 {
 	static char want[256], got[1024];
@@ -56,7 +57,8 @@ static int expect(int argc, char **argv)
 		strcat(want, argv[i]);
 	}
 	struct kos_r2 r = f70(0, 0, 0, sizeof(got) - 1, got, argv[2]);
-	int ok = !strcmp(want, "-") ? r.eax == 5 : (r.eax == 0 || r.eax == 6) && !strncmp(got, want, strlen(want));
+	int ok = !strcmp(want, "-") ? r.eax == 5 : !strcmp(want, "/") ? r.eax == 10 :
+		 (r.eax == 0 || r.eax == 6) && !strncmp(got, want, strlen(want));
 	printf("fstest: expect %s %s \"%s\"\n", ok ? "ok" : "FAIL", argv[2], want);
 	return 0;
 }
@@ -65,6 +67,10 @@ int main(int argc, char **argv)
 {
 	char buf[1024], s[256];
 	struct kos_r2 r;
+	if (argc >= 6 && !strcmp(argv[1], "wait") && !strcmp(argv[3], "expect")) {
+		kos_delay(atoi(argv[2]));
+		return expect(argc - 2, argv + 2);
+	}
 	if (argc >= 4 && !strcmp(argv[1], "expect")) return expect(argc, argv);
 
 	/* the current folder */

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tests/apps: KolibriOS's ported programs in QEMU (make -C tests/apps).
 
-    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal (all: none given)
+    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar (all: none given)
 
 Each builds the kernel with an autorun of its own (tests/apps/autorun.*),
 runs it through scripts/qemu-shot.py, types with keys.py's steps and
@@ -127,12 +127,28 @@ def test_terminal(img):
             shutil.copy(f'{OUT}/terminal/{n}.png', os.path.join(img, n + '.png'))
 
 
+def test_kfar(img):
+    # the left panel /sys (icons/, settings/, @hildon, @hstatus, @taskbar,
+    # ...), the right one /tmp0/1: two copies (F5), a folder (F7), a
+    # delete (F8); fstest (autorun.kfar) looks at /tmp0/1 at 45 s
+    make('realview', 'autorun.kfar')
+    steps = keys('wait:3', 'down', 'down', 'down', 'f5', 'wait:1', 'ret', 'wait:2', 'down', 'f5', 'wait:1', 'ret',
+                 'wait:2', 'shot:kfar-copied', 'tab', 'f7', 'wait:1', 'newdir', 'ret', 'wait:2', 'home', 'down', 'f8',
+                 'wait:1', 'shot:kfar-delete', 'ret', 'wait:2', 'shot:kfar-done', 'f3', 'wait:2', 'shot:kfar-view',
+                 'esc', 'wait:25')
+    log = qemu('realview', f'{OUT}/kfar', steps)
+    n_ok = log.count('fstest: expect ok')
+    check(n_ok == 3 and 'expect FAIL' not in log, f'kfar: F5 copy, F7 folder, F8 delete ({n_ok} of 3 as expected)')
+    if img:
+        shutil.copy(f'{OUT}/kfar/kfar-delete.png', os.path.join(img, 'kfar-delete.png'))
+
+
 args = sys.argv[1:]
 img = None
 if args[:1] == ['--img']:
     img = os.path.join(TOP, args[1])
     args = args[2:]
-tests = {'fstest': test_fstest, 'shell': test_shell, 'terminal': test_terminal}
+tests = {'fstest': test_fstest, 'shell': test_shell, 'terminal': test_terminal, 'kfar': test_kfar}
 for name in args or tests:
     tests[name](img)
 make('realview', '../../apps/autorun')
