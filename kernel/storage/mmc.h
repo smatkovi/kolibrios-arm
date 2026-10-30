@@ -9,6 +9,7 @@ enum { MMC_RSP_NONE, MMC_RSP_R1, MMC_RSP_R1B, MMC_RSP_R2, MMC_RSP_R3, MMC_RSP_R6
 struct mmc_host {
 	void *ctx;
 	int max_width;                  /* 1 or 4 */
+	u32 max_blocks;                 /* the most blocks one command moves */
 	/* a command: its index, argument, response kind; the response in
 	 * r[0..3] (R2: r[0] bits 127:96 ... without the CRC); data: n blocks of
 	 * 512 bytes to (write) or from the card; 0, or -1 (a timeout, a CRC

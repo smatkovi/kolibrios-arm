@@ -28,7 +28,7 @@ addr_t mm_alloc_mb(u32 mb);
 
 #define BLK_MAX 16
 #define VOL_MAX 160
-#define FENCE_MAX 64
+#define FENCE_MAX FMAP_MAX
 #define PAGE 4096u
 #define CACHE_PAGES 512                /* 2 MiB */
 #define BYPASS (64u << 10)             /* reads this large go around the cache */
@@ -487,8 +487,10 @@ struct vol *blk_container(struct vol *host, const struct extent *ext, int n, u64
 	}
 	if (sum != size) return NULL;
 	struct vol *v = kmalloc(sizeof(*v));
-	if (!v) return NULL;
+	struct extent *e = kmalloc(n * sizeof(*e));
+	if (!v || !e) return NULL;
 	memset(v, 0, sizeof(*v));
+	v->ext = e;
 	memcpy(v->name, "hd0/1", 6);
 	v->host = host;
 	v->bsize = PAGE;

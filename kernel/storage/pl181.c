@@ -41,6 +41,7 @@ static int pcmd(void *ctx, u32 idx, u32 arg, u32 rsp, u32 *r, u8 *data, u32 n, b
 {
 	struct pl181 *p = ctx;
 	wr(p, CLEAR, 0x7ff);
+	if (data && n * 512 > 0xffff) return -1;                    /* DATALENGTH: 16 bits */
 	if (data) {
 		wr(p, DATATIMER, 0xffffffffu);
 		wr(p, DATALENGTH, n * 512);
@@ -109,6 +110,7 @@ int pl181_start(struct pl181 *p, const char *name, bool writable)
 	wr(p, POWER, 0x83);                                         /* on */
 	wr(p, MASK0, 0);
 	set_clock(p, 400000);
-	p->host = (struct mmc_host){ p, 1, pcmd, set_clock, set_width, p->now_us, NULL };
+	/* DATALENGTH has 16 bits: 64 blocks (32 KiB) a command */
+	p->host = (struct mmc_host){ p, 1, 64, pcmd, set_clock, set_width, p->now_us, NULL };
 	return mmc_start(&p->host, name, writable);
 }

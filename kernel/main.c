@@ -150,11 +150,12 @@ void kmain(void)
 	extern void storage_start(void), kfs_settings_init(void);
 	storage_start();
 	kfs_settings_init();
-	/* the modem: the Pro1X's starts in its platform; in QEMU a fake one */
+	/* the modem: the Pro1X's starts in its platform; in QEMU a fake one
+	 * (kolibri.nomodem: none, a quieter console for tests) */
 #ifdef __aarch64__
-	if (plat == &platform_virt) kmodem_fake();
+	if (plat == &platform_virt && !boot_arg("kolibri.nomodem")) kmodem_fake();
 #else
-	if (plat == &platform_realview) kmodem_fake();
+	if (plat == &platform_realview && !boot_arg("kolibri.nomodem")) kmodem_fake();
 #endif
 #ifdef __aarch64__
 	/* the Linux personality (kernel/linux); kolibri.lxtrace: its system

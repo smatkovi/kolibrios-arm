@@ -214,6 +214,6 @@ int sdhci_start(struct sdhci *s, const char *name, bool writable)
 		wr32(s->base + CON, rd32(s->base + CON) & ~2u);
 		wr(s, STAT, 0xffffffffu);
 	}
-	s->host = (struct mmc_host){ s, 4, scmd, set_clock, set_width, s->now_us, s->omap ? open_drain : NULL };
+	s->host = (struct mmc_host){ s, 4, 128, scmd, set_clock, set_width, s->now_us, s->omap ? open_drain : NULL };
 	return mmc_start(&s->host, name, writable);
 }

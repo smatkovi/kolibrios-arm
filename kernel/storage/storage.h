@@ -107,7 +107,9 @@ struct vdirent {
 	u32 ctime, atime, mtime;   /* Unix times (FAT's local times taken as they are) */
 };
 
-#define FMAP_MAX 64
+/* a container in 1024 pieces at most (a FAT used for years, the N950's
+ * MyDocs, is that fragmented) */
+#define FMAP_MAX 1024
 struct extent { u64 off, len; };   /* bytes, from the volume's start */
 /* where a file's data lies (home.c checks the container with it) */
 struct fmap {
@@ -127,8 +129,10 @@ struct fmap {
  * case, ext4: exactly). Return E_OK or a KolibriOS error code. */
 struct fsops {
 	const char *name;       /* "ext4", "fat32" ... */
-	/* is it this file system? Then v->fs and v->fsd are set; read only
-	 * unless v->writable (and then only through the fence anyway) */
+	/* is it this file system? Then E_OK, v->fs and v->fsd set; read only
+	 * unless v->writable (and then only through the fence anyway).
+	 * E_UNKNOWN_FS (said nothing): not this one; another code: this one,
+	 * but not to be mounted (said why) */
 	int (*mount)(struct vol *v);
 	/* 70.5: attributes, size, times (e->name unused) */
 	int (*info)(struct vol *v, const char *path, struct vdirent *e);
@@ -168,7 +172,7 @@ struct vol {
 	/* the container: its blocks by its extents on the volume it is on */
 	struct vol *host;
 	int next;
-	struct extent ext[FMAP_MAX];
+	struct extent *ext;
 };
 
 /* bytes of a volume through the block cache: 0, E_DEVICE, E_ACCESS (a

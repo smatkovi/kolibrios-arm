@@ -189,7 +189,7 @@ int mmc_start(struct mmc_host *h, const char *name, bool writable)
 	*w = 0;
 	d->bsize = 512;
 	d->nblocks = sectors;
-	d->max_blocks = MAX_BLOCKS;
+	d->max_blocks = h->max_blocks ? MIN(h->max_blocks, MAX_BLOCKS) : MAX_BLOCKS;
 	d->read = cread;
 	d->priv = c;
 	blk_add(d, writable ? cwrite : NULL);

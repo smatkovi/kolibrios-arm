@@ -129,13 +129,13 @@ static void say(const struct vol *v, const char *what)
 /* the container on v: its map, its place by v's file system, its header */
 static bool check(struct vol *v, struct hmap *m)
 {
-	static char text[8192];
+	static char text[32768];
 	struct vdirent e;
 	if (v->fs->info(v, MAP_PATH, &e) != E_OK) return false;     /* none here */
 	slog("home: %s: %s found\n", v->name, MAP_PATH);
 	u32 got = 0;
 	if (e.size >= sizeof(text) || v->fs->read(v, MAP_PATH, 0, sizeof(text) - 1, text, &got) || got != e.size) {
-		say(v, "the map is not read (or larger than 8 KiB)");
+		say(v, "the map is not read (or larger than 32 KiB)");
 		return false;
 	}
 	const char *why = map_parse(text, got, m);
