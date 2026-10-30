@@ -111,7 +111,9 @@ The system functions done are in `kernel/syscall.c`; the others return
 In C, against `lib/kos.h` (the system functions as inline functions)
 and `lib/crt0.S` (the header and the start). KolibriOS's own programs
 are mostly assembler or C--, which only produce x86 code; programs in C
-can be recompiled.
+can be recompiled. Programs in ARM assembler, KolibriOS's way, with
+FASMARM (the flat assembler for ARM) and `lib/kos.inc` (`mcall`, the
+header, KolibriOS's names): `docs/asm.md`.
 
 | Program | What it is |
 | --- | --- |
@@ -125,6 +127,9 @@ can be recompiled.
 | `cpu` | the process manager: the threads, their memory and state; ends one |
 | `phone` | calls and SMS (function 100): the dialler, the call screen, the conversations as bubbles, writing a message; `@hildon` starts it when a call comes in |
 | `messenger` | WhatsApp through Yappari's daemon (a Linux program, function 101): its state, linking by QR code (`lib/qr.h`); the chats next (`docs/messengers.md`) |
+| `hello` | in assembler (FASMARM): a window, two buttons, the clicks and the last key (`docs/asm.md`) |
+| `asmclock` | in assembler: a digital clock, its seconds bar coloured with NEON |
+| `sysbench`, `fptest` | tests: the system call and the task switch timed; the programs' FP/SIMD registers kept (`docs/asm.md`) |
 
 `apps/autorun` lists what the kernel starts.
 
@@ -142,7 +147,11 @@ make PLATFORM=arm64  # build/arm64/kernel.bin, an arm64 Image (QEMU virt, the Pr
 ```
 
 The AArch64 kernel needs clang and ld.lld besides; the programs are the
-same ARMv7 builds. In QEMU:
+same ARMv7 builds. Its hottest loops (the drawing, the Pro1X's flush,
+memcpy/memset) are AArch64 assembler with NEON, the C kept
+(`make PLATFORM=arm64 SIMD=c`, `kolibri.simd=c`); the programs in
+assembler need FASMARM, which `tools/fetch-fasmarm.sh` fetches
+(`make ASM_APPS=` without them): `docs/asm.md`. In QEMU:
 
 ```sh
 qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 8G \

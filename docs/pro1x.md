@@ -46,6 +46,8 @@ The command line:
 | `kolibri.battery` | the PMIC's battery readings also without a power test |
 | `kolibri.standby` | the programs' timeouts on whole seconds, as while the display is off |
 | `kolibri.psci=off` | the CPU idles with `wfi` only, no PSCI power-down states (`core`: no cluster state; `docs/power.md`) |
+| `kolibri.bench` | the drawing loops and the string functions timed at the start, C against assembler (NEON), the flush to the panel too (`docs/asm.md`) |
+| `kolibri.simd=c` | the drawing in C instead of the NEON assembler |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.
