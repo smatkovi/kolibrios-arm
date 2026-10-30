@@ -2,7 +2,8 @@
 #
 #   host   powerdt.c on the PC against the SM6115's tree (sm6115-power.dts,
 #          and the phone's own with PRO1X_DTB=...) and QEMU's; pmic.c (the
-#          SPMI arbiter, the battery) against an arbiter in RAM
+#          SPMI arbiter, the battery) against an arbiter in RAM; dsi_ulps.c
+#          (the DSI lanes to ULPS) against a model of the lanes
 #   qemu   the kernel in QEMU (builds it first); each run prints the
 #          kernel's power lines and checks them (qemu.py): the 100 Hz tick
 #          as it was, tickless idle on QEMU's virt and on the Pro1X's code
@@ -21,9 +22,14 @@ PRO1X_DTB ?=
 
 test: host qemu
 
-host: $(B)/host $(B)/pmic $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb
+host: $(B)/host $(B)/pmic $(B)/dsi $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb
 	$(B)/host $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb $(PRO1X_DTB)
 	$(B)/pmic
+	$(B)/dsi
+
+$(B)/dsi: dsi.c $(TOP)/kernel/platform/dsi_ulps.c $(TOP)/kernel/platform/dsi_ulps.h
+	@mkdir -p $(B)
+	$(CC) $(CFLAGS) -DDSI_HOST -I$(TOP)/kernel/platform dsi.c $(TOP)/kernel/platform/dsi_ulps.c -o $@
 
 $(B)/pmic: pmic.c $(TOP)/kernel/modem/pmic.c $(TOP)/kernel/modem/pmic.h $(TOP)/kernel/modem/modem.h
 	@mkdir -p $(B)

@@ -57,6 +57,7 @@
 #include "blit.h"
 #include "../storage/storage.h"
 #include "../storage/ufs.h"
+#include "dsi_ulps.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -80,6 +81,7 @@ static u32 lifetime;                   /* s, 0: forever */
 static u32 powertest;                  /* kolibri.powertest=N: min */
 static bool rpmsleep;                  /* kolibri.rpmsleep: the sleep set, the MPM */
 static bool displayon, battery_arg;    /* kolibri.displayon, kolibri.battery */
+static bool dsiulps;                    /* kolibri.dsiulps: the DSI lanes to ULPS with the display off */
 /* the SPMI arbiter's regions (core, chnls, obsrvr, cnfg, intr), its EE,
  * its interrupt (an INTID) and that interrupt's MPM pin; the battery's
  * gauge and ADC channel (the device tree's fxtec,pro1x-adc-battery); the
@@ -1413,9 +1415,27 @@ static bool dcs_brightness(u32 v)
 	return dsi_dcs(c, 3, false);
 }
 
-/* off: brightness 0, display off, sleep in, the frames stopped; on: the
- * reverse (the panel keeps its registers through sleep; brightness 127,
- * the panel driver's default) */
+/* the DSI lanes to ULPS with the display off (kolibri.dsiulps, untried
+ * on the phone: off unless asked): dsi_ulps.c, Linux's msm sequence */
+static u32 ulps_rd(void *ctx, u32 off) { return dsi_rd(off); }
+static void ulps_wr(void *ctx, u32 off, u32 v) { dsi_wr(off, v); }
+static const struct dsi_regs ulps_regs = { NULL, ulps_rd, ulps_wr, delay_us };
+static struct dsi_ulps ulps;
+
+static const char *ulps_why(int e)
+{
+	switch (e) {
+	case 0: return "done";
+	case DSI_ULPS_FIFO: return "a FIFO not empty: left";
+	case DSI_ULPS_NOT_IDLE: return "no lane in its stop state: left";
+	case DSI_ULPS_REFUSED: return "not every lane went in: out again";
+	default: return "a lane stuck in ULPS";
+	}
+}
+
+/* off: brightness 0, display off, sleep in, the frames stopped, the
+ * lanes to ULPS (kolibri.dsiulps); on: the reverse (the panel keeps its
+ * registers through sleep; brightness 127, the panel driver's default) */
 static void display_power(bool on)
 {
 	if (!dsi_pa || !mdp) {
@@ -1440,7 +1460,18 @@ static void display_power(bool on)
 		display_off = true;
 		kprintf("pro1x: display off: brightness %s, display off %s, sleep in %s, timing engine %u -> 0\n",
 			b ? "0" : "failed", o ? "done" : "failed", sl ? "done" : "failed", was);
+		if (dsiulps) {
+			int e = dsi_ulps_enter(&ulps_regs, &ulps);
+			kprintf("pro1x: DSI lanes to ULPS (lanes %x, LANE_CTRL %x): %s, status %x\n", ulps.lanes,
+				ulps.lane_ctrl, ulps_why(e), ulps.status);
+		}
 	} else {
+		/* the lanes out of ULPS first: the DCS commands need them */
+		if (ulps.in) {
+			int e = dsi_ulps_exit(&ulps_regs, &ulps);
+			kprintf("pro1x: DSI lanes out of ULPS: %s, status %x, LANE_CTRL %x\n", ulps_why(e), ulps.status,
+				dsi_rd(0xa8));
+		}
 		wr32(te, 1);
 		delay_us(20000);
 		bool sl = dcs1(DCS_EXIT_SLEEP, true);
@@ -2341,6 +2372,7 @@ bool pro1x_probe(const void *fdt)
 		wifi_irq = word(args, len, "kolibri.wifi=irq", NULL);
 		rpmsleep = word(args, len, "kolibri.rpmsleep", NULL);
 		displayon = word(args, len, "kolibri.displayon", NULL);
+		dsiulps = word(args, len, "kolibri.dsiulps", NULL);
 		battery_arg = word(args, len, "kolibri.battery", NULL);
 		nopowerkey = word(args, len, "kolibri.nopowerkey", NULL);
 		word(args, len, "kolibri.keytest=", &keytest);
