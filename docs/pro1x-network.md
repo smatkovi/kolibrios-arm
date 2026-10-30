@@ -194,8 +194,12 @@ station is up, every 20 ms after). The facts and where they are from:
   fragment bank's descriptor; done by `TX_COMPL_IND`.
 - **The station** (`mac.c`): `ath10k_add_interface` (vdev create, power
   save off), `ath10k_hw_scan` with `ath10k_wmi_start_scan_init`'s values
-  (the TLV firmware's inverted probe-request filter flag), vdev start on
-  the BSS's channel (`ath10k_vdev_start_restart`), the AP's peer and its
+  (the TLV firmware's inverted probe-request filter flag), the beacons
+  and the AP's answers by MGMT_RX (dropped only for a CRC, decryption or
+  key cache error, as `ath10k_wmi_event_mgmt_rx`: EXT_INFO, 0x40, is
+  extension data), vdev start on the BSS's channel
+  (`ath10k_vdev_start_restart`; the mode by the channel as
+  `chan_to_phymode`: 11g, 11a, channel 14's 11b), the AP's peer and its
   `PEER_MAP` (`ath10k_wait_for_peer_created`), `ath10k_peer_assoc_prepare`
   for a legacy peer (auth, `need_ptk_4_way` with an RSN element, the
   rates as `ath10k_mac_bitrate_to_rate`, 11a/b/g, listen interval 1),
@@ -350,6 +354,11 @@ Where it can fail, and what the console then says:
   wants the `memory-region` (MSA, `wlan_msa_mem`) for something of the
   host's would crash (`wlfw: indication 0x..`; then the modem's console
   lines).
+- **The interrupts**: the engines raise them once set up
+  (copy-complete), polled or not; in the default polling their SPIs stay
+  masked (`gic3_init` masks every SPI, so nothing Linux left enabled
+  fires); with `kolibri.wifi=irq` they are taken level-triggered and
+  cleared before each engine's completions.
 - **The firmware's state**: `wlfw: the firmware is not ready` (the modem
   restarted under Linux): the board data path, not done.
 - **The network**: `"<SSID>" not found (N networks seen)` (the channel

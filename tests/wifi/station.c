@@ -728,6 +728,8 @@ static void fw_service_ready(void)
 }
 
 /* a beacon of one of the APs as MGMT_RX on its channel */
+static u32 beacon_status;               /* MGMT_RX's status of the next beacon */
+
 static void fw_beacon(const u8 *bssid, const char *s, u32 chan, const u8 *rsn, u32 rsn_len, u32 snr)
 {
 	u8 f[256];
@@ -755,6 +757,7 @@ static void fw_beacon(const u8 *bssid, const char *s, u32 chan, const u8 *rsn, u
 	put32(p + 4, chan);
 	put32(p + 8, snr);
 	put32(p + 4 + 16, n);
+	put32(p + 4 + 20, beacon_status);
 	p += 4 + WMI_MGMT_RX_LEN;
 	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)((n + 3) & ~3u));
 	memset(p + 4, 0, (n + 3) & ~3u);
@@ -1139,9 +1142,15 @@ static void fw_poll(void)
 	if (fw.scanning && (s32)(now - fw.scan_until) >= 0) {
 		fw.scanning = false;
 		if (!IS("noap") && scanned(2437)) {
+			/* a CRC error (dropped, even with more SNR), the others with
+			 * EXT_INFO (0x40: taken, as Linux) */
+			beacon_status = 0x01;
+			fw_beacon(other_mac, ssid, 6, rsn_ccmp, sizeof(rsn_ccmp), 90);
+			beacon_status = 0x40;
 			fw_beacon(other_mac, "Neighbours", 6, rsn_ccmp, sizeof(rsn_ccmp), 30);
 			fw_beacon(tkip_mac, ssid, 6, rsn_tkip, sizeof(rsn_tkip), 60);
 			fw_beacon(ap_mac, ssid, 6, rsn_ccmp, sizeof(rsn_ccmp), 45);
+			beacon_status = 0;
 		}
 		fw_scan_event(WMI_SCAN_EVENT_COMPLETED);
 	}
@@ -1299,7 +1308,8 @@ int main(int argc, char **argv)
 	run_until(now + 20000, is_up);
 	CHECK(is_up(), "up (%s)", wifi_state_name(wifi_state()));
 	CHECK(fw.inits == 1 && fw.pdev_params == 5 && fw.vdev_freq == 2437 && fw.mgmt_tx == 2, "INIT, 5 parameters, 2437 MHz, auth and assoc by WMI");
-	CHECK(!memcmp(wifi_stats()->bssid, ap_mac, 6), "the CCMP AP, not the TKIP one with more SNR, nor the other SSID");
+	CHECK(!memcmp(wifi_stats()->bssid, ap_mac, 6), "the CCMP AP: not the TKIP one with more SNR, nor the other SSID, "
+	      "nor a beacon with a CRC error; one with EXT_INFO taken");
 	CHECK(fw.peer_flags == (WMI_TLV_PEER_AUTH | WMI_TLV_PEER_NEED_PTK_4_WAY) && fw.peer_aid == 1 &&
 	      fw.peer_phymode == MODE_11G && fw.peer_nrates == 12, "PEER_ASSOC: auth + 4-way, AID 1, 11g, 12 rates");
 	CHECK(ap.m2 == 1 && ap.m4 == 1 && ap.bad_mic == 0, "the 4-way handshake at the AP: messages 2 and 4, their MICs right");

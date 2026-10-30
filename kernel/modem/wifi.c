@@ -348,15 +348,10 @@ static void join(void)
 	struct wmi_chan ch = { bss.freq, bss.freq < 5000 ? MODE_11G : MODE_11A, false, false, 40, 40 };
 	for (u32 i = 0; i < nchan; i++)
 		if (chans[i].freq == bss.freq) ch = chans[i];
-	/* the BSS's mode: 11b when it has no OFDM rate (ath10k_peer_assoc_h_phymode) */
-	if (bss.freq < 5000) {
-		bool ofdm = false;
-		for (u32 i = 0; i < bss.nrates; i++) {
-			u8 r = bss.rates[i] & 0x7f;
-			if (r != 2 && r != 4 && r != 11 && r != 22) ofdm = true;
-		}
-		ch.mode = ofdm ? MODE_11G : MODE_11B;
-	}
+	/* the channel's mode (chan_to_phymode for 20 MHz without HT: 11g in
+	 * 2.4 GHz but channel 14's 11b, 11a in 5 GHz); the BSS's rates count
+	 * for the peer (PEER_ASSOC) */
+	if (bss.freq == 2484) ch.mode = MODE_11B;
 	u64 pa;
 	u8 *b = msg_new(&pa);
 	if (b) wmi_cmd(b, wmi_vdev_start(b + HTC_HDR_LEN, VDEV, bss.beacon_int, bss.dtim, &ch));
@@ -637,7 +632,9 @@ static void wmi_event(const u8 *p, u32 len)
 	}
 	case WMI_TLV_MGMT_RX_EVENTID: {
 		struct wmi_mgmt_rx e;
-		if (wmi_mgmt_rx(p, len, &e) || e.status) return;
+		/* dropped as ath10k_wmi_event_mgmt_rx drops them: CRC, decrypt,
+		 * key cache miss (not EXT_INFO, 0x40: extension data, nor MIC) */
+		if (wmi_mgmt_rx(p, len, &e) || (e.status & (0x01 | 0x08 | 0x20))) return;
 		u16 fc = wlan_fc(e.frame) & 0x00fc, status, aid;
 		if (fc == WLAN_FC_BEACON || fc == WLAN_FC_PROBE_RESP) {
 			struct wlan_bss b;
