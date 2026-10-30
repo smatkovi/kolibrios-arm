@@ -64,7 +64,9 @@ threads of one program and between programs.
 `SHM_CREATE`, with `SHM_READ` or `SHM_WRITE`; it returns the address
 and in edx 0 (created) or the area's size (opened), or 0 and the error
 (5 not found, 10 access, 30 no memory, 33 parameters). An area opened
-read-only is mapped read-only. Every open maps the area again (another
+read-only is mapped read-only: the program's writes fault, and the
+kernel takes it as no buffer to write into (an IPC buffer, function 70's
+reads; KolibriOS's kernel faults on such pages), only its strings. Every open maps the area again (another
 address); 68.23 closes the thread's latest mapping of that name. The
 memory goes when its last mapping is closed.
 

@@ -911,12 +911,13 @@ int con_kbhit(void)
 }
 
 /* con.force_entered_char: a key from the input buffer, waiting for one
- * as console.obj does (5 2); 0 when the window was closed */
+ * as console.obj does (5 2), after a second without one every 0.1 s (the
+ * tickless kernel idles longer); 0 when the window was closed */
 static u16 con_take(void)
 {
-	while (con.input_start == *(volatile int *)&con.input_end) {
+	for (int n = 0; con.input_start == *(volatile int *)&con.input_end; n++) {
 		if (con_flags & CON_WINDOW_CLOSED) return 0;
-		kos_delay(2);
+		kos_delay(n < 50 ? 2 : 10);
 	}
 	u16 c = con.input[con.input_start];
 	con.input_start = (con.input_start + 1) % 128;

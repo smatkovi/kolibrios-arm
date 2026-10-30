@@ -240,8 +240,11 @@ u32 sched_next_work(void)
 }
 
 /* the image, or one of the process's maps (shared memory, libraries):
- * the kernel's address of va and how many bytes from there are its */
-static void *ubase(struct task *t, u32 va, u32 *left)
+ * the kernel's address of va and how many bytes from there are its. A
+ * read-only area (68.22 with SHM_READ) is no buffer for uptr, whose
+ * callers may write (as KolibriOS's kernel faults on such pages); its
+ * strings (ustr) are fine */
+static void *ubase(struct task *t, u32 va, u32 *left, bool write)
 {
 	if (va < t->mem_size) {
 		*left = t->mem_size - va;
@@ -252,6 +255,7 @@ static void *ubase(struct task *t, u32 va, u32 *left)
 	for (int i = 0; i < p->nmap; i++) {
 		struct umap *m = &p->map[i];
 		if (va - m->va < m->size) {
+			if (write && m->ro) return NULL;
 			*left = m->size - (va - m->va);
 			return (void *)(m->pa + (va - m->va));
 		}
@@ -263,14 +267,14 @@ void *uptr(struct task *t, u32 va, u32 len)
 {
 	if (va < t->mem_size && len <= t->mem_size - va) return (void *)(t->mem_pa + va);
 	u32 left;
-	void *k = ubase(t, va, &left);
+	void *k = ubase(t, va, &left, true);
 	return k && len <= left ? k : NULL;
 }
 
 const char *ustr(struct task *t, u32 va)
 {
 	u32 left;
-	const char *s = ubase(t, va, &left);
+	const char *s = ubase(t, va, &left, false);
 	if (!s) return NULL;
 	for (u32 i = 0; i < left && i < 4096; i++)
 		if (!s[i]) return s;

@@ -146,7 +146,7 @@ void sys_shmem_open(struct task *t, u32 *r)
 	if (!s) {
 		if (action == SHM_OPEN) { r[3] = E_NOTFOUND; return; }
 		if (action != SHM_CREATE && action != SHM_OPEN_ALWAYS) { r[3] = E_PARAM; return; }
-		if (!size) { r[3] = E_PARAM; return; }
+		if (!size || size > MAP_END - MAP_START) { r[3] = E_PARAM; return; }
 		for (int i = 0; i < MAX_SHMEM && !s; i++)
 			if (!shm[i].pa) s = &shm[i];
 		size = ALIGN_UP(size, 4096u);
