@@ -6,7 +6,8 @@
 The archives: apps/kfar/mkarc.py's (the ramdisk's: zip, 7z with LZMA, BCJ,
 Copy) and, when 7-Zip (7z, 7za or 7zz) is on the PC, more of its own:
 zip with Deflate64, Copy and ZipCrypto, 7z with LZMA (an encoded header),
-PPMd, BCJ2, Deflate, Deflate64, AES-256 with an encrypted header. Each is
+PPMd, BCJ2, Deflate, Deflate64, AES-256 with an encrypted header and
+over PPMd, and LZMA2, which it refuses ("Unknown method"). Each is
 unpacked by OUTDIR/host (host.c) twice, through the folders (with
 setpos, and once more with no memory streams) and through GetFiles,
 and compared with Python's zipfile or 7-Zip's own unpacking.
@@ -119,6 +120,14 @@ if sevenzip:
         subprocess.run([sevenzip, 'x', '-o' + ref, *(['-p' + pw] if pw else []), arc], check=True,
                        stdout=subprocess.DEVNULL)
         test(arc, ref, what, pw)
+    # what kfar_arc has not (7-Zip's default, LZMA2): refused, no crash
+    arc = os.path.join(out, 'lzma2.7z')
+    if os.path.exists(arc):
+        os.unlink(arc)
+    subprocess.run([sevenzip, 'a', '-t7z', '-m0=LZMA2', arc, '.'], cwd=src, check=True, stdout=subprocess.DEVNULL)
+    r = subprocess.run([host, arc, out + '/lzma2'], capture_output=True, text=True)
+    check(r.returncode == 1 and 'Unknown method: 21' in r.stderr,
+          '7z LZMA2 refused with "Unknown method: 21"')
 else:
     print('     (no 7-Zip on the PC: its archives are left out)')
 print('tests/kfar_arc: ' + ('all passed' if not failed else f'{len(failed)} failed'))

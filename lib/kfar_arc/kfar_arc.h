@@ -192,7 +192,12 @@ void free_handle(void *esi);
 bool query_password(void);
 
 /* the memory streams (kfar_arc.asm: mem_stream): small files unpacked
- * at open */
+ * at open, those up to a quarter of the free memory and (here) up to
+ * LIMIT_FOR_MEM_STREAM: the original leaves it undefined ("if user has
+ * many physical memory, why not to use it?"); kfar's heap is 16 MiB of
+ * its own, while getfreemem says the system's, so larger files are read
+ * as streams */
+#define LIMIT_FOR_MEM_STREAM (2 * 1024 * 1024)
 typedef struct mem_stream {
 	u32 type;               /* type_mem_stream */
 	u32 size;

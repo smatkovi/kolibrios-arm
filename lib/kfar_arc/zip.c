@@ -488,7 +488,7 @@ void *open_file_zip(handle_common *p, file_common *eax, int edi)
 		return h;
 	}
 	u32 ecx = ebx->uncompressed_size;
-	if (((ecx + 0x3FF) >> 10) > getfreemem() >> 2) {
+	if (ecx > LIMIT_FOR_MEM_STREAM || ((ecx + 0x3FF) >> 10) > getfreemem() >> 2) {
 		RETURN_UNCATCH(saved);
 		return h;
 	}

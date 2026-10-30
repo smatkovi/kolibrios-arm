@@ -252,6 +252,13 @@ file layer on plugin files; `viewer.c`, `editor.c`):
   moving and deleting in them, Shift+F5, Alt+F7, saving from the editor,
   Enter on a file in them (no archive in an archive).
 
+Tried in QEMU (realview): arc.zip and arc.7z opened, their folders in and
+out, F3 and F4 on files in them (F2 says "Saving is not supported for
+plugin panels"), F5 of files and of a folder, `..` closing them; an
+encrypted 7z's password asked (a wrong one: "Error in archive data or
+incorrect password", "Enter password" asks again), an LZMA2 7z refused
+("Unknown method: 21") with kfar going on.
+
 The ABI (`apps/kfar/kfar_api.h`, included by both sides): every
 function of `api.txt` and every callback in `kfar_info` is a plain
 AAPCS C function with `api.txt`'s stdcall signature (`__int64` is `long
@@ -301,7 +308,10 @@ the zlib encoder the original links in (`../zlib/zlib.asm`: the exports
 memory bound what an archive may need: an LZMA dictionary (the smaller
 of it and the folder's size), a PPMd model (7-Zip makes them small for
 small files); a file that fits into a quarter of the free memory is
-unpacked when it is opened, as in the original.
+unpacked when it is opened, as in the original, here up to 2 MiB (the
+original's `LIMIT_FOR_MEM_STREAM`, left undefined there: the free memory
+it asks for is the system's, kfar's heap is 16 MiB), larger ones are
+read as streams.
 
 Fixed or changed, as found: the parent of a folder listed after its
 files (the original leaves it at the root); a zip64 extra field read as
@@ -331,6 +341,7 @@ make -C tests/kfar_arc
 
 ![an archive in kfar](img/kfar-archive.png)
 ![a 7z archive](img/kfar-archive-7z.png)
+![the password of an encrypted 7z](img/kfar-archive-password.png)
 
 ![kfar](img/kfar-classic.png)
 ![F8 in kfar](img/kfar-delete.png)

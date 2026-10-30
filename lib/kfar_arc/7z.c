@@ -1425,7 +1425,7 @@ again:;
 	skip_7z(mainStream);
 	mainStream->fullSize = esi->UnPackSize;
 	u32 ecx = esi->UnPackSize;
-	if (!(esi->UnPackSize >> 32) && ((ecx + 0x3FF) >> 10) <= getfreemem() >> 2) {
+	if (!(esi->UnPackSize >> 32) && ecx <= LIMIT_FOR_MEM_STREAM && ((ecx + 0x3FF) >> 10) <= getfreemem() >> 2) {
 		/* create memory stream and unpack to memory */
 		ms = pgalloc(ecx + sizeof(mem_stream));
 		if (!ms) return_clear();
