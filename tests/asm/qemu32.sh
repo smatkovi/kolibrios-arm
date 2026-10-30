@@ -19,7 +19,10 @@ fptest fp
 grep -q "drawing: NEON" $T/fp/serial.log
 QEMU_APPEND="kolibri.run=/sys/asmclock kolibri.look=classic" python3 scripts/qemu-shot.py $K $T/clock wait:8 shot:clock
 grep -q "started asmclock" $T/clock/serial.log
-! grep "asmclock.*ended" $T/clock/serial.log
+if grep "asmclock.*ended" $T/clock/serial.log; then
+	echo "asmclock ended"
+	exit 1
+fi
 echo "asmclock: runs (its NEON)"
 for look in hildon classic; do
 	QEMU_APPEND="kolibri.simd=c kolibri.look=$look" python3 scripts/qemu-shot.py $K $T/c-$look wait:8 shot:home

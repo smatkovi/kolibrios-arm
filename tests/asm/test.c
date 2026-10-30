@@ -131,9 +131,9 @@ static void test_bgr(void)
 	for (int ni = 0; ni < 80 + 3; ni++) {
 		int n = ni < 80 ? ni : sizes[ni - 80];
 		for (int off = 0; off < 5; off++) {
-			for (int si = 0; si < 3; si++)
+			for (int si = 0; si < 4; si++)
 				for (int kind = 0; kind < 5; kind++) {
-					int slot = (int[]){ -1, 1, 40 }[si];
+					int slot = (int[]){ -1, 1, 40, 0 }[si];
 					fill_rand(a, sizeof(a));
 					memcpy(b, a, sizeof(a));
 					fill_rand(img, sizeof(img));
@@ -228,14 +228,22 @@ static void n9_old(void *lcd, int bpp, const u32 *shadow, int y0, int y1)
 	}
 }
 
-/* n950.c's n9_copy: the band in whole blocks of 16 lines */
+/* n950.c's n9_copy, line for line (lcd_w 480, lcd_h 864): the band in
+ * whole blocks of 16 lines, clipped to the panel */
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 static void n9_new(void *lcd, int bpp, const u32 *shadow, int y0, int y1,
 		   void (*rot)(void *, u32, const u32 *, u32, u32, u32, u32))
 {
-	int lo = y0, hi = y1;
+	const int lcd_w = N9_PW, lcd_h = N9_PH, lcd_stride = N9_PW;
+	y0 &= ~15;
+	y1 = MIN((y1 + 15) & ~15, N9_SH);
+	int lo = MAX(y0, N9_PW - lcd_w), hi = MIN(y1, N9_PW);
+	int w = MIN(N9_SW, lcd_h - N9_HID);
+	if (lo >= hi || w <= 0) return;
 	u32 bytes = bpp / 8;
-	char *d = (char *)lcd + N9_HID * N9_PW * bytes + (N9_PW - hi) * bytes;
-	rot(d, N9_PW * bytes, shadow + lo * N9_SW, N9_SW, N9_SW, hi - lo, bpp);
+	char *d = (char *)lcd + (u32)N9_HID * lcd_stride * bytes + (u32)(N9_PW - hi) * bytes;
+	rot(d, lcd_stride * bytes, shadow + lo * N9_SW, N9_SW, w, hi - lo, bpp);
 }
 
 static void test_rot90(void)
@@ -272,7 +280,8 @@ static void test_rot90(void)
 			int y0 = bands[i][0], y1 = bands[i][1];
 			memset(qa, 0x5a, N9_PW * N9_PH * 4);
 			memset(qb, 0x5a, N9_PW * N9_PH * 4);
-			n9_old(qa, bpp, sh, y0, y1);
+			/* the old loop over the lines n9_copy rounds the band to */
+			n9_old(qa, bpp, sh, y0 & ~15, MIN((y1 + 15) & ~15, N9_SH));
 			n9_new(qb, bpp, sh, y0, y1, rot90_c);
 			check(!memcmp(qa, qb, N9_PW * N9_PH * 4), "rot90 n950 geometry", bpp, y0, y1, 0);
 			memset(qa, 0x5a, N9_PW * N9_PH * 4);

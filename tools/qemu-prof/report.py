@@ -7,7 +7,7 @@ PROF.OUT: prof.so's output (block address, instructions, runs); KERNEL.ELF:
 the kernel that ran; BASE: where it ran: the AArch64 kernel is linked at 0
 (position independent), BASE is the second value of its "boot arguments"
 line; the ARMv7 kernel is linked where it runs (BASE: its KERNEL_BASE,
-70100000 on QEMU's realview, 80008000 on the N950). Prints the
+70010000 on QEMU's realview, 80008000 on the N950). Prints the
 TOP functions by executed instructions, the kernel's and the programs'
 totals (the programs run below 1 GiB, AArch32), and how often the
 exception vectors ran (the system calls and interrupts from AArch32
