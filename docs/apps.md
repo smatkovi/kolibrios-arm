@@ -171,6 +171,52 @@ QEMU_EXTRA="-serial tcp:127.0.0.1:18799,server=on,wait=off" \
 ![terminal's settings](img/terminal-settings.png)
 ![a line from the other end](img/terminal-session.png)
 
+## kfar
+
+Kolibri Far 0.65, all of it: about 19 300 lines of assembler became
+about 10 300 of C (`apps/kfar`: `kfar.c` the start, events, keys, mouse,
+screens and drawing, `data.c` its tables and dialog templates,
+`panels.c` and `paneldraw.c` the panels, `dialogs.c`, `viewer.c` with
+`search.c`, `editor.c`, `filetool.c` and `filesearch.c`, `sort.c`,
+`tools.c`; `kfar.h` the shared structures; the labels, names and
+structures the original's, each function naming its label). Its screen
+is a grid of character cells in its own bitmap fonts, made from its
+`font*.bmp` at build time (`apps/kfar/mkfont.py`, `make KFAR_FONT=` one
+of font6x9, font7x12, font8x9, font8x16, font10x20), drawn with function
+65; its colours and keys from `/sys/kfar.ini` (KolibriOS's distributed
+one). The left panel starts in `/sys`, the right one in `/tmp0/1` (the
+original's `/hd0/1` does not exist here); Alt+F1/F2 list the volumes.
+
+Tried in QEMU (classic and Hildon looks, both kernels): moving, Tab,
+folders in and out, starting a program with Enter, F3 (the viewer: hex,
+wrapping, the encodings, searching), F4 (the editor: typing, joining and
+splitting lines, F2 saving, searching), F5 and Shift+F5 (copying, into a
+new folder too), F6 and Shift+F6 (moving and renaming: 70.10 on one
+volume, copy and delete between volumes), F7, F8 with its question, the
+sort modes (Ctrl+F3 ... Ctrl+F6), the column modes, Alt+letter quick
+search, grey + and * selection, Alt+F7 (searching files and their
+contents), F12 (the screens), F10. In the Hildon look kfar fills the
+window under the panel; mouse clicks, double clicks and the key bar
+work.
+
+What differs: no plugins (kfar_arc and the plugin interface of
+`api.txt` need 68.19); memory from the C library (68.13 does not give
+back, 68.20 is missing); the file search, a thread in the original, runs
+in steps from the screen's idle handler; kfar 0.65 has F6 and Shift+F6
+only on its key bar, here they move and rename. Fixed on the way, as
+found: PgUp to the first file, the copy's destination under `/sys`, the
+viewer with short paths, a few of the editor's block operations, the
+file search's reads, the search automaton's fallback. Enter on a text
+file starts the program `kfar.ini` associates with it, which is not on
+this ramdisk (kfar says so).
+
+![kfar](img/kfar-classic.png)
+![F8 in kfar](img/kfar-delete.png)
+![the viewer](img/kfar-viewer.png)
+![kfar in the Hildon look](img/kfar-hildon-copy.png)
+![the volumes on the AArch64 kernel](img/kfar-arm64-drives.png)
+![Alt+F7](img/kfar-filesearch.png)
+
 ## Testing
 
 `apps/fstest` checks the file systems and the other new functions from

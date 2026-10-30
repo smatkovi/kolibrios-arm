@@ -21,6 +21,11 @@
  * byte 2) is turned into UTF-8. */
 #include "gui.h"
 
+/* a program's buffers need not be aligned: words stored and read so the
+ * compiler cannot merge them into strd/ldrd (which fault on ARMv7) */
+static inline void put32(void *p, u32 v) { struct __attribute__((packed)) w { u32 v; } *q = p; q->v = v; }
+static inline u32 get32(const void *p) { const struct __attribute__((packed)) w { u32 v; } *q = p; return q->v; }
+
 #define NAME_MAX 256
 #define PATH_MAX 1024
 #define PTRS (4096 / sizeof(addr_t))
@@ -472,8 +477,8 @@ static u32 get_time(const u8 *p)
 static void bdfe(u8 *e, u32 attr, u64 size, u32 ct, u32 at, u32 mt, const char *name, u32 enc)
 {
 	memset(e, 0, 40);
-	*(u32 *)e = attr;
-	*(u32 *)(e + 4) = enc ? enc : 1;
+	put32(e, attr);
+	put32(e + 4, enc ? enc : 1);
 	put_time(e + 8, ct);
 	put_time(e + 16, at);
 	put_time(e + 24, mt);
@@ -555,9 +560,9 @@ static void read_folder(struct task *t, u32 *r, int vol, struct knode *dirn, con
 			if (total >= first && got < count)
 				bdfe(hd + 32 + esize * got++, A_DIR, 0, 0, 0, 0, n, enc);
 	}
-	*(u32 *)hd = 1;
-	*(u32 *)(hd + 4) = got;
-	*(u32 *)(hd + 8) = total;
+	put32(hd, 1);
+	put32(hd + 4, got);
+	put32(hd + 8, total);
 	EAX = got < count ? E_EOF : E_OK;
 	EBX = got;
 }
@@ -670,8 +675,8 @@ void kfs_syscall(struct task *t, u32 *r)
 {
 	u8 *info = uptr(t, EBX, 21);
 	if (!info) { EAX = E_POINTER; return; }
-	u32 sub = *(u32 *)info, off_lo = *(u32 *)(info + 4), flags = *(u32 *)(info + 8);
-	u32 size = *(u32 *)(info + 12), buf = *(u32 *)(info + 16);
+	u32 sub = get32(info), off_lo = get32(info + 4), flags = get32(info + 8);
+	u32 size = get32(info + 12), buf = get32(info + 16);
 	u64 off = off_lo | (u64)flags << 32;
 	static char in[PATH_MAX], abs[PATH_MAX];
 	u32 pva = EBX + 20;
@@ -777,7 +782,7 @@ void kfs_syscall(struct task *t, u32 *r)
 		if (!n->parent) { EAX = E_ACCESS; return; }
 		const u8 *d = uptr(t, buf, 32);
 		if (!d) { EAX = E_POINTER; return; }
-		n->attr = (n->attr & (A_DIR | 0x08)) | (*(const u32 *)d & ~(u32)(A_DIR | 0x08));
+		n->attr = (n->attr & (A_DIR | 0x08)) | (get32(d) & ~(u32)(A_DIR | 0x08));
 		u32 ct = get_time(d + 8), at = get_time(d + 16), mt = get_time(d + 24);
 		if (ct) n->ctime = ct;
 		if (at) n->atime = at;

@@ -51,6 +51,7 @@ void cursor_show(void);
 /* wm.c */
 void wm_init(void);
 int wm_skin_h(const struct window *w);    /* its title height, its frame width */
+bool wm_maximised(const struct window *w); /* managed by the Hildon look */
 int wm_frame_w(const struct window *w);
 int wm_set_look(int look);
 void wm_set_work_area(int x0, int x1, int y0, int y1);

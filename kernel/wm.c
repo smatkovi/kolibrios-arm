@@ -48,6 +48,12 @@ static bool managed(const struct window *w)
 	return wm_look == LOOK_HILDON && w->style != 1;
 }
 
+/* function 9's +70 bit 0: the Hildon look maximises it */
+bool wm_maximised(const struct window *w)
+{
+	return managed(w);
+}
+
 int wm_skin_h(const struct window *w)
 {
 	return w && managed(w) ? 0 : SKIN_H;

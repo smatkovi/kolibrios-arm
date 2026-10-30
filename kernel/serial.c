@@ -16,6 +16,11 @@
  * set. */
 #include "gui.h"
 
+/* a program's buffers need not be aligned: words stored and read so the
+ * compiler cannot merge them into strd/ldrd (which fault on ARMv7) */
+static inline void put32(void *p, u32 v) { struct __attribute__((packed)) w { u32 v; } *q = p; q->v = v; }
+static inline u32 get32(const void *p) { const struct __attribute__((packed)) w { u32 v; } *q = p; return q->v; }
+
 #define SERIAL_HANDLE 0x53524c01u
 #define SERIAL_API_VERSION 0x00010000u        /* SERIAL_COMPATIBLE_API_VER 1 */
 
@@ -80,8 +85,8 @@ static int rx(struct port *p)
 static bool conf_ok(struct task *t, u32 va)
 {
 	const u8 *c = uptr(t, va, 12);
-	if (!c || *(const u32 *)c < 12) return false;
-	u32 baud = *(const u32 *)(c + 4);
+	if (!c || get32(c) < 12) return false;
+	u32 baud = get32(c + 4);
 	u8 word = c[8], stop = c[9], parity = c[10], flow = c[11];
 	return baud && word >= 5 && word <= 8 && stop <= 2 && parity <= 4 && flow == 0;
 }
@@ -96,19 +101,22 @@ u32 serial_load_driver(struct task *t, u32 name_va)
 /* function 68.17: { handler, io_code, input, inp_size, output, out_size } */
 u32 serial_control(struct task *t, u32 ctl_va)
 {
-	const u32 *ctl = uptr(t, ctl_va, 24);
-	if (!ctl || ctl[0] != SERIAL_HANDLE) return -1;
+	const u8 *ctl = uptr(t, ctl_va, 24);
+	if (!ctl || get32(ctl) != SERIAL_HANDLE) return -1;
 	probe();
-	u32 code = ctl[1], in = ctl[2], insz = ctl[3], out = ctl[4], outsz = ctl[5];
-	const u32 *a = insz ? uptr(t, in, insz) : NULL;
-	u32 *o = outsz ? uptr(t, out, outsz) : NULL;
+	u32 code = get32(ctl + 4), in = get32(ctl + 8), insz = get32(ctl + 12), out = get32(ctl + 16), outsz = get32(ctl + 20);
+	const u8 *ab = insz ? uptr(t, in, insz) : NULL;
+	u8 *o = outsz ? uptr(t, out, outsz) : NULL;
+	/* the input's words */
+	u32 a[3] = { 0, 0, 0 };
+	for (u32 i = 0; ab && i < 3 && 4 * i + 4 <= insz; i++) a[i] = get32(ab + 4 * i);
 	switch (code) {
 	case GET_VERSION:
 		if (!o || outsz < 4) return -1;
-		o[0] = SERIAL_API_VERSION;
+		put32(o, SERIAL_API_VERSION);
 		return 0;
 	case OPEN_PORT: {                      /* port id, conf -> handle */
-		if (!a || insz < 8 || !o || outsz < 4) return -1;
+		if (!ab || insz < 8 || !o || outsz < 4) return -1;
 		if (a[0] >= (u32)nports) return ERR_PORT_INVALID;
 		struct port *p = &ports[a[0]];
 		if (p->busy) return ERR_PORT_BUSY;
@@ -116,20 +124,20 @@ u32 serial_control(struct task *t, u32 ctl_va)
 		p->busy = true;
 		while (rx(p) >= 0)                 /* what came before */
 			;
-		o[0] = a[0] + 1;
+		put32(o, a[0] + 1);
 		return 0;
 	}
 	case CLOSE_PORT:
 	case SETUP_PORT:
 	case READ:
 	case WRITE: {
-		if (!a || insz < 4 || !a[0] || a[0] > (u32)nports || !ports[a[0] - 1].busy) return ERR_PORT_INVALID;
+		if (!ab || insz < 4 || !a[0] || a[0] > (u32)nports || !ports[a[0] - 1].busy) return ERR_PORT_INVALID;
 		struct port *p = &ports[a[0] - 1];
 		if (code == CLOSE_PORT) { p->busy = false; return 0; }
 		if (code == SETUP_PORT) {
 			if (insz < 8) return -1;
 			bool ok = conf_ok(t, a[1]);
-			if (o && outsz >= 4) o[0] = ok ? 0 : ERR_CONF;
+			if (o && outsz >= 4) put32(o, ok ? 0 : ERR_CONF);
 			return ok ? 0 : ERR_CONF;
 		}
 		if (insz < 12 || !o || outsz < 4) return -1;
@@ -141,22 +149,22 @@ u32 serial_control(struct task *t, u32 ctl_va)
 		} else {
 			for (; n < a[2]; n++) tx(p, buf[n]);
 		}
-		o[0] = n;
+		put32(o, n);
 		return 0;
 	}
 	case ENUM_PORTS: {                     /* buf, size -> total, filled */
-		if (!a || insz < 8 || !o || outsz < 8) return -1;
+		if (!ab || insz < 8 || !o || outsz < 8) return -1;
 		u32 room = a[1] / 88, filled = 0;
 		u8 *e = room ? uptr(t, a[0], room * 88) : NULL;
 		for (int i = 0; i < nports && e && filled < room; i++, filled++, e += 88) {
 			memset(e, 0, 88);
-			*(u32 *)e = i;
-			*(u32 *)(e + 4) = ports[i].busy;
+			put32(e, i);
+			put32(e + 4, ports[i].busy);
 			strncpy0((char *)e + 8, ports[i].driver, 16);
 			strncpy0((char *)e + 24, ports[i].descr, 64);
 		}
-		o[0] = nports;
-		o[1] = filled;
+		put32(o, nports);
+		put32(o + 4, filled);
 		return 0;
 	}
 	}
