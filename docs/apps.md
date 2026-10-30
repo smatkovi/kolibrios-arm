@@ -128,6 +128,7 @@ keeping files. The same holds in QEMU.
 | 54 (the clipboard) | t_edit, the shell |
 | 48.3 (the system colours: KolibriOS's default skin's in the classic look, a dark set in Hildon's) | terminal, box_lib, t_edit |
 | 68.16 "SERIAL", 68.17 (`kernel/serial.c`) | terminal |
+| 51 (threads), 60 (IPC), 68.22, 68.23 (named shared memory), 68.19 (libraries): `docs/threads.md` | the console's thread, the shell's program console, the libraries in `/sys/lib` |
 
 The loader now starts the heap behind a program's `.bss` (the header's
 end of the image is `__bss_end`), and reads programs through kfs, so a
