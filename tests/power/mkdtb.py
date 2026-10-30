@@ -14,6 +14,10 @@ suspend parameters in PSCI 0.2's original format, the only one QEMU's
 CPU_SUSPEND takes (bit 16 power down, a 16-bit state id); without
 local-timer-stop, as QEMU's wfi keeps the timer running. --virt keeps
 QEMU's compatible string (its platform, the network) with those states.
+--display adds the display controller (qcom,sm6115-dpu at 0x51000000)
+and the DSI controller (qcom,sm6115-dsi-ctrl at 0x51100000) with their
+registers in reserved RAM (the display's power off and on, the DSI lanes'
+ULPS: values QEMU's loader puts there stand for the hardware's).
 Needs dtc."""
 import argparse
 import os
@@ -27,6 +31,8 @@ ap.add_argument('out')
 ap.add_argument('--psci', action='store_true')
 ap.add_argument('--bootargs', default='')
 ap.add_argument('--virt', action='store_true', help="QEMU's virt still (its devices: the network), not a Pro1X")
+ap.add_argument('--display', action='store_true',
+                help="the DPU's and the DSI controller's registers in RAM at 0x51000000 and 0x51100000")
 ap.add_argument('--wifi', action='store_true',
                 help="a qcom,wcn3990-wifi node whose register window is RAM at 0x50000000 (tests/wifi's qemu)")
 a = ap.parse_args()
@@ -71,7 +77,23 @@ chosen = f'''chosen {{
 			reg = <0x00 0x50000000 0x00 0x800000>;
 			no-map;
 		};
-''' if a.wifi else ''}	}};
+''' if a.wifi else ''}{'''
+		displayregs@51000000 {
+			reg = <0x00 0x51000000 0x00 0x200000>;
+			no-map;
+		};
+''' if a.display else ''}	}};
+{'''
+	display-controller@51000000 {
+		compatible = "qcom,sm6115-dpu";
+		reg = <0x00 0x51000000 0x00 0x100000>;
+	};
+
+	dsi@51100000 {
+		compatible = "qcom,sm6115-dsi-ctrl";
+		reg = <0x00 0x51100000 0x00 0x1000>;
+	};
+''' if a.display else ''}
 {'''
 	wifi@50000000 {
 		compatible = "qcom,wcn3990-wifi";

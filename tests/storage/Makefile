@@ -1,7 +1,8 @@
 # The storage (kernel/storage, docs/storage.md) on the PC and in QEMU:
 #   make -C tests/storage            everything (run.py)
-#   make -C tests/storage host ufs   the block layer, the container's checks and
-#                                    the fence, the UFS driver against a model
+#   make -C tests/storage host ufs mmc   the block layer, the container's checks
+#                                    and the fence, the UFS driver and the eMMC's
+#                                    sleep against models
 #   make -C tests/storage qemu       virtio-blk, QEMU's UFS and eMMC, realview, kfar and
 #                                    t_edit, tools/kolibri-home itself (with sudo)
 #   make -C tests/storage ext4-test fat-test   the file systems' own tests
