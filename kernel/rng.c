@@ -257,7 +257,7 @@ static void gather(void)
 
 static void say_seeded(void)
 {
-	char b[96];
+	char b[112];
 	sources_text[0] = 0;
 	for (int i = 0; i < nsrc; i++)
 		if (src[i].seed_bits) {
@@ -269,7 +269,7 @@ static void say_seeded(void)
 		add_text(b);
 	}
 	if (jitter_samples) {
-		snp(b, sizeof(b), "timing jitter (%u samples, %u.%02u bits each by estimate, %u credited)",
+		snp(b, sizeof(b), "timing jitter (%u samples, a batch's lowest estimate %u.%02u bits each, %u credited)",
 		    jitter_samples, jitter_est / 256, jitter_est % 256 * 100 / 256, jitter_bits);
 		add_text(b);
 	}

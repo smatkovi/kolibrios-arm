@@ -161,9 +161,10 @@ bits, 1/64 of a bit per sample, only when the estimate is at least 1 bit
 per sample; batches below that count nothing. That is a guess with a
 margin, not a bound: a CPU this simple (the Cortex-A8 is in order) may
 have far less jitter than the estimate says, and the estimate cannot tell
-noise from a pattern it does not see. In QEMU the estimate is 0.7-1.0 bit
-per sample on virt (so some 50 batches) and 3.2-3.7 on realview; on the
-N950 it is still to be measured (`kolibri.rngtest`). Input events (keys,
+noise from a pattern it does not see. In QEMU the estimate went from 0.7
+to 4 bits per sample on virt with the PC's load (from 16 to some 50
+batches) and 3.2-4.1 on realview; that is the host's timing, not a CPU's.
+On the N950 it is still to be measured (`kolibri.rngtest`). Input events (keys,
 the touch screen) are mixed in with their time, credited nothing.
 
 So on the N950 without the ROM's RNG the seed is weak, and the console
