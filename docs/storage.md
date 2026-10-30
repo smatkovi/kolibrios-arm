@@ -160,6 +160,8 @@ messenger has to be linked again after a reset, its chats are there.
 | `kolibri.home=off` | no container looked for |
 | `kolibri.home=ro` | (the default) the container checked, `/hd0/1` read only: nothing is written |
 | `kolibri.home=rw` | the container writable, its blocks the only ones written |
+| `kolibri.mmcsleep=off` | the eMMC never put to sleep (CMD5) when idle |
+| `kolibri.ufsahit=keep`, `=N` | UFS's Auto-Hibernate found off: left off, or N ms (else 150 ms, Linux's) |
 
 ## The Pro1X: UFS
 
@@ -170,13 +172,26 @@ regulators need drivers this kernel does not have). `ufs.c` takes it
 over as FreeBSD's port does (`freebsd/patches/0005`): HCE and the
 device present required, its interrupts off, the request lists stopped,
 pointed at our memory (uncached, below 4 GiB) and started again, the link
-and its power mode and Auto-Hibernate left as they are. The controller is
+and its power mode left as they are. The controller is
 behind the SMMU (stream 0x100); its context bank's translation is turned
 off (SCTLR 0, as for the display): the controller then reaches physical
 addresses. The boot menu's identity rebind (done for FreeBSD) is not
 needed. LUNs 0-7 are asked (TEST UNIT READY, a UNIT ATTENTION retried),
 the blocks are 4096 bytes; userdata is found by its GPT name, the 13th
 entry of LUN 0 (Linux's 472583832 512-byte sectors are 59072979 blocks).
+
+**Idle** (docs/power.md, stage 6): the driver has no periodic work (no
+tick, no poll; a request's wait is a short busy loop with its time-out).
+Between requests the link goes to hibernate by the controller itself,
+Auto-Hibernate (UFSHCI's AHIT: an idle time after which the host sends
+the hibernate entry and before the next request the exit, without
+software). Linux's ufshcd sets 150 ms where the controller has it (CAP
+bit 23); the driver keeps what Linux left (`ufs: Auto-Hibernate after
+150000 us idle, as it was`) and, found off in a controller that has it,
+sets ufshcd's 150 ms (`ufs: Auto-Hibernate was off: after 150000 us idle
+now`); `kolibri.ufsahit=keep` leaves it off, `kolibri.ufsahit=N` sets N
+ms. The UFS model (`ufs_sim`) checks that nothing but that one write
+touches it.
 
 ## The N950: eMMC
 
@@ -188,11 +203,30 @@ initialisation stream), and starts the card from CMD0 (open drain for
 its identification, as Linux does), then 4 bits at 24 MHz. MyDocs is
 `/mmc0/1` (FAT32), Harmattan's root `/mmc0/2`, Leste's `/mmc0/4` (ext4).
 
+**Idle** (docs/power.md, stage 6): after a second without requests the
+eMMC goes to sleep as ubiboot's Linux puts it there (2.6.32's
+`mmc_card_sleepawake`): CMD7 with RCA 0 (deselected: stand-by), CMD5
+with the sleep bit, S_A_TIMEOUT (EXT_CSD 217: 100 ns times 2^x), the
+clock to the card off (SYSCTL's CEN); the next request wakes it: the
+clock on, CMD5 without the sleep bit, CMD7 with its RCA, CMD13 until it
+is in its transfer state. The card keeps its settings (the bus width)
+through the sleep. Only eMMCs from 4.3 on (EXT_CSD_REV 3) with an
+S_A_TIMEOUT; a card that does not wake is started anew from CMD0 and
+not put to sleep again; `kolibri.mmcsleep=off`: never. The timer's tick
+asks for it (`storage_tick`, a second after the last request); the
+debug board shows the first sleep (`mmc: mmc0 asleep after a second
+without requests (CMD5; S_A_TIMEOUT N us)`). VEMMC stays on (Linux
+switches it off eight seconds later; that needs the card started anew).
+QEMU's eMMC model takes no command in its sleep (not CMD5, and it stops
+at CMD0: QEMU 11.1's `sd_mode`), so it is not put to sleep (its CID's
+name `QEMU!!`); the sequence is tested against a model of an eMMC's
+states (`tests/storage/mmc_sim.c`).
+
 ## Tests
 
 ```sh
-make -C tests/storage              # all of run.py's: host ufs virtio ufs-qemu emmc realview tamper apps messenger helper
-make -C tests/storage host ufs     # on the PC only
+make -C tests/storage              # all of run.py's: host ufs mmc virtio ufs-qemu emmc realview tamper apps messenger helper
+make -C tests/storage host ufs mmc # on the PC only
 make -C tests/storage ext4-test fat-test    # the file systems' own tests
 python3 tests/storage/run.py emmc  # one of them
 ```
@@ -215,7 +249,15 @@ features), the container on MyDocs or on Leste's. `run.py` then:
 - **ufs**: `ufs.c` against a model of a UFS controller (`ufs_sim.c`) left
   as Linux leaves the Pro1X's: no UIC command, no HCE write, no
   Auto-Hibernate change, no list moved while it runs, only the five SCSI
-  commands; the LUNs, a UNIT ATTENTION, the container written through it.
+  commands; the LUNs, a UNIT ATTENTION, the container written through it;
+  Auto-Hibernate found off: set once to 150 ms (`ahit-off`) or left off
+  (`ahit-keep`).
+- **mmc**: `mmc.c`'s sleep against a model of an eMMC's states
+  (`mmc_sim.c`): no CMD5 before a second idle, then CMD7 with RCA 0 and
+  CMD5 with the sleep bit, the clock off; a read wakes it (CMD5, CMD7,
+  CMD13) with the right data; no command but CMD5 and CMD0 in its sleep;
+  a card that does not wake started anew; `kolibri.mmcsleep=off`, an eMMC
+  4.2 and QEMU's model never asleep.
 - **virtio**, **ufs-qemu**, **emmc**, **realview**: the kernel in QEMU on
   those disks (virtio-blk with 4096-byte blocks; QEMU's UFS model, first
   left running as Linux leaves it, `kolibri.ufstest=keeplink`; QEMU's

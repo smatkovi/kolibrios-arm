@@ -169,6 +169,19 @@ the programs as before.
 - kfar loads its plugins (`kfar_arc.obj`) with 68.19 from its settings,
   as the original, and calls their `lib_init` (`docs/apps.md`).
 
+## The system's changes: event 11
+
+Besides KolibriOS's events, KolibriOS for ARM has one of its own for
+the shells (`lib/kos.h`): event 11 (`KOS_EV_SYSTEM`, mask bit 10,
+`EVM_SYSTEM`, never in the default mask), sent to every thread that asks
+for it when a window comes, goes, is activated, minimised or restored
+(`kernel/wm.c`), when the display goes off or on (the Pro1X's standby,
+`power_set_standby`), and when a call or a message comes or goes or the
+modem's state changes (`kernel/modem/kmodem.c`). Function 102.0 answers
+the system's state: bit 0 (`KOS_SYS_DISPLAY_OFF`) while the display is
+off. `@hildon`, `@hstatus`, `@taskbar` and the phone wait for it instead
+of looking every 200-500 ms (docs/power.md, stage 6).
+
 ## Testing
 
 `apps/threadtest` checks all of it from a program (`threadtest: done N

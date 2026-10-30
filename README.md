@@ -62,7 +62,12 @@ both are built into the kernel), the work area (48.5, 48.6) that the
 maximised windows fill, the window layers (18.25: the panel is always on
 top; a click does not activate such a window, so the keys stay with the
 application), minimising and restoring another window (18.22), a message
-to the active window (72.1) and reading the screen (36).
+to the active window (72.1) and reading the screen (36). The shell does
+not look at the system every so often: it waits for KolibriOS for ARM's
+own event 11 (a window came, went or was activated, the display went off
+or on, a call or a message came; function 102.0 says whether the display
+is off), the clock's next minute while the display is on, nothing while
+it is off (docs/power.md, stage 6).
 
 KolibriOS's classic look, its panel `@taskbar` and the start menu `menu`
 with movable windows, is still there: `make LOOK=classic` makes it the

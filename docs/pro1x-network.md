@@ -554,8 +554,10 @@ each step ending with the watchdog's reset into the boot menu, then
    only for an AP that requires PMF) in the file to tell them apart.
 6. Power: step 2 with `kolibri.powertest=10` (the cable out) and nothing
    running: the power lines (docs/power.md) with Wi-Fi up, the wake-ups
-   about 1/s more than without (the 1 s polling once idle, lwIP's
-   timers); then with `kolibri.wifi=irq`: `SoC sleep held N` only right
+   about 1/s more than without (`by deadline: network`: the 1 s polling
+   once idle; lwIP's timers add nothing once the lease is there, 2/s more
+   with `kolibri.nettimers=periodic` for comparison); then with
+   `kolibri.wifi=irq`: `SoC sleep held N` only right
    after traffic, `vlow`/`vmin` counts moving while idle. A ping from the
    PC (`ping` to the leased address) still answered, with up to 1 s
    delay after a quiet time. `powersave=off` for comparison (the battery
@@ -619,8 +621,19 @@ Where it can fail, and what the console then says:
   repository. `NO_SYS=1`: the raw API only, no threads. lwIP runs in the
   kernel's context only (interrupts are masked in the kernel, so there is
   no locking): from the network interrupt (frames in), from the timer tick
-  (its timeouts, `sys_now` from the tick), and from system calls (the
-  sockets of the Linux personality, [messengers.md](messengers.md)).
+  (its timeouts; `sys_now` reads the generic timer), and from system calls
+  (the sockets of the Linux personality, [messengers.md](messengers.md)).
+- **Its timers on demand** (`kernel/net/timers.c`, `LWIP_TIMERS_CUSTOM`;
+  [power.md](power.md), stage 6): no cyclic timer runs on an idle
+  network. TCP's 250 ms timer only while a connection has something in
+  flight or pending (an idle connection wakes the CPU only at its
+  keepalive, FIN_WAIT_2 or TIME_WAIT time-out), DHCP's at a request's or a
+  lease's time-out, ARP's, IP reassembly's and DNS's second only after an
+  ARP request, a fragment, a DNS query; what an idle timer did not count
+  (`tcp_ticks`, the tables' ages) is brought to the present at every way
+  into the kernel before lwIP runs. `tests/net` compares it with lwIP's own
+  timers on eleven scenarios; `kolibri.nettimers=periodic` runs them as
+  lwIP does.
 - **IPv4** with DHCP and DNS (lwIP's own resolver, for the kernel's self
   test; Go resolves by itself over UDP), TCP and UDP. IPv6 later.
 - **Interfaces** (`kernel/net/`): one `struct netif` per device; the first
@@ -635,7 +648,8 @@ server gives 10.0.2.15, its DNS is 10.0.2.3, the host is 10.0.2.2.
 
 `kernel/net/virtio_net.c` (the card: two queues of 64 buffers),
 `kernel/net/net.c` (lwIP's glue: the interface, DHCP, `sys_now`, the
-timeouts from the tick), `kernel/net/lwipopts.h`.
+timeouts from the tick), `kernel/net/timers.c` (lwIP's timers on
+demand), `kernel/net/lwipopts.h`.
 
 The kernel's self test, `kolibri.nettest=<port>` on the command line
 (`run-net` passes it, `NETTEST_PORT`, 18765 by default), on the serial

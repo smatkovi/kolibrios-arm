@@ -13,9 +13,10 @@ timer, through the MPM). The steps:
 | --- | --- | --- | --- |
 | 1 | tickless idle: the timer at the next deadline instead of 100 Hz; the Pro1X's input and modem by interrupt | `kernel/arch/arm64/timer.c`, `kernel/sched.c`, `kernel/power.c`, `kernel/platform/pro1x.c`, `kernel/modem/kmodem.c` | QEMU (`make -C tests/power`) |
 | 2 | CPU idle through PSCI: the core's and the cluster's power-down states, the context kept across them, the memory-mapped timer as the wake-up | `kernel/arch/arm64/psci.c`, `suspend.S`, `powerdt.c`, `timer.c` | the device tree on the PC against the phone's (`make -C tests/power host`); QEMU's CPU_SUSPEND, the way back played (`kolibri.psci=simulate`) under Go, TLS and the network |
-| 3 | the RPM's sleep set, the MPM's timer before the cluster's collapse, the RPM's sleep counts | `kernel/modem/rpmsleep.c`, `rpm.c`, `kernel/platform/pro1x.c`, `powerdt.c` | `make -C tests/modem` (the requests against an RPM in RAM, the vMPM's layout, the statistics), `make -C tests/power host` (the addresses in the phone's tree) |
-| 4 | the display off (DCS, the scan-out stopped), the programs' timeouts on whole seconds, the battery's voltage and current in the power test's lines | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `kernel/sched.c` | `make -C tests/power host` (the SPMI arbiter's channels, the gauge, the ADC against an arbiter in RAM); QEMU (`kolibri.standby`: 1.4 wake-ups/s) |
-| 5 | the standby by the power key, ended by the power key or a key: the PMIC's interrupts through the SPMI arbiter, the MPM's wake pins with their types, the MPM's wake interrupt | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `rpmsleep.c`, `kernel/arch/arm64/psci.c` | `make -C tests/power host` (Linux's interrupts quieted, the PON's set up, a press latched and taken, against the arbiter in RAM), `make -C tests/modem` (the wake set in the vMPM), QEMU (`kolibri.keytest`: the standby ended by a played press, the wake-ups back from 2.3/s to 5.2/s) |
+| 3 | the RPM's sleep set (the interconnect's bandwidth too), the MPM's timer before the cluster's collapse, the RPM's sleep counts | `kernel/modem/rpmsleep.c`, `rpm.c`, `kernel/platform/pro1x.c`, `powerdt.c` | `make -C tests/modem` (the requests against an RPM in RAM, the vMPM's layout, the statistics), `make -C tests/power host` (the addresses in the phone's tree) |
+| 4 | the display off (DCS, the scan-out stopped, the DSI lanes in ULPS with `kolibri.dsiulps`), the programs' timeouts on whole seconds, the battery's voltage and current in the power test's lines | `kernel/platform/pro1x.c`, `dsi_ulps.c`, `kernel/modem/pmic.c`, `kernel/sched.c` | `make -C tests/power host` (the SPMI arbiter's channels, the gauge, the ADC against an arbiter in RAM; the DSI lanes' ULPS against a model of them); QEMU (`kolibri.standby`; the ULPS run with the controller's registers in RAM) |
+| 5 | the standby by the power key, ended by the power key or a key: the PMIC's interrupts through the SPMI arbiter, the MPM's wake pins with their types, the MPM's wake interrupt | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `rpmsleep.c`, `kernel/arch/arm64/psci.c` | `make -C tests/power host` (Linux's interrupts quieted, the PON's set up, a press latched and taken, against the arbiter in RAM), `make -C tests/modem` (the wake set in the vMPM), QEMU (`kolibri.keytest`: the standby ended by a played press) |
+| 6 | the wake-ups that were left: the shells, the messenger and the phone wait for events (EV_SYSTEM, function 102) instead of polling; lwIP's timers on demand; the modem's network poll once a minute in the standby; the storage idle (the eMMC asleep, UFS's Auto-Hibernate) | `kernel/sched.c`, `kernel/wm.c`, `apps/hildon`, `apps/messenger`, `kernel/net/timers.c`, `kernel/modem/kmodem.c`, `kernel/storage/mmc.c`, `ufs.c` | `make -C tests/power` (QEMU: idle, the standby, the network, an idle TCP connection, the messenger), `make -C tests/net` (lwIP's timers against its own), `make -C tests/storage host ufs mmc`, `make -C tests/apps` |
 
 ## Measuring: `kolibri.powertest=N`
 
@@ -37,9 +38,9 @@ power: test over, all 600 s: ...
 - **wfi, core, cluster, refused**: the idle states entered (stage 2);
 - **by deadline**: who asked for the wake-ups that came by the timer:
   the tasks (by name), the platform (the watchdog, input polls), the
-  modem, the screen (a flush), the network (lwIP's timers), the test
-  itself; `tick`: the 100 Hz tick, kept while something is about to
-  happen.
+  modem, the screen (a flush), the network (lwIP's timers, the Wi-Fi's
+  polls), the test itself, the storage (an eMMC's sleep); `tick`: the
+  100 Hz tick, kept while something is about to happen.
 
 `kolibri.powerline=S` makes it a line every S seconds (the QEMU tests).
 
@@ -111,16 +112,17 @@ screen).
 In QEMU (`make -C tests/power`, 10 s lines, the Hildon shell and the
 fake modem):
 
-| | wake-ups/s |
-| --- | --- |
-| `kolibri.tick=periodic` | 100 |
-| tickless, QEMU's virt | 4.1-4.8 |
-| tickless, the Pro1X's code paths (`tests/power/mkdtb.py`) | 5.0-5.1 |
-| tickless, with the network (lwIP's DHCP and ARP timers) | 6.0 |
+| | wake-ups/s | since stage 6 |
+| --- | --- | --- |
+| `kolibri.tick=periodic` | 100 | 100 |
+| tickless, QEMU's virt | 4.1-4.8 | 0.5 |
+| tickless, the Pro1X's code paths (`tests/power/mkdtb.py`) | 5.0-5.1 | 0.3-0.5 |
+| tickless, with the network (lwIP's DHCP and ARP timers) | 6.0 | 0.5 |
 
-Nearly all of what is left is the Hildon shell, which looks at its
-windows every 250 ms (`kos_wait_event_timeout(25)`), and the watchdog
-once a second in QEMU (no watchdog there: the default interval).
+Nearly all of what was left then was the Hildon shell, which looked at
+its windows every 250 ms (`kos_wait_event_timeout(25)`), and the
+watchdog once a second in QEMU (no watchdog there: the default
+interval); stage 6 took both away (its table has the numbers now).
 
 ## Stage 2: CPU idle through PSCI
 
@@ -211,10 +213,19 @@ it is:
 | its buffers | `clka` 1-3 (LN_BB), 4-5 (RF, not with `kolibri.wifi`) `swen` | XO_BUFFER |
 | CX, MX | `rwcx` 0, `rwmx` 0 `vlvl` | `rpmpd.c`, sm6115 |
 | the bus clocks | `clk2` 0 bimc, `clk1` 1 cnoc, `clk1` 2 snoc, `mmxi` 0-1, `qup` 0 `KHz` | `sm_qnoc_icc_clks` |
+| the interconnect's bandwidth | `bmas` 0, 3, 21, 23, 33, 35, 59, 166, 170 and `bslv` 0, 2, 24, 25, 26, 30, `bw` (bytes a second) | `icc-rpm.c` `qcom_icc_rpm_set`, `smd-rpm.c`, `sm6115.c` |
 
-Not voted: the interconnect's per-node bandwidth (`icc-rpm.c`'s master
-and slave requests), the regulators (Linux votes them in the active set,
-which the RPM keeps in sleep too).
+The interconnect: `icc-rpm.c` votes each node that has an RPM id (the
+masters apps_proc, mas_snoc_bimc, mas_bimc_snoc, crypto_c0, xm_sdc1,
+xm_sdc2, qxm_ipa, qhm_qup0, qup0_core_master; the slaves ebi,
+slv_bimc_snoc, slv_snoc_bimc, slv_snoc_cnoc, qxs_imem, xs_qdss_stm) in
+both sets, and requests without a tag (most of Linux's consumers': the
+display's, UFS's, the QUPs') count in the sleep set too; kexec leaves
+them. With the bus clocks they go to 0 in the sleep set (`keep_alive`
+holds only the active set's clock up: `ICC_BUS_CLK_MIN_RATE`); the
+active set stays as Linux left it, the scan-out and UFS run on it while
+the phone is awake. Not voted: the regulators (Linux votes them in the
+active set, which the RPM keeps in sleep too).
 
 **The MPM** (`mpm_prepare`): while the SoC sleeps the GIC is off and the
 MPM, in the always-on domain, wakes it: by one of its pins or by its
@@ -238,7 +249,7 @@ votes): at the start, every minute of a power test and at its end:
 
 ```
 rpm: left by Linux: vmin 0 (+0, 0 s in all), vlow 0 (+0, 0 s), votes 0 0; MPM hand-overs 0
-rpm: the sleep set: 12 of 12 resources at 0
+rpm: the sleep set: 27 of 27 resources at 0 (15 interconnect nodes)
 pro1x: the SoC's sleep: the sleep set voted, the MPM handed over before the cluster's collapse
 ...
 rpm: this minute: vmin 0 (+0, ...), vlow 3 (+3, 41 s), ...; MPM hand-overs 120
@@ -274,12 +285,42 @@ the end: the timing engine, sleep out, 30 ms, display on, brightness 127
 (the panel driver's default; the panel keeps its registers through
 sleep). Each step's result goes to the console.
 
+**The DSI lanes in ULPS** (`kolibri.dsiulps`, off by default: untried on
+the phone; `kernel/platform/dsi_ulps.c`): with the panel asleep and no
+frames the lanes still sit in LP-11 (their stop state), the PHY's
+transmitters on. After the timing engine's stop they go to the
+ultra-low power state as Linux's msm driver puts them there (the MDSS
+driver's `mdss_dsi_ulps_config_default` and `mdss_dsi_wait_for_lane_idle`,
+the SDE driver's `dsi_ctrl_hw_cmn_ulps_request`/`_exit` the same;
+mainline's `dsi.xml` for the registers, from the 6G controller's shifted
+base):
+
+| register | bits |
+| --- | --- |
+| `FIFO_STATUS` 0x08 | 12 DLN0's LP FIFO empty, 16, 20, 24, 28 DLN0-3's HS FIFO empty |
+| `LANE_STATUS` 0xa4 | 0-3 the data lanes' stop state, 4 the clock lane's; 8-11, 12 their `ULPS_ACTIVE_NOT` |
+| `LANE_CTRL` 0xa8 | 0-3, 4 the ULPS request (data lanes, the clock lane); 8-12 the exit; 16-20 the stop state forced; 24 `HS_REQ_SEL_PHY`; 28 `CLKLN_HS_FORCE_REQUEST` |
+| `CTRL` 0x00 | 4-7 the data lanes in use (`dsi_ctrl_enable`'s) |
+
+In: the clock lane's forced high speed off (Linux sets it for a
+continuous clock; `mdss_dsi_pre_clkoff_cb` clears it first), a FIFO
+empty and a lane in its stop state (100 us at most, else left as they
+are), the request for the lanes in use and the clock lane, 100 us, their
+`ULPS_ACTIVE_NOT` bits clear (else all out again). Out, before the
+panel's sleep out (the DCS commands need the lanes): the exit bits,
+1 ms (the hardware's minimum), the stop state forced, the request
+register cleared, 100 us, then `LANE_CTRL` as it was. A lane that stays
+in ULPS is said and the display's way on goes on. The console:
+`pro1x: DSI lanes to ULPS (lanes 1f, LANE_CTRL ...): done, status ...`
+and `pro1x: DSI lanes out of ULPS: done, ...`. Not done: the link
+clocks off and the PHY's power down after it (Linux's next steps; they
+need the display's clock controller).
+
 **The programs' timeouts** while the display is off: on a grid of whole
-seconds (`sched_next_work`), at most a second late, so that the shell's
-look at its windows every 250 ms and a clock's second come together:
-one wake-up a second instead of four or five. `kolibri.standby` does the
-same without a display to switch off (QEMU: 4.1-4.8 wake-ups/s become
-1.4).
+seconds (`sched_next_work`), at most a second late, so that a program's
+second and another's come together. `kolibri.standby` does the same
+without a display to switch off. Since stage 6 the shell has no timeout
+then at all.
 
 **The battery** (`kernel/modem/pmic.c`): the SPMI PMIC arbiter, version
 5 (Linux's `spmi-pmic-arb.c`, FreeBSD's `qcom_spmi`: the APID map in the
@@ -362,6 +403,132 @@ plays a press of the power key S seconds into each standby (QEMU: `make
 -C tests/power qemu`, the `keytest` run: 5.0 wake-ups/s, 2.3 in the
 standby, 5.2 after it; on the phone a standby that ends without hands).
 
+## Stage 6: the wake-ups that were left
+
+What woke the CPU after stage 5, by the power test's own counts (`by
+deadline`: whose deadline it was) and by QEMU's instruction counts
+(`tools/qemu-prof`, docs/asm.md), in QEMU with the display on, in the
+standby (`kolibri.standby`, as the Pro1X's display off), with the network
+up, with an idle TCP connection, with the messenger running:
+
+- **the Hildon shell**, every 250 ms: it looked at the windows (function
+  9 for every slot), the modem's state, the clock;
+- **the messenger**, every 500 ms: it looked at its backend's pipe;
+- **lwIP's cyclic timers** with the network up: DHCP's fine timer every
+  500 ms, ARP's, IP reassembly's and DNS's every second, and TCP's every
+  250 ms as long as any connection existed, an idle one too;
+- **the platform** in QEMU's Pro1X runs every second (no watchdog there,
+  the default interval), on the phone the watchdog every 10 s;
+- **the modem**'s network poll every 5 s (the fake modem's in QEMU);
+- the phone, `@hstatus` and `@taskbar` when they run, every 250, 200 and
+  500 ms.
+
+Before and after, in QEMU (`make -C tests/power`; wake-ups a second in
+the 10 s lines after the first, the boot's; 2026-10-30):
+
+| | before | after | what is left |
+| --- | --- | --- | --- |
+| QEMU's virt, the display on (`tickless`) | 4.1-4.8 | 0.5 | the fake modem's poll, the test's line, a moment of the tick |
+| the Pro1X's code paths, the display on (`pro1x`) | 5.0-5.2 | 0.3-0.5 | the same and the platform's look every 10 s |
+| ... the power test's standby (the display off) | 2.3-2.4 | 0.1 | the test's line (the modem's poll once a minute) |
+| `kolibri.standby` on QEMU's virt (`standby`) | 1.4 | 0.1 | the test's line |
+| the network up: virtio-net, DHCP (`net`) | 5.8-6.1 | 0.5 | as the first row; lwIP nothing |
+| ... with lwIP's own timers (`net-periodic`) | | 2.4-2.5 | lwIP's: 2 a second |
+| an idle TCP connection to the host (`tcp`, tests/linux/tcphold) | 5.8-6.1 | 0.4-0.5 | as the first row |
+| ... with a keepalive every 15 s (`tcp-keepalive`) | 5.8-6.1 | 0.5-0.7 | its probe |
+| ... in the standby (`tcp-standby`) | 2.4 | 0.0-0.1 | the test's line |
+| the messenger on the fake backend (`messenger`) | 5.0-5.5 | 0.6-0.7 | the backend's message every 10 s and its redraw |
+| ... in the standby (`messenger-standby`) | 1.4-1.6 | 0.2-0.3 | the same |
+
+The instructions QEMU counted in 20 s of the steady state (15 s to 35 s,
+`tools/qemu-prof`'s plugin), a second, the kernel and the programs:
+
+| | before | after |
+| --- | --- | --- |
+| idle, the display on | 21,300 | 3,600 |
+| idle, `kolibri.standby` | 8,700 | 1,400 |
+| the messenger | 206,000 | 151,000 (most of it its redraw of a new message: `fill_neon`, `gfx_text`) |
+
+**The shells wait for events.** KolibriOS for ARM's event 11
+(`EV_SYSTEM`, mask bit 10, never in the default mask; `lib/kos.h`) comes
+when a window comes, goes, is activated, minimised or restored
+(`kernel/wm.c`), when the display goes off or on (`power_set_standby`)
+and when a call or a message comes or goes (`kmodem.c` compares the
+modem's call and message counters after each poll); function 102.0
+answers whether the display is off (docs/threads.md). `@hildon` waits
+for it, with a timeout only to the clock's next minute while the
+display is on (function 3's seconds: at most a second after the minute's
+start, never before it), none while the display is off nor in the
+launcher and the task switcher (they show no clock that changes), and
+2 s while it waits for an application to close. `@hstatus` and
+`@taskbar` the same; the phone looks every 5 s for its status line (the
+signal, every second during a call), not at all while the display is
+off; the messenger blocks on its backend's event 8 and has a timeout
+only while "typing..." is shown or its chats wait to be saved.
+
+**lwIP's timers on demand** (`kernel/net/timers.c`, docs/pro1x-network.md):
+TCP's fast and slow timers run only while a connection has something in
+flight or pending (a delayed ACK, data refused, a FIN pending, data
+unacknowledged or unsent, the persist timer, segments out of order, a
+state other than ESTABLISHED, CLOSE_WAIT or FIN_WAIT_2); an idle
+connection wakes the CPU only at its keepalive, its FIN_WAIT_2 or
+TIME_WAIT time-out, where `tcp_slowtmr` has something to do for it.
+DHCP's fine and coarse timers run at the 500 ms point a request's
+time-out is due and at the minute a lease's renewal, rebinding or end is
+due, the points between counted then (`request_timeout`, `lease_used`
+and the others are read only by those timers). ARP's, IP reassembly's
+and DNS's second runs only for a while after a frame that starts a
+time-out of theirs (an ARP request out: 3 s; an IP fragment in: 16 s; a
+DNS query out: 4 s; `net_frame`); otherwise all that changes is age,
+and the seconds missed are counted at the next way into the kernel
+(`net_enter`, `arch/arm64/trap.c`), before any of lwIP runs, by calling
+the timer once for each (at most as many as change anything: an ARP
+entry's 300 s). `tcp_ticks`, the slow timer's count in which pcb->tmr
+and the keepalive and TIME_WAIT are measured, is set from the time there
+too; `sys_now` reads the generic timer, not the last tick.
+`kolibri.nettimers=periodic` runs every timer on its grid always, as
+lwIP's `timeouts.c` does (for a comparison; the QEMU run `net-periodic`).
+
+`tests/net` builds lwIP (the kernel's options) twice, with these timers
+and with lwIP's own, and runs eleven scenarios through both on a
+simulated router (ARP, a DHCP server, and TCP reflected back to the same
+stack, so both ends of a connection are this lwIP): the same frames in
+the same order at the same times within the timers' grids (TCP's 250
+ms, DHCP's 500 ms), the same outcomes, and each scenario's own
+expectations checked on both:
+
+| scenario | what | lwIP's own: wake-ups by a timer | the kernel's |
+| --- | --- | --- | --- |
+| `dhcp` | 40 min, a 10 min lease renewed every 5 min | 4860 | 36 |
+| `dhcp-expire` | the server silent: renewal, rebinding, the lease's end, DISCOVERs | 4860 | 51 |
+| `arp` | 25 min: the router's entry ageing out (300 s) and asked again, an address that does not answer (5 requests 1 s apart) | 3000 | 22 |
+| `tcp-idle` | half an hour, a connection open, then data | 7200 | 2 |
+| `tcp-keepalive` | probes after 20 s idle, answered for 2 min; the wire cut: 3 probes 5 s apart, the end | 480, 480 | 7, 4 |
+| `tcp-finwait2` | a close the other end does not answer with its own: gone after 20 s | 240 | 3 |
+| `tcp-timewait` | TIME_WAIT's 2 MSL | 637 | 1 |
+| `tcp-bulk` | 300 KB with losses (fast retransmits, an RTO), both closed, TIME_WAIT | 537 | 2 |
+| `tcp-syn` | SYNs unanswered: every 3 s, given up after 6 | 157 | 37 (the RTO counted every 500 ms) |
+| `tcp-delack`, `tcp-zerowin` | ACKs delayed (within 250 ms); a closed window, its probes, opened again | the same frames | |
+
+**The modem's network poll**: every 5 s while the display is on, once a
+minute while it is off (what changes comes as the modem's indications;
+`modem_poll_interval`).
+
+**The storage idle** (docs/storage.md): the N950's eMMC asleep (CMD5)
+after a second without requests, the clock to it off; the Pro1X's UFS
+link to hibernate by the controller itself (Auto-Hibernate, as Linux
+left it, or Linux's 150 ms when found off). Neither driver has periodic
+work: the eMMC's sleep is one wake-up a second after the last request.
+
+What is left (QEMU): the fake modem's poll (5 s; on the phone the real
+one's, once a minute in the standby, and its interrupts), the power
+test's own line (10 s here, a minute on the phone), the platform's look
+every 10 s (the watchdog on the phone), a moment of the 100 Hz tick
+after a wake-up (`tick`), and what the programs ask for: the clock's
+minute, a backend's own timers (the fake one's message every 10 s, a
+keepalive every 15 s). On the phone the Wi-Fi's look every second when
+idle (polled, docs/pro1x-network.md) comes on top while it is up.
+
 ## The device test (prepared, 2026-10-29)
 
 Nothing of this has run on the phone yet (nor has KolibriOS itself: the
@@ -393,7 +560,7 @@ the PMIC's interrupts as Linux left them, if a step hangs early):
    `kolibri.psci=core`.
 3. `... "kolibri.nomodem kolibri.powertest=10"` unplugged: the standby: `pro1x: display
    off: brightness 0, display off done, sleep in done, timing engine 1
-   -> 0`, the sleep set (`rpm: the sleep set: 12 of 12 resources at 0`),
+   -> 0`, the sleep set (`rpm: the sleep set: 27 of 27 resources at 0 (15 interconnect nodes)`),
    the MPM's hand-overs, and whether `vlow`/`vmin` move; the battery's
    mean current against Leste's 160 mA.
 4. The power key (stage 5), `... "kolibri.nomodem kolibri.lifetime=180"`, unplugged; at
@@ -403,7 +570,7 @@ the PMIC's interrupts as Linux left them, if a step hangs early):
    volume down 1, through INTID 215 (MPM pin 86); N of Linux's PMIC interrupts quieted`
    (N: what Linux left on, some), then for each press `pro1x: standby (the power key)`,
    `pro1x: display off: brightness 0, display off done, sleep in done, timing engine 1 ->
-   0`, the first time `rpm: the sleep set: 12 of 12 resources at 0`, `pro1x: the SoC's
+   0`, the first time `rpm: the sleep set: 27 of 27 resources at 0 (15 interconnect nodes)`, `pro1x: the SoC's
    sleep: the sleep set voted, the MPM handed over before the cluster's collapse`, `pro1x:
    MPM wake-ups: SPMI (pin 86) GPIO 93 (pin 46) GPIO 83 (pin 9) GPIO 84 (pin 39) GPIO 19
    (pin 53); no MPM pin: GPIO 106 112 107`, and `pro1x: awake (the power key) after 20 s;
@@ -420,3 +587,68 @@ the PMIC's interrupts as Linux left them, if a step hangs early):
    the power test's standby at 10 s, `pro1x: awake (the power key, played) after 60 s`,
    the display on again, the rest of the test with the display on (the battery's current
    up again).
+
+### Stage 6 and the ULPS on the devices (prepared, 2026-10-30)
+
+On the Pro1X, after steps 1-5 (the same way in: `tools/pro1x-kexec.sh`,
+`tools/pro1x-read.py` for the console after the reset):
+
+6. The standby's wake-ups and the battery: `... "kolibri.nomodem
+   kolibri.powertest=10"`, unplugged, nothing touched. Expected at the
+   start `ufs: Auto-Hibernate after 150000 us idle, as it was` (or `...
+   was off: after 150000 us idle now`; `no Auto-Hibernate in this
+   controller` is fine too) and in the standby `rpm: the sleep set: 27 of
+   27 resources at 0 (15 interconnect nodes)` (an RPM that does not know
+   a node says `not: ...` with its name: note them). The power lines in
+   the standby: about 6 wake-ups a minute (`by deadline: platform 6`:
+   the watchdog every 10 s; the shell nothing, `tasks` 0), the RPM's
+   `vlow`/`vmin` counts against step 3's, the battery's mean current
+   against step 3's (and Leste's 160 mA). The line a minute is the test's
+   own.
+7. The display's DSI lanes in ULPS: `... "kolibri.nomodem kolibri.powertest=3
+   kolibri.dsiulps"`. Expected after `display off: ...`: `pro1x: DSI lanes
+   to ULPS (lanes 1f, LANE_CTRL 11000000): done, status 0` (or 10000000:
+   Linux's `HS_REQ_SEL_PHY`, `CLKLN_HS_FORCE_REQUEST`; status 0: every
+   lane's `ULPS_ACTIVE_NOT` clear), at the end `pro1x: DSI lanes out of
+   ULPS: done, status 1f1f` (stop state and `ULPS_ACTIVE_NOT` of all five)
+   and `display on: sleep out done, display on done, brightness 127`, the
+   picture back. `a FIFO not empty: left` or `no lane in its stop state:
+   left`: nothing was changed (the lanes not idle; the status says which).
+   `a lane stuck in ULPS` or no picture after it: not to be used (note
+   the status); the battery's current against step 6's says what it
+   saves.
+8. The display on and idle: `... "kolibri.nomodem kolibri.powertest=3
+   kolibri.displayon"`: `by deadline: tasks 1` a minute (`@hildon`'s
+   clock) besides the watchdog's 6.
+9. With the modem (no `kolibri.nomodem`, its firmware running as in
+   docs/pro1x-modem.md): `... "kolibri.powertest=10"`: `modem 1` a minute
+   in the standby (its network poll), what it sends by its interrupt.
+10. The network: docs/pro1x-network.md's step 6 (Wi-Fi up, the power
+    lines): the network's wake-ups only the Wi-Fi's polling (1 s idle),
+    none of lwIP's once the lease is there; `kolibri.nettimers=periodic`
+    for comparison (2 more a second).
+
+On the N950 (no power test there; ubiboot's "KolibriOS (test)" line,
+docs/n950.md): the debug board shows `mmc: mmc0 asleep after a second
+without requests (CMD5; S_A_TIMEOUT N us)` a second after the boot's last
+read; then kfar's Alt+F1 and a listing of `/mmc0/4` (reads: the eMMC
+awake again, the files there). `no awake from its sleep, started anew
+from CMD0 (done): no more sleeps` means the card does not take CMD5's
+awake (it works on, without sleeps); `kolibri.mmcsleep=off` in
+`/boot/cmdline` if anything of the eMMC fails after the first sleep.
+
+## Not done
+
+- The Wi-Fi's look every second when idle in its polled mode (with
+  `kolibri.wifi=irq` a look a second as well, for what came while the
+  SoC slept): a longer interval delays what comes after a quiet time.
+- The terminal's loop of 10 ms while a serial connection is open (the
+  original's `con_kbhit` polling), the debug board's 250 ms, the process
+  list's and the clock's second: programs that show what changes; while
+  the display is off their timeouts come on whole seconds.
+- The DSI's link clocks and the PHY's power after ULPS, UFS's clock
+  gating, the N950's VEMMC off after the eMMC's sleep: they need clock
+  and regulator drivers (or the card started anew).
+- The active set's bus and bandwidth votes while the display is off
+  (what Linux left: the RPM keeps them while the CPU is awake).
+- The ARMv7 kernel (the N950) has the 100 Hz tick always.
