@@ -931,9 +931,11 @@ static void rx_ce(u32 ce)
 {
 	void *ctx;
 	u32 n;
-	bool any = false;
+	/* ath10k_ce_per_engine_service: the status cleared first, then the
+	 * completions taken (a level interrupt drops; one that comes in
+	 * between is seen at the next look) */
+	ce_irq_ack(ce);
 	while (!ce_recv(ce, &ctx, &n)) {
-		any = true;
 		struct htc_rx m;
 		if (!htc_receive(&htc, ctx, n, &m)) {
 			if (m.eid == 0) htc_ctrl(m.payload, m.len);
@@ -943,12 +945,12 @@ static void rx_ce(u32 ce)
 		/* the buffer back (ath10k_snoc_rx_post_pipe) */
 		if (ce_rx_post(ce, slot_pa(ctx), ctx)) slot_free(ctx);
 	}
-	if (any) ce_irq_ack(ce);
 }
 
 static void tx_ce(u32 ce)
 {
 	void *ctx;
+	ce_irq_ack(ce);
 	while (!ce_send_done(ce, &ctx))
 		if (ctx) slot_free(ctx);
 }

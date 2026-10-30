@@ -279,6 +279,7 @@ int ce_recv(u32 id, void **ctx, u32 *nbytes)
 	struct ring *r = &ce[id].dst;
 	u16 n = desc_nbytes(r, r->sw);
 	if (!n) return -1;                       /* not done (or the DRRI ahead of it) */
+	sm_barrier();                            /* the buffer read after its length (dma_rmb) */
 	desc_clear_nbytes(r, r->sw);
 	if (nbytes) *nbytes = n;
 	if (ctx) *ctx = r->ctx[r->sw];
