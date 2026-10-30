@@ -400,7 +400,13 @@ void wm_move(struct task *t, int x, int y, int ww, int hh)
 {
 	struct window *w = &t->win;
 	if (!w->defined) return;
-	if (managed(w)) return;      /* maximised in the work area */
+	if (managed(w)) {            /* maximised in the work area */
+		/* 67 to 1 x 1 pixels (sizes 0: how terminal hides its window
+		 * before its console's thread makes one): minimised, so the
+		 * console's window is no dialog of it */
+		if (ww == 0 && hh == 0) wm_minimize(t);
+		return;
+	}
 	int ox = w->x, oy = w->y, ow = w->w, oh = w->h;
 	if (x != -1) w->x = x;
 	if (y != -1) w->y = y;
