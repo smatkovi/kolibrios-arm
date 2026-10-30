@@ -50,23 +50,27 @@ The shell is C already: it is compiled from its own sources. Its
 `svc #0x40`. `apps/shell/arm.patch` changes three places: `ver cpu` and
 `kfetch` used `cpuid` (now "ARM"), `lsmod` x86 inline assembler for
 68.31 (now says there are no loadable drivers), and starting a program
-waited 0.6 s for a console program's named shared memory, which our
-kernel lacks. The parts of ktcc's `sys/ksys.h` and `shell_api.h` it
+waits 0.6 s for a console program's named shared memory (now as in
+KolibriOS, see the shell's section). The parts of ktcc's `sys/ksys.h` and `shell_api.h` it
 uses are in `apps/shell/include`. It is built with `-fpermissive`
 (GCC 14 makes the original's pointer mismatches errors) and
-`-fsigned-char` (x86's `char`).
+`-fsigned-char` (x86's `char`). (`arm.patch` used to change a fourth
+place, the wait for a console program's shared memory; with 68.22 that
+works as in KolibriOS now: below.)
 
-## The libraries: linked in
+## The libraries: loaded as in KolibriOS
 
 KolibriOS loads `console.obj`, `box_lib.obj`, `libini.obj` and the
 others as shared libraries (function 68.19, COFF objects with an export
-table). Here they are C libraries linked into each program
-(`lib/NAME/*.c` become `build/apps/lib/NAME.a`, a program names them in
-`LIBS_name`): no loader in the kernel, no format to define, and each
-KolibriOS process had its own copy of a library anyway. The functions
-keep the originals' names and arguments (`con_init`, `con_printf`,
-`edit_box_draw(edit_box *)`, `ini_get_str`, ...), so a loader for an
-ARM library format could export the same symbols later.
+table). Here they are C libraries (`lib/NAME/*.c`, a program names them
+in `LIBS_name`), built twice: as ARM libraries of KolibriOS's kind in
+`/sys/lib` (`console.obj`, `box_lib.obj`, `libini.obj`: ELF shared
+objects with the originals' export tables, loaded by 68.19 when the
+program starts, `docs/threads.md`), and as `build/apps/lib/NAME.a` for
+`make DLL=0`, which links them into each program as before. msgbox,
+proc_lib and kmenu stay linked in. The functions keep the originals'
+names and arguments (`con_init`, `con_printf`, `edit_box_draw(edit_box
+*)`, `ini_get_str`, ...), and so do the export tables.
 
 | Library | From | What |
 | --- | --- | --- |
@@ -75,13 +79,15 @@ ARM library format could export the same symbols later.
 | `lib/boxlib` | `box_lib` (Lrz, Mario79, Maxxxx32, diamond, hidnplayr, IgorA) | edit_box, check_box2, option_box, scrollbar, tree_list, the TED editor component (`box_lib.h`: box_lib.mac's structures, field for field) |
 | `lib/libini` | `libs-dev/libini` (mike.dld) | settings files: `ini_get_str`, `ini_set_str`, `ini_get_int`, `ini_get_color`, `ini_get_shortcut`, `ini_enum_sections`, ... |
 
-The console differs in one way: `console.obj` runs its window in a
-thread of its own, which the program's calls wake by IPC. Our kernel has
-neither threads (function 51) nor IPC for KolibriOS programs, so the
-library runs the window in the program's thread whenever the program
-calls it: while it writes (drawn at most every 50 ms), waits in
-`con_getch`, `con_gets`, `con_kbhit`, or after `con_exit(0)` until the
-window is closed. Its look is console.obj's: 80 x 25 characters of its
+The console works as `console.obj` does: `con_init` starts a thread
+of its own (function 51) for the window, which draws (at most every
+20 ms), reads the keys into the input buffer and handles the scroll
+bar; the program's calls write into the buffer and wake the thread by
+IPC (function 60, a byte: redraw, title, exit), and wait for keys as
+console.obj's do. Its close button ends the thread that called
+`con_init` (18.18) and then itself; after `con_exit(0)` the window
+stays, "[Finished]" in its title, until it is closed. Its look is
+console.obj's: 80 x 25 characters of its
 8x16 font (`font8x16.bmp`), 300 lines kept, the scroll bar from
 `conscrlv.bmp`, its 16 colours, its Esc sequences and key codes. In the
 Hildon look the window is maximised and shows as many lines as fit.
@@ -138,8 +144,12 @@ above), `more`, `ps`, `pwd`, `reboot`, `rm`, `rmdir`, `shutdown`,
 running programs (from the current folder or `/sys`) and `#SHS`
 scripts; `/sys/settings/.shell` (the original's) runs at the start. The
 original has no `cat`: `more` shows files. `lsmod`, `reboot` and
-`shutdown` say what KolibriOS for ARM lacks; programs started from it
-run in their own windows (no shell API without shared memory).
+`shutdown` say what KolibriOS for ARM lacks. A program started from it
+may use its console, as in KolibriOS: the shell waits 0.6 s for the
+program's named shared memory `PID-SHELL` (68.22; ktcc's
+`shell_api.h`) and then prints, reads and clears for it until it says
+it is done (`threadtest shellapi` is such a program, tests/apps runs
+it); the others run in their own windows.
 
 ![shell](img/shell-files.png)
 ![kfetch](img/shell-kfetch.png)

@@ -140,6 +140,16 @@ the programs as before.
 | `lib/boxlib` | `/sys/lib/box_lib.obj` | box_lib's edit box, check box, option box, scroll bars, tree list and text editor, with their versions |
 | `lib/libini` | `/sys/lib/libini.obj` | libini's `ini_*` functions |
 
+## The programs that use them
+
+- The console library (`lib/console`, `/sys/lib/console.obj`) runs its
+  window in a thread of its own, woken by IPC, as console.obj does
+  (`docs/apps.md`): the shell and the terminal.
+- The shell serves a program's console through its named shared memory
+  `PID-SHELL`, as in KolibriOS (`docs/apps.md`).
+- The shell, the terminal, kfar and t_edit load console.obj, box_lib.obj
+  and libini.obj with 68.19 when they start.
+
 ## Testing
 
 `apps/threadtest` checks all of it from a program (`threadtest: done N

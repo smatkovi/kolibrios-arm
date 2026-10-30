@@ -7,7 +7,9 @@
  *
  *   threadtest                 all of it
  *   threadtest echo PID        (the second process) IPC to PID's echo, then shared memory
- *   threadtest orphan          (the second process) its main thread ends, a thread stays */
+ *   threadtest orphan          (the second process) its main thread ends, a thread stays
+ *   threadtest shellapi        started by the shell: its console through "PID-SHELL"
+ *                              (ktcc's shell_api.h, the shell's module_program_console.c) */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -480,10 +482,57 @@ static void test_dll(void)
 	check(kos_load_dll("/sys/threadtest") == NULL, "68.19 of a program, not a library: 0", 0, 0);
 }
 
+/* --- the shell's console (shell_api.h's buffer: a command byte, the data,
+ * at the end the return values) ----------------------------------------- */
+
+#define SHELL_SHM_MAX (16 * 1024)
+enum { SHELL_OK = 0, SHELL_EXIT = 1, SHELL_PUTS = 3, SHELL_PID = 7 };
+
+static int shell_cmd(volatile u8 *b, int cmd)
+{
+	b[0] = cmd;
+	for (int i = 0; i < 300; i++) {
+		if (b[0] == SHELL_OK) return 1;
+		kos_delay(1);
+	}
+	return 0;
+}
+
+static void shell_api(void)
+{
+	char name[32];
+	snprintf(name, sizeof(name), "%u-SHELL", my_pid());
+	u32 edx;
+	volatile u8 *b = kos_shm_open(name, SHELL_SHM_MAX, KOS_SHM_OPEN_ALWAYS | KOS_SHM_WRITE, &edx);
+	if (!b) {
+		printf("threadtest: FAIL shell api: no area (%u)\n", edx);
+		return;
+	}
+	/* the shell opens it within 0.6 s of starting us, then serves it */
+	strcpy((char *)b + 1, "threadtest: this line came through the shell's console\n");
+	int ok = shell_cmd(b, SHELL_PUTS);
+	u32 pid = 0;
+	ok = ok && shell_cmd(b, SHELL_PID);
+	memcpy(&pid, (const void *)(b + 1), 4);
+	int slot = pid ? kos_slot_of_pid(pid) : 0;
+	char who[12] = { 0 };
+	if (slot) {
+		kos_thread_info(info, slot);
+		memcpy(who, info + 10, 11);
+	}
+	ok = ok && !strcmp(who, "shell") && shell_cmd(b, SHELL_EXIT);
+	printf("threadtest: %s the shell's console through %s (the shell's PID %u)\n", ok ? "ok" : "FAIL", name, pid);
+	kos_shm_close(name);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc >= 3 && !strcmp(argv[1], "echo")) {
 		child_echo(atoi(argv[2]));
+		return 0;
+	}
+	if (argc >= 2 && !strcmp(argv[1], "shellapi")) {
+		shell_api();
 		return 0;
 	}
 	if (argc >= 2 && !strcmp(argv[1], "orphan")) {
