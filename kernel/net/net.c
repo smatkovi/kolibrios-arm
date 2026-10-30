@@ -5,6 +5,7 @@
  * serves it). */
 #include "net.h"
 #include "rng.h"
+#include "power.h"
 #include "lwip/init.h"
 #include "lwip/netif.h"
 #include "lwip/dhcp.h"
@@ -13,15 +14,21 @@
 #include "lwip/timeouts.h"
 #include "lwip/etharp.h"
 #include "netif/ethernet.h"
+#include "nettimers.h"
 
 static struct netif nif;
 static struct net_dev ndev;
 static bool started;
 static u8 txbuf[1600];
 
+/* lwIP's clock, ms: the generic timer's count (ticks is that of the last
+ * interrupt; at a way into the kernel after a long idle it lags until
+ * the interrupt's timer_sync, and lwIP's timers count from the way in:
+ * timers.c's net_enter) */
 u32 sys_now(void)
 {
-	return ticks * 10;
+	u64 f = SYSREG_R(cntfrq_el0) / 1000;
+	return f ? (u32)(timer_count() / f) : ticks * 10;
 }
 
 /* lwIP's random numbers (DHCP transaction ids, TCP sequence numbers,
@@ -52,6 +59,7 @@ static err_t link_out(struct netif *n, struct pbuf *p)
 	(void)n;
 	if (p->tot_len > sizeof(txbuf)) return ERR_BUF;
 	pbuf_copy_partial(p, txbuf, p->tot_len, 0);
+	net_frame(txbuf, p->tot_len, 1);
 	return ndev.send(ndev.dev, txbuf, p->tot_len) ? ERR_OK : ERR_MEM;
 }
 
@@ -83,6 +91,13 @@ static void status_changed(struct netif *n)
 
 void net_init(void)
 {
+	/* kolibri.nettimers=periodic: lwIP's timers on their grid always, as
+	 * its own timeouts.c runs them (timers.c) */
+	const char *v = boot_arg("kolibri.nettimers");
+	if (v && !strncmp(v, "periodic", 8)) {
+		net_timers_periodic(1);
+		kprintf("net: lwIP's timers periodic (kolibri.nettimers=periodic)\n");
+	}
 	lwip_init();
 }
 
@@ -104,6 +119,7 @@ struct netif *net_attach(const struct net_dev *d)
 
 void net_input(struct netif *n, const void *frame, u32 len)
 {
+	net_frame(frame, len, 0);
 	struct pbuf *p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
 	if (!p) return;
 	pbuf_take(p, frame, len);
@@ -148,8 +164,9 @@ void net_link(struct netif *n, bool up)
 	}
 }
 
-/* tickless idle: the ticks until lwIP's next timeout (its cyclic timers
- * included); frames come with the device's interrupt */
+/* tickless idle: the ticks until lwIP's next timeout (timers.c: those
+ * of its timers that have something to do); frames come with the
+ * device's interrupt */
 u32 net_next(void)
 {
 	u32 n = 0xffffffffu;

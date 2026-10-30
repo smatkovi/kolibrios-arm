@@ -8,6 +8,7 @@
 
 extern void arch_enter(struct frame64 *f) __attribute__((noreturn));
 #include "fpu.h"
+#include "net.h"
 extern char stack_top[];
 
 /* to the task the dispatch chose, or the idle loop (EL1, interrupts on) */
@@ -41,6 +42,7 @@ _Static_assert(__builtin_offsetof(struct trapframe, usr_sp) == 52 &&
 struct task *trap32(int kind, u64 esr, u64 far, struct frame64 *f)
 {
 	struct task *t = current, *c;
+	net_enter();                       /* lwIP's idle timers to the present first */
 	if (kind == K_IRQ_EL1) {
 		struct trapframe none;
 		c = trap_dispatch(&none, TRAP_IRQ, false, 0, 0);
@@ -69,6 +71,7 @@ struct task *trap32(int kind, u64 esr, u64 far, struct frame64 *f)
 void trap64(struct frame64 *f, int kind)
 {
 	u64 esr = SYSREG_R(esr_el1), far = SYSREG_R(far_el1);
+	net_enter();
 	switch (kind) {
 	case K_IRQ_EL1: {
 		struct trapframe none;

@@ -9,6 +9,9 @@ struct netif;
 
 void net_init(void);            /* lwIP, before the devices */
 void net_tick(void);            /* the timer tick: the devices, lwIP's timeouts */
+/* every way into the kernel (arch/arm64/trap.c), first: lwIP's idle
+ * timers to the present (kernel/net/timers.c) */
+void net_enter(void);
 
 /* a device: its MAC address, its MTU, how it sends a frame (false: no
  * room now) and how net_tick polls it (or NULL) */
