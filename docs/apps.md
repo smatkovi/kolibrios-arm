@@ -17,7 +17,7 @@ box_lib's widgets, libini, and in t_edit's case more (below).
 
 `tools/fetch-kolibrios.sh` fetches them, file by file, from KolibriOS's
 own host at commit `855f02d2` (main, 2026-10-28), each checked by its
-SHA-256 (`tools/kolibrios-files.txt`, 203 files, 2.3 MB), into
+SHA-256 (`tools/kolibrios-files.txt`, 208 files, 2.3 MB), into
 `third_party/kolibrios` (not kept in the repository, as lwIP isn't); the
 Makefile runs it when they are missing. Gitea's API serves the files of a
 commit (`/api/v1/repos/KolibriOS/kolibrios/raw/PATH?ref=COMMIT`). The
@@ -25,8 +25,9 @@ files come as they are there: CR LF, comments in CP866. Fetched besides
 the four programs: `console_coff`, `box_lib`, `libini`, `msgbox`,
 `proc_lib`, `opendial` (the libraries and what the translations follow),
 `KOSfuncs.inc`, `macros.inc`, `proc32.inc` and the like, ktcc's
-`conio.h`, `shell_api.h`, `sys/ksys.h`, `icons32.png`, the distributed
-`kfar.ini`, `sysfuncs.txt`, and `COPYING.TXT` (the GPL).
+`conio.h`, `shell_api.h`, `sys/ksys.h`, `icons32.png`, `icons18.png`,
+the distributed `kfar.ini` and `icon2ext.ini`, `sysfuncs.txt`, and
+`COPYING.TXT` (the GPL).
 
 ## C or assembler
 
@@ -238,8 +239,8 @@ box_lib's TED component (`t_edit.asm` there, 4 500 lines, now
 option box, scroll bars and tree list beside it (`lib/boxlib`, their
 structures field for field as box_lib.mac's, checked by
 `_Static_assert`). Its other libraries: `lib/msgbox` (KolibriOS's
-msgbox), `lib/proc_lib` (OpenDialog), `lib/kmenu` (the menu bar),
-libini.
+msgbox), `lib/proc_lib` (OpenDialog, which starts the program opendial),
+`lib/kmenu` (the menu bar), libini.
 
 Its look and keys are the original's: the menu bar, the toolbar with
 `te_icon.png`'s icons (and their grey versions), line numbers, the
@@ -252,19 +253,80 @@ Ctrl+Z/Y, finding, replacing all, going to a line, choosing the syntax,
 the keyword search, the menus, the open and save dialogs, saving, the
 "Save changes?" question.
 
+Its dialogs run as in KolibriOS, now that the kernel has threads, IPC
+and named shared memory (`docs/threads.md`):
+
+- The message boxes are msgbox's (`lib/msgbox`, `msgbox.asm`):
+  `mb_create(data, thread)` starts a thread (51.1) on the stack the
+  program gives (t_edit's `thread`) with a skinned window of its own in
+  the middle of the screen, and returns at once; t_edit goes on. The
+  button pressed lands in the data's first byte, and the box's thread
+  calls the button's function (`mb_setfunctions`: t_edit's
+  `On_SaveAndExit`, `On_NewFile`, `ted_but_open_file.no_msg`, ...) and
+  ends; t_edit's window is redrawn when the box's window goes, and
+  `On_Exit`'s `exit_code` ends t_edit there. Each box keeps its own
+  variables and stack (the caller's, or one of the library's when a
+  box's function shows another box, as t_edit's do when a file does not
+  open); the original's are the library's globals, which a second box
+  took over.
+- The keyword window (`wnd_k_words.inc`) is a thread of t_edit's again
+  (51.1 on the stack `thread_coords`, its TID in `wnd_k_words_run`,
+  ended by 18.18 when t_edit ends) with its own window, events and
+  keys. It takes its place from t_edit's window once at its start and
+  has a buffer of its own for function 9: the original fills t_edit's
+  `procinfo` with its own window's, which t_edit's thread reads at the
+  same time.
+- The open and save dialogs are the program opendial (`apps/opendial`,
+  translated from `programs/fs/opendial/opendial.asm`), on the ramdisk
+  where t_edit's `communication_area_default_path` looks for it:
+  `/sys/File managers/opendial`, beside its `icon2ext.ini` (the icons by
+  extension; the icons, libimg's `/sys/icons18.png` there, are built in).
+  `lib/proc_lib` translates `opendial.mac`: `OpenDialog_init` makes the
+  named shared memory `PPPPPPPP_open_dialog` (68.22, the caller's PID,
+  written as the original writes it), `OpenDialog_start` puts the type,
+  the window's place (in the middle of the caller's window), the folder,
+  the file's name and the filter there, starts opendial with the area's
+  name as its parameter (70.7) and polls the area's flag (68.1, 5, 11),
+  redrawing t_edit's window meanwhile; opendial answers with the path
+  and the name and the flag 1 (cancelled: 3), and its window's place
+  and size for the next time. opendial's window is the original's: the
+  path, the menus Select Disk (the disks: `/rd/1`, `/tmp0/1`), Sort and
+  Filter, Refresh and ^ (the folder above), the list with its icons, the
+  file's name when saving, Open/Save/Select and Cancel; its keys: the
+  cursor keys, Enter, Backspace, Esc, Ctrl+R, Alt+F1/F2/F3 for the
+  menus, Tab between the list and the name. box_lib's FileBrowser, menu
+  bar and PathShow, which `lib/boxlib` has not, are drawn by
+  `apps/opendial/fb.c` for what opendial asks of them (no marking with
+  Insert, no search by the first letter); `sort.obj`'s orders are a sort
+  of its own.
+- In the Hildon look the kernel maximises every window but plain ones;
+  a dialog is kept as it is (`kernel/wm.c`): a window first defined by a
+  thread whose process shows another window already keeps its size and
+  place, fitted into the work area, with the classic frame and title
+  (its height grows by the title's, which 48.4 gives as 0 there), and
+  stays above its program's windows when one of them is activated.
+  opendial, a program of its own, is maximised like any other: a file
+  chooser over the work area. The Hildon shell takes a dialog's window
+  for one more window of its program (under the program's name).
+
 What differs, and why:
 
-- OpenDialog in KolibriOS is a program of its own (`opendial`) talking
-  to the caller through shared memory; here `lib/proc_lib` shows it in
-  the caller's window, as a modal loop with opendial's list, path, file
-  name, filter and keys.
+- Fixed on the way in the dialogs: the filter is handed to opendial
+  whole (opendial.mac copies its last three bytes short), the filter's
+  extensions are compared whole (opendial.asm matches any suffix of
+  one), the disks' table holds longer paths than the original's 10
+  bytes (`/linux/home`), the name's box keeps to its 256 bytes, and
+  OpenDialog_start stops waiting when opendial is gone without an
+  answer (ended from outside). In the classic look opendial's window
+  has no title yet: opendial sets it with 71.1, which in KolibriOS also
+  turns the window's caption on (`syscall_window_settings`), and this
+  kernel's 71.1 does not.
 - kmenu has no source in KolibriOS's repository (only `kmenu.obj`):
   `lib/kmenu` is written anew with the API t_edit and `kolibri_kmenu.h`
   use; its drop-downs are drawn in the window (what they cover kept
   with function 36, put back with 7).
-- msgbox and the keyword window ran as threads; here they are modal in
-  the program's window. t_edit's messages to @notify ("not found", the
-  replacements made) are message boxes.
+- t_edit's messages to @notify ("not found", the replacements made)
+  are message boxes, as there is no @notify.
 - The syntax files are assembled at build time from their sources with
   FASMARM, unpacked (`apps/t_edit/fasm2arm.py` turns FASM's `dw`/`dd`
   into FASMARM's `dh`/`dw` first); a file packed by kpack is refused.
@@ -278,13 +340,16 @@ What differs, and why:
   the clipboard's text read to its size, tree_list's node functions).
 - Cyrillic shows in the kernel's cp437 glyphs (KolibriOS's system fonts
   are cp866; the console library has its own cp866 font).
-- In the Hildon look, closing a changed file from the panel leaves the
-  question on the screen; the close button again ends t_edit.
+- In the Hildon look, closing a changed file from the panel brings up
+  the question in msgbox's window, which the shell puts in front; the
+  panel's close button then closes that window (no answer, as its own
+  close button) and asks again the time after: "Discard" ends t_edit.
 
 ![t_edit](img/t_edit-classic.png)
 ![t_edit in the Hildon look, finding](img/t_edit-hildon.png)
 ![a menu](img/t_edit-menu.png)
-![the open dialog](img/t_edit-open.png)
+![the open dialog: opendial's window](img/t_edit-open.png)
+![a message box: msgbox's thread](img/t_edit-msgbox.png)
 ![replacing](img/t_edit-replace.png)
 
 ## Testing
@@ -295,7 +360,8 @@ runs it on both kernels and drives the programs in QEMU through
 `scripts/qemu-shot.py` (`tests/apps/keys.py` turns text into its key
 steps): the shell's commands, the terminal against a socket, kfar's
 and t_edit's operations (kfar copies, makes a folder and deletes; t_edit
-types, undoes, replaces, copies and pastes and saves through its dialog;
+types, undoes, replaces, copies and pastes and saves through opendial,
+answers "Save changes?" and opens the file again from the box's thread;
 fstest's `wait N expect PATH TEXT` in the autorun checks the files
 afterwards), with screenshots:
 

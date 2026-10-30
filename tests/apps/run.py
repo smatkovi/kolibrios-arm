@@ -8,7 +8,8 @@ runs it through scripts/qemu-shot.py, types with keys.py's steps and
 checks the debug output (fstest's lines; the shell runs fstest's
 "expect" to look at the files it made) or what reaches a socket (the
 terminal on realview's UART1). Screenshots go to the output directory
-(/tmp/kolibri-apps-test), or with --img to the documentation's images.
+(/tmp/kolibri-apps-test, or $KOLIBRI_APPS_OUT: worktrees testing at the
+same time), or with --img to the documentation's images.
 """
 import os
 import shutil
@@ -19,7 +20,7 @@ import threading
 import time
 
 TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUT = '/tmp/kolibri-apps-test'
+OUT = os.environ.get('KOLIBRI_APPS_OUT', '/tmp/kolibri-apps-test')
 HERE = os.path.join(TOP, 'tests', 'apps')
 failed = []
 
