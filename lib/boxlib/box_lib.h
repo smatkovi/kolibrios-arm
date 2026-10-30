@@ -360,6 +360,146 @@ int tl_save_mem(tree_list *tl, bl_u32 opt, void *h_mem, bl_u32 mem_size);
 int tl_load_mem(tree_list *tl, bl_u32 opt, const void *h_mem, bl_u32 mem_size);
 bl_u32 tl_get_mem_size(tree_list *tl, const void *h_mem);
 
+
+/* ------------------------------------------------------------------ */
+/* TextEditor (t_edit.asm, the TED component)                          */
+
+#define MAX_COLOR_WORD_LEN 40
+#define TED_LINES_IN_NEW_FILE 30
+
+typedef struct BOX { bl_u32 left, top, width, height; } BOX;
+typedef struct TexSelect { int x0, y0, x1, y1; } TexSelect;
+
+/* a key word of a syntax file (*.syn) */
+typedef struct TexColViv {
+	char Text[MAX_COLOR_WORD_LEN];  /* the word */
+	bl_u32 f1;                 /* its help: an offset in the help text, or 0 */
+	bl_u8 flags;               /* 1, 2: not after or before a letter, digit, '_';
+				    * 8, 16: ... a letter; 4: up to endc */
+	bl_u8 endc;                /* the end of a coloured part (flags & 4) */
+	bl_u8 escc;                /* its escape character */
+	bl_u8 color;               /* the colour's index */
+} TexColViv;
+
+/* a character of the text: a doubly linked list in an array, 0 the
+ * start and 1 the end; deleting and undoing are times */
+typedef struct symbol {
+	bl_u8 c;                   /* +0  the character */
+	bl_u8 col;                 /* +1  a colour starts here (255: it ends) */
+	bl_u32 perv;               /* +2  */
+	bl_u32 next;               /* +6  */
+	bl_u32 tc;                 /* +10 the time of creation */
+	bl_u32 td;                 /* +14 the time of deletion */
+} __attribute__((packed)) symbol;
+
+typedef struct text_editor {
+	BOX wnd;                   /* +0  the editor's window */
+	BOX rec;                   /* +16 left: the line numbers' width, top: the
+				    * header's height, width and height: a character's */
+	bl_u8 drag_m;              /* +32 selecting by the mouse */
+	bl_u8 drag_k;              /* +33 selecting by the keyboard */
+	TexSelect sel;             /* +34 the selection */
+	TexSelect seln;            /* +50 the selection normalised */
+	symbol *tex;               /* +66 the text's memory */
+	symbol *tex_1;             /* +70 its symbol 1 (the end) */
+	symbol *tex_end;           /* +74 the memory's end */
+	int cur_x;                 /* +78 the cursor */
+	int cur_y;                 /* +82 */
+	bl_u32 max_chars;          /* +86 characters in a document at most */
+	bl_u32 colors_text_count;  /* +90 the text's colours */
+	bl_u32 key_words_count;    /* +94 */
+	bl_u32 color_cursor;       /* +98 */
+	bl_u32 color_wnd_capt;     /* +102 the fields around the text */
+	bl_u32 color_wnd_work;     /* +106 the text's background */
+	bl_u32 color_wnd_bord;     /* +110 the text on the fields */
+	bl_u32 color_select;       /* +114 */
+	bl_u32 color_cur_text;     /* +118 the character under the cursor */
+	bl_u32 color_wnd_text;     /* +122 the text */
+	bl_u8 *syntax_file;        /* +126 the syntax file's memory */
+	bl_u32 syntax_file_size;   /* +130 its size at most */
+	bl_u32 *text_colors;       /* +134 the colours */
+	char *help_text_f1;        /* +138 the key words' help (F1) */
+	int help_id;               /* +142 the key word helped */
+	TexColViv *key_words_data; /* +146 */
+	bl_u32 tim_ch;             /* +150 changes */
+	bl_u32 tim_undo;           /* +154 changes undone */
+	bl_u32 tim_ls;             /* +158 the time of the last save */
+	bl_u32 tim_co;             /* +162 the time of the last colouring */
+	void **el_focus;           /* +166 the variable of the element in focus */
+	bl_u8 err_save;            /* +170 the error of saving */
+	bl_u8 panel_id;            /* +171 the panel open (the program's) */
+	bl_u8 key_new;             /* +172 the character typed */
+	bl_u8 symbol_new_line;     /* +173 the line end's sign (invisible shown) */
+	scrollbar *scr_w;          /* +174 the vertical scroll bar */
+	scrollbar *scr_h;          /* +178 the horizontal one */
+	int *arr_key_pos;          /* +182 the first key word of each character */
+	char *buffer;              /* +186 the copy/paste buffer (a clipboard slot) */
+	char *buffer_find;         /* +190 the text to find */
+	bl_u8 cur_ins;             /* +194 1: insert, 0: overwrite */
+	bl_u8 mode_color;          /* +195 1: the key words coloured */
+	bl_u8 mode_invis;          /* +196 1: tabs and line ends shown */
+	bl_u8 gp_opt;              /* +197 ted_get_pos_by_cursor's result */
+	void (*fun_on_key_ctrl_all)(bl_u32 key);   /* +198 Ctrl+N, O, S, F, H, G ('N'.. | 0x100 with Shift) */
+	bl_u32 reserved_202[3];
+	bl_u32 buffer_size;        /* +214 */
+	void (*fun_find_err)(void);              /* +218 nothing found */
+	void (*fun_init_synt_err)(void);         /* +222 (unused) */
+	void (*fun_draw_panel_buttons)(void);    /* +226 the program's toolbar */
+	void (*fun_draw_panels)(struct text_editor *ted);   /* +230 its panels */
+	bl_u32 reserved_234;
+	void (*fun_save_err)(int err_char);      /* +238 saving failed: the error's digit */
+	bl_u32 increase_size;      /* +242 characters added when the memory is full */
+	symbol *ptr_free_symb;     /* +246 where a new character goes first */
+	bl_u32 font_size;          /* +250 function 4's font and scale bits */
+} __attribute__((packed)) text_editor;
+
+#define ted_opt_ed_move_cursor 1  /* the cursor after the text added */
+#define ted_opt_ed_change_time 2  /* a change (for undo) */
+#define ted_offs_sel  34
+#define ted_offs_seln 50
+#define ted_offs_count_colors 90
+#define ted_offs_key_new 172
+#define ted_offs_symbol_new_line 173
+
+/* modifiers for ted_key's control argument */
+#define KM_SHIFT   0x00010000
+#define KM_CTRL    0x00020000
+#define KM_ALT     0x00040000
+#define KM_NUMLOCK 0x00080000
+
+void ted_init(text_editor *ted);
+void ted_init_scroll_bars(text_editor *ted, bl_u32 opt);   /* 1 colours, 2 window, 4 document */
+void ted_delete(text_editor *ted);
+/* key: function 2's result in scan code mode (ah the scan code);
+ * table: function 26.2's layout, or NULL; control: KM_* */
+void ted_key(text_editor *ted, bl_u32 key, const bl_u8 *table, bl_u32 control);
+int ted_can_save(text_editor *ted);
+int ted_is_select(text_editor *ted);
+void ted_clear(text_editor *ted, int cl_al_mem);
+void ted_init_syntax_file(text_editor *ted);
+void ted_text_add(text_editor *ted, const char *text, bl_u32 t_len, bl_u32 add_opt);
+void ted_but_convert_by_table(text_editor *ted, const bl_u8 *table);
+void ted_go_to_position(text_editor *ted, int row, int col);
+void ted_text_colored(text_editor *ted);
+/* returns function 70's error; *read the bytes read */
+int ted_open_file(text_editor *ted, void *file, const char *f_name);
+void ted_save_file(text_editor *ted, void *file, const char *f_name);
+void ted_but_select_word(text_editor *ted);
+void ted_but_cut(text_editor *ted);
+void ted_but_copy(text_editor *ted);
+void ted_but_paste(text_editor *ted);
+void ted_but_sumb_upper(text_editor *ted);
+void ted_but_sumb_lover(text_editor *ted);
+void ted_but_reverse(text_editor *ted);
+void ted_but_undo(text_editor *ted);
+void ted_but_redo(text_editor *ted);
+/* f_opt: 0 down, 1 up, 2 from the start; bit 31: no redraw, bit 30:
+ * any case. 1 if found */
+int ted_but_find(text_editor *ted, bl_u32 f_opt);
+int ted_but_replace(text_editor *ted, const char *rpl_text, bl_u32 r_opt, int n_tim);
+void ted_draw(text_editor *ted);
+void ted_mouse(text_editor *ted);
+
 /* the layouts, as box_lib.mac's offsets have them */
 _Static_assert(sizeof(edit_box) == ed_struc_size, "edit_box");
 _Static_assert(offsetof(edit_box, cl_curs_x) == 60 && offsetof(edit_box, char_width) == 72, "edit_box");
@@ -369,6 +509,12 @@ _Static_assert(sizeof(TreeNode) == 20, "TreeNode");
 _Static_assert(sizeof(tree_list) == 88 && offsetof(tree_list, info_size) == 20 && offsetof(tree_list, info_max_count) == 22 &&
 	       offsetof(tree_list, style) == 26 && offsetof(tree_list, data_img_sys) == 42 && offsetof(tree_list, el_focus) == 76 &&
 	       offsetof(tree_list, p_scroll) == 80, "tree_list");
+_Static_assert(sizeof(symbol) == 18 && sizeof(TexColViv) == 48, "symbol");
+_Static_assert(sizeof(text_editor) == 254 && offsetof(text_editor, sel) == 34 && offsetof(text_editor, tex) == 66 &&
+	       offsetof(text_editor, max_chars) == 86 && offsetof(text_editor, syntax_file) == 126 &&
+	       offsetof(text_editor, err_save) == 170 && offsetof(text_editor, scr_w) == 174 &&
+	       offsetof(text_editor, fun_on_key_ctrl_all) == 198 && offsetof(text_editor, buffer_size) == 214 &&
+	       offsetof(text_editor, fun_save_err) == 238 && offsetof(text_editor, font_size) == 250, "text_editor");
 _Static_assert(sizeof(scrollbar) == 88 && offsetof(scrollbar, redraw) == 40 && offsetof(scrollbar, all_redraw) == 80, "scrollbar");
 
 #endif
