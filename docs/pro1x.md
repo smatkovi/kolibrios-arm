@@ -48,6 +48,7 @@ The command line:
 | `kolibri.psci=off` | the CPU idles with `wfi` only, no PSCI power-down states (`core`: no cluster state; `docs/power.md`) |
 | `kolibri.bench` | the drawing loops and the string functions timed at the start, C against assembler (NEON), the flush to the panel too (`docs/asm.md`) |
 | `kolibri.simd=c` | the drawing in C instead of the NEON assembler |
+| `kolibri.rngtest` | the random numbers' sources and generator checked at the start (FIPS 140-2, the jitter's estimate; `docs/rng.md`) |
 | `kolibri.storage=off` | the UFS left alone (`docs/storage.md`) |
 | `kolibri.home=rw` | the container on userdata (`tools/kolibri-home`) written; without it nothing on the UFS is written |
 
