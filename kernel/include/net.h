@@ -21,6 +21,10 @@ struct net_dev {
 	void *dev;
 };
 struct netif *net_attach(const struct net_dev *d);
+void net_link(struct netif *n, bool up);
+/* polled from the tick before and besides the interface; next_ticks for
+ * the tickless idle (0xffffffff: nothing) */
+void net_add_poller(void (*poll)(void), u32 (*next_ticks)(void));
 void net_input(struct netif *n, const void *frame, u32 len);
 
 /* the interface's IPv4 configuration (network byte order), 0 if none;

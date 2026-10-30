@@ -29,7 +29,7 @@ LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 KCOMMON := lib.c mm.c sched.c syscall.c gfx.c wm.c input.c fs.c loader.c main.c \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
-	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c
+	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c modem/ce.c
 
 ifeq ($(PLATFORM),arm64)
 # the AArch64 kernel (QEMU's virt, the Pro1X: chosen by the device tree),
@@ -40,8 +40,8 @@ KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgenera
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
 	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S power.c \
-	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
-	modem/ce.c modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c \
+	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
+	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
 LWIP := third_party/lwip/src

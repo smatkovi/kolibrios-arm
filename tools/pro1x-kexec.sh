@@ -3,7 +3,7 @@
 # running Linux (Maemo Leste), with kexec, the way pro1x-maemo-leste's
 # boot menu starts FreeBSD:
 #
-#   pro1x-kexec.sh [-n] [-m [-a]] [KERNEL] [COMMAND LINE]
+#   pro1x-kexec.sh [-n] [-m [-a] [-w FILE]] [KERNEL] [COMMAND LINE]
 #
 # KERNEL is build/arm64/kernel.bin (default /host/kolibri/kernel.bin), the
 # command line e.g. "kolibri.lifetime=60": KolibriOS stops feeding the
@@ -18,6 +18,14 @@
 # (kolibri.ipcrtr=adopt). rmtfs keeps running until the jump: stopped
 # normally it would stop the modem.
 #
+# -w FILE (with -m): the Wi-Fi (docs/pro1x-network.md, stages 4-6): FILE
+# has the network, "ssid=NAME" and "psk=PASSPHRASE" lines (or 64 hex
+# digits; "bssid=aa:bb:..." optional). It goes into the initrd as the
+# image "wifi" (the PSK in it: the initrd file is made readable by root
+# only), kolibri.wifi is added; KolibriOS starts the WCN3990 once WLFW
+# (over the modem's QRTR) says the firmware is ready. Linux's ath10k is
+# shut down by the kexec itself (WLAN_MODE off, its rails released).
+#
 # -a (with -m): the sound of calls goes along (docs/pro1x-audio.md).
 # PulseAudio's devices are suspended, the routes of UCM's Earpiece and Mic
 # devices set, and two streams started that run through the jump, zeros
@@ -31,18 +39,24 @@
 # pro1x-read.py shows what KolibriOS left in memory.
 set -eu
 
-check= modem= audio=
+check= modem= audio= wifi=
 while [ $# -gt 0 ]; do
 	case $1 in
 	-n) check=1; shift ;;
 	-m) modem=1; shift ;;
 	-a) audio=1; shift ;;
+	-w) wifi=${2:?pro1x-kexec: -w FILE}; shift 2 ;;
 	*) break ;;
 	esac
 done
 kernel=${1:-/host/kolibri/kernel.bin}
 args=${2:-}
 [ -z "$audio" ] || [ -n "$modem" ] || { echo "pro1x-kexec: -a needs -m (the calls)" >&2; exit 1; }
+if [ -n "$wifi" ]; then
+	[ -n "$modem" ] || { echo "pro1x-kexec: -w needs -m (WLFW is the modem's)" >&2; exit 1; }
+	{ grep -q '^ssid=' "$wifi" && grep -q '^psk=' "$wifi"; } ||
+	    { echo "pro1x-kexec: $wifi needs ssid= and psk= lines" >&2; exit 1; }
+fi
 
 [ "$(id -u)" = 0 ] || { echo "pro1x-kexec: as root" >&2; exit 1; }
 command -v kexec > /dev/null || { echo "pro1x-kexec: no kexec (kexec-tools)" >&2; exit 1; }
@@ -62,7 +76,12 @@ if [ -n "$modem" ]; then
 		[ -e "$d" ] || { echo "pro1x-kexec: no $d" >&2; exit 1; }
 		set -- "$@" "$p=$d"
 	done
-	python3 "$here/mkefs.py" "$efs" "$@" || exit 1
+	if [ -n "$wifi" ]; then
+		set -- "$@" "wifi=$wifi"
+		args="$args kolibri.wifi"
+	fi
+	(umask 077; python3 "$here/mkefs.py" "$efs" "$@") || exit 1
+	chmod 600 "$efs"
 	initrd="--initrd=$efs"
 	args="$args kolibri.ipcrtr=adopt"
 fi

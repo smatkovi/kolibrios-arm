@@ -37,7 +37,8 @@ The command line:
 | `kolibri.nomodem` | leave the modem alone |
 | `kolibri.fakemodem` | a modem in RAM instead (QEMU with the phone's device tree) |
 | `kolibri.ipcrtr=adopt` | Linux's `IPCRTR` channel taken over as it is (`pro1x-kexec.sh -m` passes it; `docs/pro1x-modem.md`) |
-| `kolibri.wifi` | the WLAN part's rails on through the RPM, the WLAN firmware's QMI service asked what it is (with `-m`; `docs/pro1x-network.md`) |
+| `kolibri.wifi` | the Wi-Fi (with `-m -w FILE`; `docs/pro1x-network.md`): the WLAN part's rails on through the RPM, the WLAN firmware's QMI service, then the driver: the station joins FILE's network, lwIP takes a lease |
+| `kolibri.wifi=irq` | the same, the copy engines by their interrupts instead of polled from the tick |
 | `kolibri.powertest=N` | N minutes of power measurement as a standby (after 10 s the display off, the SoC's sleep), a console line a minute with the battery's current and the RPM's sleep counts, then the reset (as a lifetime of N minutes and 30 s); `docs/power.md` |
 | `kolibri.tick=periodic` | the 100 Hz tick also in idle (no tickless idle), the input polled as before |
 | `kolibri.rpmsleep` | the RPM's sleep set at 0 and the MPM handed the next wake-up before the cluster's collapse: the SoC may sleep (vlow, vmin; `docs/power.md`) |

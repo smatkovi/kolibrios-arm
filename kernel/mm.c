@@ -89,6 +89,26 @@ addr_t mm_alloc_mb_aligned(u32 mb, u32 align_mb)
 	return 0;
 }
 
+/* from the bottom up, the whole range below limit (DMA for a device that
+ * reaches only so far) */
+addr_t mm_alloc_mb_below(u32 mb, u32 align_mb, u64 limit)
+{
+	for (int b = 0; b < nbanks; b++)
+		for (u32 i = 0; i + mb <= banks[b].n; i++) {
+			addr_t pa = banks[b].base + (addr_t)i * MB;
+			if ((u64)pa + (u64)mb * MB > limit) return 0;
+			if ((pa >> 20) % align_mb) continue;
+			u32 j;
+			for (j = 0; j < mb && !used[banks[b].first + i + j]; j++)
+				;
+			if (j == mb) {
+				for (j = 0; j < mb; j++) used[banks[b].first + i + j] = 1;
+				return pa;
+			}
+		}
+	return 0;
+}
+
 addr_t mm_alloc_mb(u32 mb)
 {
 	return mm_alloc_mb_aligned(mb, 1);

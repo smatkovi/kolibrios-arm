@@ -27,6 +27,8 @@ ap.add_argument('out')
 ap.add_argument('--psci', action='store_true')
 ap.add_argument('--bootargs', default='')
 ap.add_argument('--virt', action='store_true', help="QEMU's virt still (its devices: the network), not a Pro1X")
+ap.add_argument('--wifi', action='store_true',
+                help="a qcom,wcn3990-wifi node whose register window is RAM at 0x50000000 (tests/wifi's qemu)")
 a = ap.parse_args()
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -64,8 +66,21 @@ chosen = f'''chosen {{
 			reg = <0x00 0x5c000000 0x00 0x1000000>;
 			no-map;
 		}};
-	}};
-'''
+{'''
+		wlanregs@50000000 {
+			reg = <0x00 0x50000000 0x00 0x800000>;
+			no-map;
+		};
+''' if a.wifi else ''}	}};
+{'''
+	wifi@50000000 {
+		compatible = "qcom,wcn3990-wifi";
+		reg = <0x00 0x50000000 0x00 0x800000>;
+		reg-names = "membase";
+		interrupts = <0 358 4>, <0 359 4>, <0 360 4>, <0 361 4>, <0 362 4>, <0 363 4>,
+			     <0 364 4>, <0 365 4>, <0 366 4>, <0 367 4>, <0 368 4>, <0 369 4>;
+	};
+''' if a.wifi else ''}'''
 dts, n = re.subn(r'chosen \{[^{}]*\};\n', chosen, dts, count=1)
 if not n:
     sys.exit('mkdtb: no /chosen in QEMU\'s tree')

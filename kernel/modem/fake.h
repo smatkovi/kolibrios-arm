@@ -13,7 +13,7 @@ void fake_init(struct modem_hw *hw, u8 *smem, u8 *rmtfs, u32 (*clock)(void), voi
 void fake_poll(u32 ms);
 u32 fake_next_ms(u32 ms);
 /* what it saw, for the tests */
-struct fake_stats { u32 rmtfs_ok, rmtfs_bad, sent, dialled, answered, ended, wlfw; char last_text[200]; };
+struct fake_stats { u32 rmtfs_ok, rmtfs_bad, sent, dialled, answered, ended, wlfw, wlan_cfg, wlan_mode; char last_text[200]; };
 extern struct fake_stats fake_stats;
 /* the modem opened IPCRTR before and Linux read that (the kexec case):
  * set before fake_init() */

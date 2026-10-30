@@ -253,6 +253,10 @@ static void test_rpm(void)
 	CHECK(rpm_stats_read((volatile u8 *)stats, sizeof(stats), rs) == 0, "RPM stats: an offset outside");
 }
 
+static int wlfw_ready_calls, wlfw_enabled = 1;
+static void wlfw_ready_cb(void) { wlfw_ready_calls++; }
+static void wlfw_enable_cb(int err) { wlfw_enabled = err; }
+
 static void test_stack(void)
 {
 	struct modem_hw hw;
@@ -272,6 +276,14 @@ static void test_stack(void)
 	CHECK(!strcmp(wi->timestamp, "2021-12-02 08:20") && !strcmp(wi->build + 24, "WLAN.HL.3.2.4"),
 	      "WLFW strings '%s' '%s'", wi->timestamp, wi->build);
 	CHECK(fake_stats.wlfw == 2, "the fake WLFW answered twice (%u)", fake_stats.wlfw);
+	/* the driver's start: ready at once (registered, capabilities), then
+	 * WLAN_CFG and WLAN_MODE through the fake modem (stage 4) */
+	wlfw_on_ready(wlfw_ready_cb);
+	CHECK(wlfw_ready_calls == 1, "WLFW ready: the driver called at once");
+	wlfw_wlan_enable(wlfw_enable_cb);
+	run(2000);
+	CHECK(wlfw_enabled == 0 && fake_stats.wlan_cfg == 1 && fake_stats.wlan_mode == 0 && fake_stats.wlfw == 4,
+	      "WLAN_CFG taken, then WLAN_MODE mission (%d, %u, %u)", wlfw_enabled, fake_stats.wlan_cfg, fake_stats.wlan_mode);
 	/* WLAN_CFG and WLAN_MODE, encoded from snoc.c's tables (stage 3) */
 	{
 		static struct qmi_buf b;

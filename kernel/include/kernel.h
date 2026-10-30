@@ -136,6 +136,7 @@ void cache_sync_code(addr_t va, u32 len);
 void mm_init(addr_t kernel_end);
 addr_t mm_alloc_mb(u32 mb);        /* physical address or 0 */
 addr_t mm_alloc_mb_aligned(u32 mb, u32 align_mb);
+addr_t mm_alloc_mb_below(u32 mb, u32 align_mb, u64 limit);   /* bottom up, all of it below limit */
 void mm_free_mb(addr_t pa, u32 mb);
 void mm_reserve(addr_t pa, u32 size); /* in use already (a boot loader's frame buffer) */
 u32 mm_free_kb(void);
@@ -153,6 +154,7 @@ void rtc_set(u32 t);           /* the time (Unix) from elsewhere: the mobile net
 struct modem_hw;
 void kmodem_start(const struct modem_hw *hw);
 void kmodem_fake(void);
+void kmodem_fake_wlfw(void);      /* before kmodem_fake: its WLFW service used */
 void kmodem_tick(void);
 u32 kmodem_next(void);          /* ticks until it needs kmodem_tick (power.h) */
 void kmodem_irq(void);          /* the modem's GLINK interrupt: wired, and now */

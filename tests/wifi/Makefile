@@ -3,6 +3,9 @@
 #  crypto:  SHA-1, HMAC, PBKDF2, the PRF, AES, the key wrap (crypto.c)
 #  station: the whole driver against a simulated WCN3990 and access point,
 #           with lwIP above it (station.c): stages 4-6, three scenarios
+#  qemu:    the kernel's side in QEMU (qemu.py): the Pro1X's tree with a
+#           Wi-Fi node of RAM, the fake modem's WLFW, the network from the
+#           initrd: WLAN_CFG, WLAN_MODE, the engines, waiting for READY
 # Needs OpenSSL's libcrypto (the AP's side, the reference values)
 M := ../../kernel/modem
 LWIP := ../../third_party/lwip/src
@@ -35,7 +38,19 @@ station: station.c $(WIFI) $(HDRS) $(LWIP)/core/init.c lwip/lwipopts.h lwip/arch
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations -Ilwip -I$(LWIP)/include station.c $(WIFI) \
 		$(LWIPSRC) -lcrypto -o $@
 
+B := ../../build/tests-wifi
+qemu:
+	$(MAKE) -C ../.. PLATFORM=arm64
+	@mkdir -p $(B)
+	python3 ../power/mkdtb.py $(B)/pro1x-wifi.dtb --wifi --bootargs "kolibri.fakemodem kolibri.wifi kolibri.lifetime=60"
+	printf 'ssid=KolibriNet\npsk=correct horse battery\n' > $(B)/wifi.conf
+	python3 ../../tools/mkefs.py $(B)/initrd.img wifi=$(B)/wifi.conf
+	python3 qemu.py ../../build/arm64/kernel.bin $(B)/pro1x-wifi.dtb $(B)/initrd.img 10 \
+		"pro1x: initrd at" "wlfw: registered, the firmware is ready" "pro1x: Wi-Fi at" "wifi: DMA" \
+		"wlfw: WLAN_CFG taken" "wlfw: WLAN_MODE mission" "wifi: copy engines up, waiting for HTC READY" \
+		"wifi: no answer in time (in HTC ready): stopped"
+
 clean:
 	rm -f test crypto station
 
-.PHONY: all clean
+.PHONY: all clean qemu

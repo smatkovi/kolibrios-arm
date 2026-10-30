@@ -110,20 +110,54 @@ void net_input(struct netif *n, const void *frame, u32 len)
 	if (n->input(p, n) != ERR_OK) pbuf_free(p);
 }
 
+/* devices that work before (and besides) their interface: the Wi-Fi's
+ * bring-up and association */
+static void (*pollers[2])(void);
+static u32 (*poller_next[2])(void);
+
+void net_add_poller(void (*poll)(void), u32 (*next_ticks)(void))
+{
+	for (int i = 0; i < 2; i++)
+		if (!pollers[i]) {
+			pollers[i] = poll;
+			poller_next[i] = next_ticks;
+			return;
+		}
+}
+
 void net_tick(void)
 {
+	for (int i = 0; i < 2; i++)
+		if (pollers[i]) pollers[i]();
 	if (!started) return;
 	if (ndev.poll) ndev.poll(ndev.dev);
 	sys_check_timeouts();
+}
+
+/* the link lost and back (the Wi-Fi's association): DHCP again */
+void net_link(struct netif *n, bool up)
+{
+	if (!n) return;
+	if (up) {
+		netif_set_link_up(n);
+		dhcp_start(n);
+		kprintf("net: link up, DHCP\n");
+	} else {
+		netif_set_link_down(n);
+		kprintf("net: link down\n");
+	}
 }
 
 /* tickless idle: the ticks until lwIP's next timeout (its cyclic timers
  * included); frames come with the device's interrupt */
 u32 net_next(void)
 {
-	if (!started) return 0xffffffffu;
+	u32 n = 0xffffffffu;
+	for (int i = 0; i < 2; i++)
+		if (poller_next[i]) n = MIN(n, poller_next[i]());
+	if (!started) return n;
 	u32 ms = sys_timeouts_sleeptime();
-	return ms == SYS_TIMEOUTS_SLEEPTIME_INFINITE ? 0xffffffffu : (ms + 9) / 10;
+	return MIN(n, ms == SYS_TIMEOUTS_SLEEPTIME_INFINITE ? 0xffffffffu : (ms + 9) / 10);
 }
 
 u32 net_addr(void)

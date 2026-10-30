@@ -9,6 +9,14 @@ static struct qrtr *qr;
 static struct wlfw_info wi;
 static u16 txn;
 static struct qmi_buf qb;
+static void (*ready_cb)(void);
+static void (*enable_cb)(int err);
+
+void wlfw_on_ready(void (*cb)(void))
+{
+	ready_cb = cb;
+	if (cb && wi.registered && wi.fw_ready && wi.have_cap) cb();
+}
 
 const struct wlfw_info *wlfw_info(void)
 {
@@ -91,6 +99,28 @@ static void rx(void *arg, u32 node, u32 port, const u8 *d, u32 len)
 		wi.have_cap = true;
 		mlog("wlfw: chip %x family %x board %x soc %x, firmware %x (%s) %s\n", wi.chip_id,
 		     wi.chip_family, wi.board_id, wi.soc_id, wi.fw_version, wi.timestamp, wi.build);
+		/* ath10k_qmi_event_server_arrive: with the firmware ready
+		 * (after a kexec from Linux) straight on to the driver
+		 * (ATH10K_QMI_EVENT_FW_READY_IND); else Linux's full path
+		 * (host capabilities, MSA, the board data from board-2.bin),
+		 * which is not done here */
+		if (!wi.fw_ready) mlog("wlfw: the firmware is not ready: the board data would be needed (not done)\n");
+		else if (ready_cb) ready_cb();
+		return;
+	case WLFW_WLAN_CFG:
+		if (!qmi_ok(&m, &err)) {
+			mlog("wlfw: WLAN_CFG refused (error %u)\n", err);
+			if (enable_cb) enable_cb(-1);
+			return;
+		}
+		mlog("wlfw: WLAN_CFG taken\n");
+		wlfw_mode_msg(&qb, ++txn, WLFW_MODE_MISSION);
+		send();
+		return;
+	case WLFW_WLAN_MODE:
+		if (!qmi_ok(&m, &err)) mlog("wlfw: WLAN_MODE refused (error %u)\n", err);
+		else mlog("wlfw: WLAN_MODE mission\n");
+		if (enable_cb) enable_cb(qmi_ok(&m, &err) ? 0 : -1);
 		return;
 	}
 }
@@ -138,6 +168,19 @@ void wlfw_mode_msg(struct qmi_buf *b, u16 txn, u32 mode)
 {
 	qmi_begin(b, QMI_REQUEST, txn, WLFW_WLAN_MODE);
 	qmi_put_u32(b, 0x01, mode);
+}
+
+/* ath10k_snoc_wlan_enable -> ath10k_qmi_wlan_enable: WLAN_CFG, then
+ * WLAN_MODE (mission); done(0) when both are taken */
+void wlfw_wlan_enable(void (*done)(int err))
+{
+	enable_cb = done;
+	if (!qr || !wi.found) {
+		if (done) done(-1);
+		return;
+	}
+	wlfw_cfg_msg(&qb, ++txn, ce_target_cfg, CE_COUNT, ce_svc_map, ce_svc_map_n, ce_shadow_map, ce_shadow_map_n);
+	send();
 }
 
 void wlfw_init(struct qrtr *q)

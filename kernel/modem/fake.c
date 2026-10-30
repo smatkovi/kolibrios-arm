@@ -257,7 +257,7 @@ static void wms_new(int index)
 static void svc_request(u32 port, u32 sport, const struct qmi_msg *m)
 {
 	qmi_begin(&qo, QMI_RESPONSE, m->txn, m->id);
-	u32 n;
+	u32 n, n2, n3;
 	const u8 *v;
 	switch (port << 16 | m->id) {
 	case 51 << 16 | 0x2d:                      /* DMS: Get Operating Mode */
@@ -408,6 +408,20 @@ static void svc_request(u32 port, u32 sport, const struct qmi_msg *m)
 		fake_stats.wlfw++;
 		break;
 	}
+	case 77 << 16 | 0x23: {                    /* WLFW: WLAN_CFG, as ath10k sends it */
+		const u8 *t = qmi_tlv(m, 0x11, &n), *sv = qmi_tlv(m, 0x12, &n2), *sh = qmi_tlv(m, 0x13, &n3);
+		bool ok = t && sv && sh && t[0] == 12 && n == 1 + 12 * 20 && sv[0] == 21 && sh[0] == 12;
+		qmi_put_result(&qo, ok ? 0 : 1, ok ? 0 : 0x30);
+		fake_stats.wlfw++;
+		fake_stats.wlan_cfg++;
+		break;
+	}
+	case 77 << 16 | 0x22:                      /* WLFW: WLAN_MODE */
+		v = qmi_tlv(m, 0x01, &n);
+		qmi_put_result(&qo, v && n == 4 && get32(v) <= 4 ? 0 : 1, 0);
+		fake_stats.wlfw++;
+		fake_stats.wlan_mode = v && n == 4 ? get32(v) : 99;
+		break;
 	default:
 		qmi_put_result(&qo, 1, 0x47);          /* not supported */
 		break;

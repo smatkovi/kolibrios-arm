@@ -44,6 +44,8 @@
 #include "../modem/rpm.h"
 #include "../modem/rpmsleep.h"
 #include "../modem/pmic.h"
+#include "../modem/wlfw.h"
+#include "net.h"
 #include "rng.h"
 #include "power.h"
 #include "powerdt.h"
@@ -91,7 +93,11 @@ static u32 smem_size, rmtfs_size, apcs_bit, efs_size;
 static u32 adsp_bit = 0xffffffffu;
 static bool callaudio;                 /* kolibri.callaudio: Linux left the voice path running */
 static bool nomodem, fakemodem, adopt_ipcrtr;
-static bool wifi;                       /* kolibri.wifi: the WLAN's rails, the WLFW service */
+static bool wifi;                       /* kolibri.wifi: the WLAN's rails, the WLFW service, the driver */
+static bool wifi_irq;                   /* kolibri.wifi=irq: the copy engines by interrupt */
+static addr_t wifi_pa;                  /* the WCN3990's membase */
+static u32 wifi_size, wifi_intid[12], wifi_nirq, wifi_streams[2][2];
+static int wifi_nstreams;
 static addr_t prng_pa, gcc_pa, rpmram_pa;
 static u32 rpmram_size, rpm_bit = 32;
 
@@ -182,7 +188,7 @@ static const struct { const char *name; u32 base, flush; } pipes[] = {
 
 /* translation off in the context banks of the display's streams: the
  * pipes then read the framebuffer's physical address (ARM MMU-500) */
-static void smmu_bypass(void)
+static void smmu_bypass_streams(u32 (*streams)[2], int nstreams)
 {
 	addr_t s = io_va(smmu);
 	u32 nsmr = rd32(s + 0x20) & 0xff, idr1 = rd32(s + 0x24);
@@ -205,6 +211,11 @@ static void smmu_bypass(void)
 			wr32(cb, 0);
 		}
 	}
+}
+
+static void smmu_bypass(void)
+{
+	smmu_bypass_streams(streams, nstreams);
 }
 
 /* the display back on the bootloader's framebuffer (MMU off) */
@@ -978,6 +989,34 @@ static void callaudio_start(void)
 	kcallaudio_start(&h);
 }
 
+/* WLFW says the firmware is ready (stage 2): the driver (stages 4-6,
+ * kernel/net/wifi_dev.c) on the register window, with the stream's SMMU
+ * translation off as the display's, the network from the initrd */
+bool wifi_dev_start(addr_t membase_va, u32 dma_mb, bool use_irqs, const char *conf, u32 conf_len);
+const char *wifi_dev_conf(const u8 *b, u32 size, u32 *len);
+void wifi_dev_irq(void);
+void wifi_dev_report(void);
+
+static void wifi_ready(void)
+{
+	if (!wifi_pa) {
+		kprintf("pro1x: no qcom,wcn3990-wifi in the device tree\n");
+		return;
+	}
+	u32 cl = 0;
+	const char *conf = efs_pa ? wifi_dev_conf((const u8 *)efs_pa, efs_size, &cl) : NULL;
+	if (!conf) {
+		kprintf("pro1x: Wi-Fi: no network in the initrd (pro1x-kexec.sh -w FILE)\n");
+		return;
+	}
+	kprintf("pro1x: Wi-Fi at %p (%u KiB), %u interrupts from INTID %u, stream 0x%x\n", wifi_pa, wifi_size >> 10,
+		wifi_nirq, wifi_nirq ? wifi_intid[0] : 0, wifi_nstreams ? wifi_streams[0][0] : 0);
+	if (smmu && wifi_nstreams) smmu_bypass_streams(wifi_streams, wifi_nstreams);
+	if (!wifi_dev_start(io_va(wifi_pa), 4, wifi_irq && wifi_nirq == 12, conf, cl)) return;
+	if (wifi_irq && wifi_nirq == 12)
+		for (u32 i = 0; i < wifi_nirq; i++) gic3_enable_spi_edge(wifi_intid[i], false);
+}
+
 static void modem_init(void)
 {
 	if (efs_pa) {
@@ -993,7 +1032,9 @@ static void modem_init(void)
 		kprintf("pro1x: initrd at %p, %u KiB (%s)\n", efs_pa, efs_size >> 10, magic);
 	}
 	if (fakemodem) {
+		if (wifi) kmodem_fake_wlfw();
 		kmodem_fake();
+		if (wifi) wlfw_on_ready(wifi_ready);
 		return;
 	}
 	if (nomodem || !smem_pa || !apcs_pa) {
@@ -1009,6 +1050,7 @@ static void modem_init(void)
 	kprintf("pro1x: modem: SMEM %p (%u KiB), rmtfs %p, IPC %p bit %u, EFS images %p (%u KiB)\n",
 		smem_pa, smem_size >> 10, rmtfs_pa, apcs_pa, apcs_bit, efs_pa, efs_size >> 10);
 	kmodem_start(&hw);
+	if (wifi) wlfw_on_ready(wifi_ready);
 	callaudio_start();
 	/* its GLINK edge's interrupt: what it sends wakes the kernel */
 	if (modem_irq && modem_present()) {
@@ -1687,7 +1729,10 @@ static void p_init(void)
 	if (lifetime) kprintf("pro1x: lifetime %u s\n", lifetime);
 	pon_init();
 	prng_init();
-	if (wifi) wifi_power();
+	if (wifi) {
+		net_init();
+		wifi_power();
+	}
 	if (rpmsleep) soc_sleep_start();
 	else if (stats_pa && !powertest) rpm_stats_line("left by Linux");   /* (the test's start line has it) */
 	standby_at = ticks + 1000;
@@ -1716,6 +1761,7 @@ static void p_tick(void)
 	if (wdt_feeding && (s32)(ticks - wdt_next) >= 0) {
 		if (lifetime && ticks >= lifetime * 100) {
 			shot();
+			if (wifi) wifi_dev_report();
 			kprintf("pro1x: lifetime over: the watchdog resets the phone\n");
 			wdt_feeding = false;
 		} else {
@@ -1862,6 +1908,7 @@ static void p_other_irq(u32 id)
 	else if (id == modem_irq && modem_irq) kmodem_irq();
 	else if (id == spmi_intid && pon_on) pon_isr();
 	else if (id == pdt.mpm_irq && soc_sleep_on) mpm_woken();
+	else if (wifi_irq && wifi_nirq && id >= wifi_intid[0] && id < wifi_intid[0] + wifi_nirq) wifi_dev_irq();
 }
 
 static void p_panic(void)
@@ -1999,6 +2046,24 @@ bool pro1x_probe(const void *fdt)
 			streams[nstreams][0] = cell(p, i + 1);
 			streams[nstreams][1] = cell(p, i + 2);
 			nstreams++;
+		}
+	}
+
+	/* the Wi-Fi (qcom,wcn3990-wifi): its register window, the copy
+	 * engines' interrupts (12 SPIs), its SMMU stream */
+	int wn = fdt_find_compatible(fdt, "qcom,wcn3990-wifi", -1, &ac, &sc);
+	if (wn >= 0 && fdt_reg(fdt, wn, ac, sc, 0, &a, &s) && s <= 16 * MB) {
+		wifi_pa = a;
+		wifi_size = (u32)s;
+		add_io(a, s, MAP_DEVICE);
+		p = fdt_prop(fdt, wn, "interrupts", &len);
+		for (int i = 0; p && i + 3 <= len / 4 && wifi_nirq < 12; i += 3)
+			if (cell(p, i) == 0) wifi_intid[wifi_nirq++] = 32 + cell(p, i + 1);
+		p = fdt_prop(fdt, wn, "iommus", &len);
+		for (int i = 0; p && i + 3 <= len / 4 && wifi_nstreams < 2; i += 3) {
+			wifi_streams[wifi_nstreams][0] = cell(p, i + 1);
+			wifi_streams[wifi_nstreams][1] = cell(p, i + 2);
+			wifi_nstreams++;
 		}
 	}
 
@@ -2205,6 +2270,7 @@ bool pro1x_probe(const void *fdt)
 		fakemodem = word(args, len, "kolibri.fakemodem", NULL);
 		callaudio = word(args, len, "kolibri.callaudio", NULL);
 		wifi = word(args, len, "kolibri.wifi", NULL);
+		wifi_irq = word(args, len, "kolibri.wifi=irq", NULL);
 		rpmsleep = word(args, len, "kolibri.rpmsleep", NULL);
 		displayon = word(args, len, "kolibri.displayon", NULL);
 		battery_arg = word(args, len, "kolibri.battery", NULL);

@@ -1,9 +1,9 @@
 /* KolibriOS for ARM: the WLAN firmware's QMI service (WLFW, 69) on the
  * modem: the first steps of the Pro1X's Wi-Fi (docs/pro1x-network.md).
  * After a kexec the firmware is loaded and ready from Linux's time; this
- * registers for its indications and asks what it is. Nothing is switched
- * on yet: WLAN_CFG and WLAN_MODE are encoded (wlfw_cfg_msg, wlfw_mode_msg)
- * but not sent. */
+ * registers for its indications and asks what it is; the Wi-Fi driver
+ * (wifi.c) then has it switched on: WLAN_CFG and WLAN_MODE
+ * (wlfw_wlan_enable). */
 #ifndef WLFW_H
 #define WLFW_H
 #include "qmi.h"
@@ -40,6 +40,11 @@ void wlfw_cfg_msg(struct qmi_buf *b, u16 txn, const struct ce_pipe_cfg *tgt, u32
 void wlfw_mode_msg(struct qmi_buf *b, u16 txn, u32 mode);
 
 void wlfw_init(struct qrtr *q);
+/* cb once the firmware is registered, ready and its capabilities known
+ * (at once if it is already) */
+void wlfw_on_ready(void (*cb)(void));
+/* WLAN_CFG (ce.h's tables), then WLAN_MODE mission: done(0), or done(-1) */
+void wlfw_wlan_enable(void (*done)(int err));
 void wlfw_server(u32 node, u32 port);  /* the service appeared */
 const struct wlfw_info *wlfw_info(void);
 

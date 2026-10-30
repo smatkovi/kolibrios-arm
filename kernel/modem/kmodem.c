@@ -31,12 +31,20 @@ static bool fake_i2c_read(u8 addr, u8 reg, u8 *val) { *val = 0x39; return true; 
 static void fake_gpio(int pin, bool high) {}
 static void fake_delay(u32 us) {}
 
+static bool fake_wlfw;
+
+void kmodem_fake_wlfw(void)
+{
+	fake_wlfw = true;
+}
+
 void kmodem_fake(void)
 {
 	if (modem_present()) return;
 	u8 *smem = kmalloc_aligned(FAKE_SMEM_SIZE, 4096);
 	u8 *rm = kmalloc_aligned(FAKE_RMTFS_SIZE, 4096);
 	fake_init(&hw, smem, rm, clock_now, rtc_set);
+	hw.wlfw = fake_wlfw;                    /* its WLFW service asked (the Wi-Fi in QEMU) */
 	fake = true;
 	kprintf("modem: a fake one in RAM (QEMU)\n");
 	modem_start(&hw);

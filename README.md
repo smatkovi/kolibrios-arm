@@ -100,7 +100,7 @@ input there).
 | Pro1X: call audio (Linux's APR channel to the ADSP taken over, the voice session per call, the speaker amplifier) | written, `tests/audio`, the speaker switch in QEMU, **not tried on the device** |
 | Pro1X: the clock from the mobile network (NAS) | written, **not tried on the device** |
 | Pro1X: clock (PMIC RTC), battery, everything else | not yet |
-| AArch64 kernel: the network (lwIP: DHCP, DNS, TCP, UDP), virtio-net | runs (QEMU, `make PLATFORM=arm64 run-net`); the Pro1X's Wi-Fi not yet (`docs/pro1x-network.md`) |
+| AArch64 kernel: the network (lwIP: DHCP, DNS, TCP, UDP), virtio-net | runs (QEMU, `make PLATFORM=arm64 run-net`); the Pro1X's Wi-Fi (WCN3990: WLFW, HTC, WMI, HTT, WPA2-PSK) written, tested on the PC against a simulated firmware and access point and in QEMU up to the hardware, not yet on the phone (`docs/pro1x-network.md`) |
 | AArch64 kernel: a Linux personality for static AArch64 programs (Go, musl): memory, threads, futexes, files, pipes, epoll, sockets; function 101 | runs (QEMU: `make run-linux`, `tests/linux`, Yappari's daemon) |
 
 The system functions done are in `kernel/syscall.c`; the others return
