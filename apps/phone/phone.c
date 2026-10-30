@@ -548,17 +548,29 @@ static void refresh(int force)
 	if (redraw) draw();
 }
 
+/* calls and messages come with the kernel's EV_SYSTEM; the time looked
+ * at only for what changes without it: a call's seconds (every second),
+ * the status line's signal and registration (5 s, the modem's own poll),
+ * nothing while the display is off */
+static u32 next_wait(void)
+{
+	if (kos_system_state() & KOS_SYS_DISPLAY_OFF) return 0;
+	return call.state == KOS_CALL_ACTIVE ? 100 : 500;
+}
+
 int main(void)
 {
-	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON);
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	refresh(1);
 	u32 status_seq = 0;
 	for (;;) {
-		int ev = kos_wait_event_timeout(25);
+		u32 w = next_wait();
+		int ev = w ? kos_wait_event_timeout(w) : kos_wait_event();
 		switch (ev) {
 		case KOS_EV_REDRAW: draw(); break;
 		case KOS_EV_KEY: on_key(kos_get_key()); break;
 		case KOS_EV_BUTTON: on_button(kos_get_button() >> 8); break;
+		case KOS_EV_SYSTEM:
 		case 0: {
 			struct kos_modem m2;
 			kos_call(100, KOS_MODEM_STATUS, (u32)&m2, 0, 0, 0);

@@ -340,6 +340,7 @@ void wm_define_window(struct task *t, u32 ebx, u32 ecx, u32 edx, u32 esi, const 
 		active_slot = t->slot;
 		owner_region(w->x, w->y, w->w, w->h);
 		if (old && old != t) { wm_draw_frame(old); task_post_event(old, EV_REDRAW); }
+		notify_system();                       /* a window came */
 	}
 	w->style = style;
 	w->flags = (edx >> 28) & 0xf;
@@ -372,6 +373,7 @@ void wm_activate(struct task *t)
 {
 	if (t->state == T_FREE || !t->win.defined) return;
 	struct task *old = wm_active();
+	bool was_min = t->win.minimized;
 	t->win.minimized = false;
 	stack_push(t->slot);
 	active_slot = t->slot;
@@ -383,6 +385,7 @@ void wm_activate(struct task *t)
 		wm_draw_frame(old);
 		task_post_event(old, EV_REDRAW);
 	}
+	if (old != t || was_min) notify_system();      /* another window in front */
 }
 
 void wm_minimize(struct task *t)
@@ -394,6 +397,7 @@ void wm_minimize(struct task *t)
 	expose(w->x, w->y, w->w, w->h);
 	struct task *a = wm_active();
 	if (a) { wm_draw_frame(a); task_post_event(a, EV_REDRAW); }
+	notify_system();
 }
 
 void wm_move(struct task *t, int x, int y, int ww, int hh)
@@ -436,7 +440,7 @@ void wm_move(struct task *t, int x, int y, int ww, int hh)
 void wm_remove(struct task *t)
 {
 	struct window *w = &t->win;
-	bool was = w->defined && !w->minimized;
+	bool was = w->defined && !w->minimized, had = w->defined;
 	struct task *a = wm_active();
 	stack_remove(t->slot);
 	w->defined = false;
@@ -450,6 +454,7 @@ void wm_remove(struct task *t)
 		wm_draw_frame(a);
 		task_post_event(a, EV_REDRAW);
 	}
+	if (had) notify_system();                      /* a window went */
 }
 
 /* a line of the screen inverted, where the slot owns it */
@@ -657,6 +662,7 @@ void wm_restore(struct task *t)
 	owner_region(w->x, w->y, w->w, w->h);
 	wm_draw_frame(t);
 	task_post_event(t, EV_REDRAW);
+	notify_system();
 }
 
 /* function 72.1: a key (2, the code as function 2 has it in ah) or a

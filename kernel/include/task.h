@@ -11,10 +11,15 @@
 #define KEYBUF 64
 #define BTNBUF 16
 
-/* events (function 10, 11, 23 return these numbers) */
+/* events (function 10, 11, 23 return these numbers); EV_SYSTEM is
+ * KolibriOS for ARM's own, beyond KolibriOS's list (its mask bit 10,
+ * 0x400, never in the default mask): the system changed, for the shells
+ * (a window came, went, was activated, minimised or restored; the
+ * display went off or on; a call or a message came or went) */
 enum {
 	EV_REDRAW = 1, EV_KEY = 2, EV_BUTTON = 3, EV_BACKGROUND = 5,
 	EV_MOUSE = 6, EV_IPC = 7, EV_NETWORK = 8, EV_DEBUG = 9,
+	EV_SYSTEM = 11,
 };
 
 enum task_state {
@@ -124,6 +129,7 @@ void schedule(void);
 struct task *task_alloc(void);
 void task_exit(struct task *t);
 void task_post_event(struct task *t, int ev);
+void notify_system(void);           /* EV_SYSTEM to the tasks that asked for it */
 int task_take_event(struct task *t); /* 0: none in the mask */
 void wake_waiters(void);
 

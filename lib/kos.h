@@ -197,6 +197,17 @@ static inline struct kos_r2 kos_read_folder(const char *path, void *buf, u32 fir
 	return kos_call2(70, (u32)&fi, 0, 0, 0, 0);
 }
 
+/* KolibriOS for ARM's own: event 11 (mask bit 10, never in the default
+ * mask), the system changed: a window came, went, was activated,
+ * minimised or restored; the display went off or on; a call or a
+ * message came or went (the shells wait for it instead of looking every
+ * 250 ms); function 102.0, the system's state: KOS_SYS_DISPLAY_OFF while
+ * the display is off (the Pro1X's standby) */
+enum { KOS_EV_SYSTEM = 11 };
+#define EVM_SYSTEM 0x400
+#define KOS_SYS_DISPLAY_OFF 1
+static inline u32 kos_system_state(void) { return kos_call(102, 0, 0, 0, 0, 0); }
+
 /* threads (51), IPC (60), named shared memory (68.22, 68.23), libraries
  * (68.19): KolibriOS's functions (docs/threads.md) */
 enum { KOS_EV_IPC = 7 };

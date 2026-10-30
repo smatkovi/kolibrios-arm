@@ -76,7 +76,7 @@ static u32 pending(struct task *t)
 
 int task_take_event(struct task *t)
 {
-	u32 e = pending(t) & t->event_mask & 0x3ff;
+	u32 e = pending(t) & t->event_mask & 0x7ff;
 	if (!e) return 0;
 	int ev = __builtin_ctz(e) + 1;
 	/* key and button stay while their buffers hold something */
@@ -91,6 +91,16 @@ void task_post_event(struct task *t, int ev)
 	/* key and button come from their buffers (pending()) */
 	if (ev == EV_KEY || ev == EV_BUTTON) return;
 	t->events |= 1u << (ev - 1);
+}
+
+/* EV_SYSTEM: something a shell shows changed (wm.c, the standby, the
+ * modem); only to the tasks with its bit in their mask, so that a
+ * shell can wait for it instead of looking every 250 ms */
+void notify_system(void)
+{
+	for (int i = 1; i <= task_hi; i++)
+		if (tasks[i].state != T_FREE && (tasks[i].event_mask & 1u << (EV_SYSTEM - 1)))
+			task_post_event(&tasks[i], EV_SYSTEM);
 }
 
 void wake_waiters(void)

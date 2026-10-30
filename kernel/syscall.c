@@ -619,6 +619,18 @@ void syscall(struct task *t)
 		sys_modem(t, r);
 		return;
 	}
+	case 102:                              /* KolibriOS for ARM: the system's state */
+		if (EBX == 0) {                    /* bit 0: the display is off (the standby) */
+#ifdef __aarch64__
+			extern bool power_standby;
+			EAX = power_standby ? 1 : 0;
+#else
+			EAX = 0;
+#endif
+		} else {
+			EAX = -1;
+		}
+		return;
 #ifdef __aarch64__
 	case 101: {                            /* KolibriOS for ARM: Linux programs */
 		extern void sys_linux(struct task *t, u32 *r);

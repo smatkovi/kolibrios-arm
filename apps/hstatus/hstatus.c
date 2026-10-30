@@ -1,7 +1,7 @@
 /* @hstatus: the status menu of the Hildon shell (apps/hildon), below its
  * status area: the date and time, the battery, the memory, how long the
  * system runs. A tap on it, Escape, or another window taken to the front
- * closes it. */
+ * closes it (the kernel's EV_SYSTEM says when that happens: no polling). */
 #include "kos.h"
 
 #define BAR 56
@@ -54,9 +54,10 @@ int main(void)
 	int self = kos_call(18, 21, *(u32 *)(info + 30), 0, 0, 0);
 	draw(sw);
 	kos_set_zpos(KOS_ZPOS_ALWAYS_TOP);
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	kos_activate_slot(self);
 	for (;;) {
-		int ev = kos_wait_event_timeout(20);
+		int ev = kos_wait_event();
 		if (ev == KOS_EV_REDRAW) draw(sw);
 		else if (ev == KOS_EV_BUTTON) { kos_get_button(); kos_exit(); }
 		else if (ev == KOS_EV_KEY) {

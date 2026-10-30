@@ -168,7 +168,12 @@ static u32 wdt_every = 100, wdt_next;  /* ticks: the feeding interval, the next 
 /* first thing (the probe, MMU off): kept running, or started */
 static void wdt_start(void)
 {
-	if (!wdt) return;
+	/* none (QEMU): nothing to feed, a look every 10 s as on the phone
+	 * (the lifetime, the power test's battery samples) */
+	if (!wdt) {
+		wdt_every = 1000;
+		return;
+	}
 	addr_t w = io_va(wdt);
 	wdt_was_running = rd32(w + WDT_EN) & 1;
 	wr32(w + WDT_RST, 1);
@@ -1537,8 +1542,7 @@ static void standby_enter(const char *why)
 	mpm_key_wakes = mpm_spmi_wakes = 0;
 	kprintf("pro1x: standby (%s)\n", why);
 	display_power(false);
-	extern bool power_standby;
-	power_standby = true;
+	power_set_standby(true);
 	if (!soc_sleep_on) soc_sleep_start();
 	if (keytest) keytest_at = ticks + keytest * 100;
 }
@@ -1547,8 +1551,7 @@ static void standby_leave(const char *why)
 {
 	if (!standby) return;
 	standby = false;
-	extern bool power_standby;
-	power_standby = false;
+	power_set_standby(false);
 	kprintf("pro1x: awake (%s) after %u s; MPM wake-ups: %u by keys, %u by the SPMI arbiter\n", why,
 		(ticks - standby_since) / 100, mpm_key_wakes, mpm_spmi_wakes);
 	if (display_off) display_power(true);

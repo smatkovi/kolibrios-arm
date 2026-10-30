@@ -69,6 +69,16 @@ static int changed(void)
 	return 0;
 }
 
+/* the windows' changes come with the kernel's EV_SYSTEM; a timeout only
+ * for the clock's next minute (none while the display is off) */
+static u32 next_wait(void)
+{
+	if (kos_system_state() & KOS_SYS_DISPLAY_OFF) return 0;
+	u32 t = kos_time();
+	u32 s = ((t >> 20) & 0xf) * 10 + ((t >> 16) & 0xf);
+	return (60 - (s < 60 ? s : 59)) * 100;
+}
+
 int main(void)
 {
 	kos_screen_size(&sw, &sh);
@@ -77,8 +87,10 @@ int main(void)
 	self_slot = kos_call(18, 21, pid, 0, 0, 0);
 	scan();
 	draw();
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	for (;;) {
-		int ev = kos_wait_event_timeout(50);
+		u32 w = next_wait();
+		int ev = w ? kos_wait_event_timeout(w) : kos_wait_event();
 		switch (ev) {
 		case KOS_EV_REDRAW:
 			scan();
@@ -92,6 +104,7 @@ int main(void)
 				kos_activate_slot(id - BTN_SLOT);
 			break;
 		}
+		case KOS_EV_SYSTEM:
 		case 0:
 			scan();
 			if (changed()) draw();

@@ -74,6 +74,20 @@ static int call_now(u32 *id)
 	}
 }
 
+/* a call or a message came, changed or went, the modem's state:
+ * EV_SYSTEM for the shells (the Hildon shell rings, counts the unread) */
+static void notify_changes(void)
+{
+	static u32 shown_call, shown_sms, shown_state;
+	static struct kos_modem m;
+	modem_status(&m);
+	if (m.call_seq == shown_call && m.sms_seq == shown_sms && m.state == shown_state) return;
+	shown_call = m.call_seq;
+	shown_sms = m.sms_seq;
+	shown_state = m.state;
+	notify_system();
+}
+
 void kmodem_tick(void)
 {
 	if (!modem_present()) return;
@@ -83,6 +97,7 @@ void kmodem_tick(void)
 	u32 id;
 	int call = call_now(&id);
 	callaudio_poll(ms, call, id);
+	notify_changes();
 }
 
 /* the modem's interrupt (its GLINK edge): from now on what it sends

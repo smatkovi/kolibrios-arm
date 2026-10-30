@@ -64,6 +64,7 @@ u32 power_test_minutes(void);          /* kolibri.powertest=N, 0 */
 void power_hold_awake(u32 until_tick);
 bool power_soc_sleep_ok(void);
 extern bool power_standby;             /* the display off: timer slack */
+void power_set_standby(bool on);       /* ... and EV_SYSTEM to the shells */
 
 /* kernel/arch/arm64/psci.c: the CPU's idle states */
 void psci_probe(void);                 /* powerdt.c's findings, MMU off */

@@ -1237,6 +1237,25 @@ static void on_button(u32 id)
 	else if (id >= B_CHAT && id < B_CHAT + MAXCHATS) open_at(id - B_CHAT);
 }
 
+/* the backend's lines come with event 8 (function 101's pipe); the
+ * time is looked at only for what ends by itself: the open chat's
+ * "typing..." (shown until typing_until), the chats saved 3 s after a
+ * change. 0: no timeout */
+static u32 next_wait(void)
+{
+	u32 now = kos_uptime(), n = 0;
+	if (open_chat >= 0 && chats[open_chat].typing_until) {
+		s32 d = (s32)(chats[open_chat].typing_until - now);
+		if (d > 0) n = (u32)d + 1;
+	}
+	if (dirty) {
+		s32 d = (s32)(saved_at + 301 - now);
+		u32 s = d > 0 ? (u32)d : 1;
+		if (!n || s < n) n = s;
+	}
+	return n;
+}
+
 int main(const char *params)
 {
 	json_init(&J, jn, sizeof(jn) / sizeof(jn[0]), jsb, sizeof(jsb));
@@ -1254,7 +1273,8 @@ int main(const char *params)
 	draw();
 	u32 shown_typing = 0;
 	for (;;) {
-		int ev = kos_wait_event_timeout(50);
+		u32 w = next_wait();
+		int ev = w ? kos_wait_event_timeout(w) : kos_wait_event();
 		bool redraw = ev == KOS_EV_REDRAW;
 		if (ev == KOS_EV_KEY) on_key(kos_get_key()), redraw = true;
 		else if (ev == KOS_EV_BUTTON) on_button(kos_get_button() >> 8), redraw = true;

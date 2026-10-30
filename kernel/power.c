@@ -28,6 +28,15 @@ void (*plat_power_report)(int when);
  * on a grid of a second (sched_next_work) */
 bool power_standby;
 
+/* the standby begins or ends (the display off, on): the timer slack,
+ * and EV_SYSTEM for the shells (no clock to keep while it is off) */
+void power_set_standby(bool on)
+{
+	if (power_standby == on) return;
+	power_standby = on;
+	notify_system();
+}
+
 u32 power_test_minutes(void)
 {
 	return minutes;

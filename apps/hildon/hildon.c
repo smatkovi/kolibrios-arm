@@ -21,7 +21,14 @@
  * keys, Enter and Escape work in the grids. The status area opens
  * @hstatus. The icons are drawn here, simple shapes. With a keyboard only:
  * Enter at home opens the launcher, typing a program's name there chooses
- * it, Enter starts it. */
+ * it, Enter starts it.
+ *
+ * It waits for events, not for time: the kernel's EV_SYSTEM (lib/kos.h)
+ * says that a window came, went or was activated, that the display went
+ * off or on, that a call or a message came; a timeout only for the
+ * clock's next minute while the display is on (none while it is off, nor
+ * in the launcher and the task switcher, which do not redraw for it) and
+ * for an application asked to close. */
 #include "kos.h"
 #include "kos_modem.h"
 
@@ -80,7 +87,7 @@ static u32 shown_time;
 
 /* the modem (function 100): an incoming call starts the phone */
 static struct kos_modem modem;
-static u32 modem_tick, modem_unread_shown;
+static u32 modem_unread_shown;
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -635,8 +642,6 @@ static u8 seen[256];        /* by slot (the kernel has up to 255) */
 
 static void watch_modem(void)
 {
-	if (kos_uptime() - modem_tick < 100) return;
-	modem_tick = kos_uptime();
 	if (kos_call(100, KOS_MODEM_STATUS, (u32)&modem, 0, 0, 0) != 0) return;
 	struct kos_call c;
 	kos_call(100, KOS_MODEM_CALL, (u32)&c, 0, 0, 0);
@@ -785,6 +790,27 @@ static void button(u32 id)
 	}
 }
 
+/* how long to wait for the next event (function 23's ticks; 0: function
+ * 10, no timeout): the clock's next minute while the display is on and
+ * the clock shown (function 3: 0x00SSMMHH in BCD; woken at most a second
+ * after the minute's start, never before it), the close asked of an
+ * application (2 s) */
+static u32 next_wait(void)
+{
+	u32 n = 0;
+	if (!(kos_system_state() & KOS_SYS_DISPLAY_OFF) && mode != SWITCHER && mode != LAUNCHER) {
+		u32 t = kos_time();
+		u32 s = ((t >> 20) & 0xf) * 10 + ((t >> 16) & 0xf);
+		n = (60 - (s < 60 ? s : 59)) * 100;
+	}
+	if (closing > 0) {                     /* (below 0: its second close ends it, no timer) */
+		s32 c = (s32)(closing_tick + 201 - kos_uptime());
+		u32 cn = c > 1 ? (u32)c : 1;
+		if (!n || cn < n) n = cn;
+	}
+	return n;
+}
+
 /* params: "launcher" or "switcher" opens that view at the start (tests
  * without input) */
 int main(const char *params)
@@ -807,7 +833,7 @@ int main(const char *params)
 		if (apps[i].slot < 256) seen[apps[i].slot] = 1;
 	draw();
 	kos_set_zpos(KOS_ZPOS_ALWAYS_TOP);
-	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_MOUSE);
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_MOUSE | EVM_SYSTEM);
 	kos_activate_slot(self_slot);
 	if (params && !strcmp(params, "launcher")) go(LAUNCHER);
 	else if (params && !strcmp(params, "switcher")) go(SWITCHER);
@@ -817,7 +843,8 @@ int main(const char *params)
 		go(APP);
 	}
 	for (;;) {
-		int ev = kos_wait_event_timeout(25);
+		u32 w = next_wait();
+		int ev = w ? kos_wait_event_timeout(w) : kos_wait_event();
 		switch (ev) {
 		case KOS_EV_REDRAW:
 			draw();
@@ -834,9 +861,11 @@ int main(const char *params)
 				if (dz) { scroll_rows(dz > 0 ? 1 : -1); draw(); }
 			}
 			break;
+		case KOS_EV_SYSTEM:
 		case 0:
 			follow();
-			if ((kos_time() & 0xffff) != shown_time && mode != SWITCHER && mode != LAUNCHER)
+			if ((kos_time() & 0xffff) != shown_time && mode != SWITCHER && mode != LAUNCHER &&
+			    !(kos_system_state() & KOS_SYS_DISPLAY_OFF))
 				draw();
 			break;
 		}
