@@ -3,7 +3,8 @@
 #  crypto:  SHA-1, HMAC, PBKDF2, the PRF, AES, the key wrap (crypto.c)
 #  regd:    the regulatory domain: ath's EEPROM codes, the channels (regd.c)
 #  station: the whole driver against a simulated WCN3990 and access point,
-#           with lwIP above it (station.c): stages 4-6, three scenarios
+#           with lwIP above it (station.c): stages 4-6, HT/WMM, power save;
+#           scenarios normal (HT40, WMM), legacy, uapsd, wrongpsk, noap
 #  qemu:    the kernel's side in QEMU (qemu.py): the Pro1X's tree with a
 #           Wi-Fi node of RAM, the fake modem's WLFW, the network from the
 #           initrd: WLAN_CFG, WLAN_MODE, the engines, waiting for READY
@@ -24,6 +25,8 @@ all: test crypto regd station
 	./crypto
 	./regd
 	./station
+	./station legacy
+	./station uapsd
 	./station wrongpsk
 	./station noap
 

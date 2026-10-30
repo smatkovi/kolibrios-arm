@@ -285,6 +285,38 @@ static const char *ssid = "KolibriNet", *passphrase = "correct horse battery";
 static const u8 rsn_ccmp[] = { 48, 20, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 2, 0x0c, 0 };
 static const u8 rsn_tkip[] = { 48, 20, 1, 0, 0x00, 0x0f, 0xac, 2, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 2, 0, 0 };
 
+/* the AP "KolibriNet"'s 802.11n and WMM: HT40 above channel 6 (or HT20,
+ * or none), WMM with hostapd's default parameters, U-APSD, admission
+ * control on VO */
+static struct { bool ht, ht40, wmm, uapsd, acm_vo; } apc;
+#define AP_HT_CAP 0x116f                /* LDPC, 20/40, SM PS off, short GI 20/40, RX STBC 1, DSSS/CCK in 40 */
+
+static u32 ap_ies(u8 *f)
+{
+	u32 n = 0;
+	if (apc.ht) {
+		u8 h[28] = { 45, 26 };
+		put16(h + 2, AP_HT_CAP);
+		h[4] = 0x17;                    /* A-MPDU 64K, density 4 us */
+		h[5] = 0xff, h[6] = 0xff;       /* MCS 0-15 */
+		h[5 + 12] = 0x01;               /* TX MCS set defined */
+		memcpy(f + n, h, 28);
+		n += 28;
+		u8 o[24] = { 61, 22, 6, (u8)(apc.ht40 ? 0x05 : 0x00) };
+		memcpy(f + n, o, 24);
+		n += 24;
+	}
+	if (apc.wmm) {
+		/* hostapd's defaults: BE AIFSN 3 CW 4/10, BK 7 4/10, VI 2 3/4 TXOP
+		 * 94, VO 2 2/3 TXOP 47 */
+		u8 w[26] = { 221, 24, 0x00, 0x50, 0xf2, 2, 1, 1, (u8)((apc.uapsd ? 0x80 : 0) | 1), 0,
+			     0x03, 0xa4, 0, 0, 0x27, 0xa4, 0, 0, 0x42, 0x43, 94, 0, (u8)(0x62 | (apc.acm_vo ? 0x10 : 0)), 0x32, 47, 0 };
+		memcpy(f + n, w, 26);
+		n += 26;
+	}
+	return n;
+}
+
 static struct {
 	u8 sta[6];
 	bool authed, assoced, keys;
@@ -295,6 +327,9 @@ static struct {
 	u32 sta_ie_len;
 	int msg;                            /* the next 4-way message the AP waits for */
 	u32 m1_tries;
+	u8 assoc_ht[28], assoc_wmm[9];
+	bool assoc_had_ht, assoc_had_wmm;
+	u32 assoc_rates;
 	u32 arp_requests, bad_mic, m2, m4, group2, dhcp_discover, dhcp_request, arp_replies, echo_replies, decrypt_fail, frames;
 	bool rekey_sent, rekey_done, arp_after_rekey, deauth_sent;
 	u32 eapol_at;
@@ -536,7 +571,7 @@ static void arp_out(u16 op, const u8 *tmac, const u8 *tip, const u8 *dst)
 	ap_data(dst, ap_mac, 0x0806, a, 28);
 }
 
-static void ping_out(void)
+static void ping_out(u8 tos)
 {
 	u8 ip[64], *i = ip + 20;
 	memset(i, 0, 16);
@@ -546,6 +581,9 @@ static void ping_out(void)
 	u16 c = csum(i, 16);
 	i[2] = c >> 8, i[3] = c & 0xff;
 	ip_hdr(ip, 1, router_ip, sta_ip, 16);
+	ip[1] = tos;
+	u16 c2 = (ip[10] = ip[11] = 0, csum(ip, 20));
+	ip[10] = c2 >> 8, ip[11] = c2 & 0xff;
 	ap_data(ap.sta, ap_mac, 0x0800, ip, 36);
 }
 
@@ -595,12 +633,19 @@ static void ap_rx(const u8 *f, u32 len)
 					memcpy(ap.sta_ie, e, e[1] + 2u);
 					ap.sta_ie_len = e[1] + 2u;
 				}
+				if (e[0] == 45 && e[1] == 26) memcpy(ap.assoc_ht, e, 28), ap.assoc_had_ht = true;
+				if (e[0] == 221 && e[1] == 7 && !memcmp(e + 2, "\x00\x50\xf2\x02\x00\x01", 6))
+					memcpy(ap.assoc_wmm, e, 9), ap.assoc_had_wmm = true;
+				if (e[0] == 1 || e[0] == 50) {
+					for (u32 i = 0; i < e[1]; i++) CHECK(!(e[2 + i] & 0x80), "the association's rates: none basic (%x)", e[2 + i]);
+					ap.assoc_rates += e[1];
+				}
 				e += 2 + e[1];
 			}
 			CHECK(ssid_ok && ap.sta_ie_len == 22, "the association: the SSID, an RSN element");
 			CHECK((get16(f + 24) & 0x0011) == 0x0011, "the association's capabilities: ESS, privacy (%x)", get16(f + 24));
-			u8 b[6] = { 0x11, 0x04, 0, 0, 0x01, 0xc0 };    /* capabilities, status 0, AID 1 */
-			ap_mgmt(0x0010, b, 6);
+			u8 b[128] = { 0x11, 0x04, 0, 0, 0x01, 0xc0 };  /* capabilities, status 0, AID 1 */
+			ap_mgmt(0x0010, b, 6 + ap_ies(b + 6));
 			ap.assoced = true;
 			ap.keys = false;
 			ap.m1_tries = 0;
@@ -664,7 +709,22 @@ static struct {
 	u64 pn;
 	u32 eapol_unencrypted;
 	bool chan_list, regdomain;
+	u32 wmm[4][6], wmm_cmds, ps_param[5], ps_modes[16], nps_modes, auto_trig, smps, dummy, peer_stats;
+	u32 peer_ht_caps, peer_rate_caps, peer_max_mpdu, peer_density, peer_nss, peer_n_ht, vdev_mode, vdev_center;
+	u32 tid_eapol, tid_last_ip, ip_frames, tid_ef;
+	/* power save as the radio does it: with PS on and nothing sent for the
+	 * inactivity time it dozes; the AP keeps unicast frames for it, they
+	 * come with the next beacon's TIM (every 100 TU here) */
+	u32 last_tx, tim_held, tim_delivered;
+	struct { u8 f[2048]; u32 len; } tim_q[8];
+	u32 ntim;
 } fw;
+
+static bool fw_dozing(void)
+{
+	return fw.nps_modes && fw.ps_modes[fw.nps_modes - 1] == WMI_STA_PS_MODE_ENABLED && fw.up &&
+	       now - fw.last_tx > fw.ps_param[WMI_STA_PS_PARAM_INACTIVITY_TIME];
+}
 
 static void fw_send(u32 pipe, u8 eid, const u8 *payload, u32 len, bool credit)
 {
@@ -702,7 +762,10 @@ static void fw_service_ready(void)
 	put32(e + 8, WMI_TLV_ABI_VER1);
 	put32(e + 12, WMI_TLV_ABI_VER_NS0);
 	put32(e + 16, WMI_TLV_ABI_VER_NS1);
-	put32(e + 28 + 8, 2);
+	put32(e + 28 + 8, 2);                   /* two RF chains */
+	/* HT: enabled, short GI 20/40, dynamic SMPS, TX STBC, RX STBC 1, LDPC */
+	put32(e + 28 + 12, IS("legacy") ? 0 : WMI_HT_CAP_ENABLED | WMI_HT_CAP_HT20_SGI | WMI_HT_CAP_HT40_SGI |
+	      WMI_HT_CAP_DYNAMIC_SMPS | WMI_HT_CAP_TX_STBC | 0x10 | WMI_HT_CAP_LDPC);
 	put32(e + 28 + 44, 2);
 	put32(e + 28 + 48, 64);
 	p += 4 + WMI_SVC_RDY_LEN;
@@ -714,6 +777,7 @@ static void fw_service_ready(void)
 	put32(p + 4 + 4 * 3, 1u << 1);          /* WOW (13) */
 	put32(p + 4 + 4 * 16, 1u << 1);         /* RX_FULL_REORDER (65) */
 	if (fw.mgmt_wmi) put32(p + 4 + 4 * 19, 1u << 0);   /* MGMT_TX_WMI (76) */
+	put32(p + 4 + 4 * 6, 1u << 3);          /* STA_UAPSD_BASIC_AUTO_TRIG (27) */
 	p += 4 + 128;
 	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_STRUCT, 2 * (4 + WMI_MEM_REQ_LEN));
 	p += 4;
@@ -733,7 +797,7 @@ static u32 beacon_status;               /* MGMT_RX's status of the next beacon *
 
 static void fw_beacon(const u8 *bssid, const char *s, u32 chan, const u8 *rsn, u32 rsn_len, u32 snr)
 {
-	u8 f[256];
+	u8 f[512];
 	memset(f, 0, sizeof(f));
 	put16(f, 0x0080);
 	memcpy(f + 4, bcast, 6);
@@ -752,7 +816,8 @@ static void fw_beacon(const u8 *bssid, const char *s, u32 chan, const u8 *rsn, u
 	n += sizeof(rates);
 	memcpy(f + n, rsn, rsn_len);
 	n += rsn_len;
-	u8 m[512], *p = m;
+	if (!memcmp(bssid, ap_mac, 6)) n += ap_ies(f + n);
+	u8 m[768], *p = m;
 	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_MGMT_RX_HDR, WMI_MGMT_RX_LEN);
 	memset(p + 4, 0, WMI_MGMT_RX_LEN);
 	put32(p + 4, chan);
@@ -856,7 +921,12 @@ static void fw_data_rx(const u8 *f, u32 len)
 static void fw_from_air(const u8 *f, u32 len)
 {
 	if ((get16(f) & 0x000c) == 0) fw_mgmt_rx(f, len);
-	else fw_data_rx(f, len);
+	else if (fw_dozing() && !(f[4] & 1) && fw.ntim < 8) {
+		/* buffered at the AP for the dozing station */
+		memcpy(fw.tim_q[fw.ntim].f, f, len);
+		fw.tim_q[fw.ntim++].len = len;
+		fw.tim_held++;
+	} else fw_data_rx(f, len);
 }
 
 /* a frame from the host: encrypted (its Protected bit, the installed
@@ -864,6 +934,7 @@ static void fw_from_air(const u8 *f, u32 len)
 static void fw_to_air(const u8 *f, u32 len)
 {
 	u8 e[2048];
+	fw.last_tx = now;
 	if ((get16(f) & 0x000c) == 0x0008 && (get16(f) & 0x4000)) {
 		CHECK(fw.tk_set, "a protected frame only with the pairwise key installed");
 		if (!fw.tk_set) return;
@@ -906,7 +977,8 @@ static void fw_wmi(const u8 *c, u32 len)
 	}
 	case WMI_TLV_PDEV_SET_PARAM_CMDID:
 		CHECK(tag == WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD && get32(v) == 0, "PDEV_SET_PARAM's tag, pdev 0");
-		fw.pdev_params++;
+		if (get32(v + 4) == WMI_TLV_PDEV_PARAM_PEER_STATS_INFO_ENABLE) fw.peer_stats++;
+		else fw.pdev_params++;
 		break;
 	case WMI_TLV_SCAN_CHAN_LIST_CMDID: {
 		/* the regulatory domain: the world domain 0x6c with AT on top
@@ -944,7 +1016,26 @@ static void fw_wmi(const u8 *c, u32 len)
 		      "VDEV_CREATE: a station, our MAC (READY's, or a random local one when it has none)");
 		fw.vdev = true;
 		break;
-	case WMI_TLV_STA_POWERSAVE_PARAM_CMDID: case WMI_TLV_STA_POWERSAVE_MODE_CMDID:
+	case WMI_TLV_STA_POWERSAVE_PARAM_CMDID:
+		CHECK(tag == WMI_TLV_TAG_STRUCT_STA_POWERSAVE_PARAM_CMD && get32(v) == 0 && get32(v + 4) < 5, "STA_POWERSAVE_PARAM");
+		if (get32(v + 4) < 5) fw.ps_param[get32(v + 4)] = get32(v + 8);
+		break;
+	case WMI_TLV_STA_POWERSAVE_MODE_CMDID:
+		CHECK(tag == WMI_TLV_TAG_STRUCT_STA_POWERSAVE_MODE_CMD && get32(v) == 0, "STA_POWERSAVE_MODE");
+		if (fw.nps_modes < 16) fw.ps_modes[fw.nps_modes++] = get32(v + 4);
+		break;
+	case WMI_TLV_VDEV_SET_WMM_PARAMS_CMDID:
+		CHECK(tag == WMI_TLV_TAG_STRUCT_VDEV_SET_WMM_PARAMS_CMD && tl == WMI_VDEV_WMM_LEN && get32(v) == 0, "VDEV_SET_WMM_PARAMS: 116 bytes");
+		for (int i = 0; i < 4; i++)
+			for (int j = 0; j < 6; j++) fw.wmm[i][j] = get32(v + 4 + 28 * i + 4 + 4 * j);
+		fw.wmm_cmds++;
+		break;
+	case WMI_TLV_STA_UAPSD_AUTO_TRIG_CMDID:
+		CHECK(get32(v + 12) == 1 && get16(v + WMI_UAPSD_TRIG_LEN + 2) == WMI_TLV_TAG_ARRAY_STRUCT &&
+		      get16(v + WMI_UAPSD_TRIG_LEN + 6) == WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_PARAM &&
+		      get32(v + WMI_UAPSD_TRIG_LEN + 8 + 8) == 0 && get32(v + WMI_UAPSD_TRIG_LEN + 8 + 12) == 0xffffffffu,
+		      "STA_UAPSD_AUTO_TRIG: one AC, the auto trigger off");
+		fw.auto_trig++;
 		break;
 	case WMI_TLV_START_SCAN_CMDID: {
 		CHECK(fw.vdev && !fw.vdev_started, "a scan on the created vdev, not started");
@@ -965,8 +1056,10 @@ static void fw_wmi(const u8 *c, u32 len)
 	case WMI_TLV_VDEV_START_REQUEST_CMDID: {
 		const u8 *ch = v + WMI_VDEV_START_LEN + WMI_TLV_HDR;
 		fw.vdev_freq = get32(ch);
-		CHECK(get32(v + 8) == 100 && get32(v + 12) == 1 && get32(ch + 12) == MODE_11G && ch[17] == 40,
-		      "VDEV_START: beacon 100, DTIM 1, 11g, no flags (a station's), 20 dBm");
+		fw.vdev_mode = get32(ch + 12);
+		fw.vdev_center = get32(ch + 4);
+		CHECK(get32(v + 8) == 100 && get32(v + 12) == 1 && fw.vdev_mode <= MODE_11NG_HT40 && ch[17] == 40,
+		      "VDEV_START: beacon 100, DTIM 1, a mode alone (no flags: a station's), 20 dBm (%x)", fw.vdev_mode);
 		fw.vdev_started = true;
 		wmi_put_tlv(m, WMI_TLV_TAG_STRUCT_VDEV_START_RESPONSE_EVENT, WMI_VDEV_START_RESP_LEN);
 		memset(m + 4, 0, WMI_VDEV_START_RESP_LEN);
@@ -1013,8 +1106,20 @@ static void fw_wmi(const u8 *c, u32 len)
 		fw.peer_aid = get32(v + 16);
 		fw.peer_phymode = get32(v + 56);
 		fw.peer_nrates = get32(v + 68);
-		CHECK(!memcmp(v, ap_mac, 6) && get32(v + 12) == 1 && get32(v + 28) == 1 && get32(v + 48) == 1,
-		      "PEER_ASSOC: the AP, new, listen interval 1, one stream");
+		fw.peer_ht_caps = get32(v + 32);
+		fw.peer_max_mpdu = get32(v + 36);
+		fw.peer_density = get32(v + 40);
+		fw.peer_rate_caps = get32(v + 44);
+		fw.peer_nss = get32(v + 48);
+		fw.peer_n_ht = get32(v + 72);
+		{
+			/* the HT rates' array after the legacy rates' */
+			const u8 *t = v + WMI_PEER_ASSOC_LEN + WMI_TLV_HDR + ((fw.peer_nrates + 3) & ~3u);
+			CHECK(get16(t) == ((fw.peer_n_ht + 3) & ~3u) && get16(t + 2) == WMI_TLV_TAG_ARRAY_BYTE &&
+			      (!fw.peer_n_ht || (t[4] == 0 && t[4 + fw.peer_n_ht - 1] == fw.peer_n_ht - 1)), "PEER_ASSOC: the HT rates' array");
+		}
+		CHECK(!memcmp(v, ap_mac, 6) && get32(v + 12) == 1 && get32(v + 28) == 1,
+		      "PEER_ASSOC: the AP, new, listen interval 1");
 		{
 			const u8 *r = v + WMI_PEER_ASSOC_LEN + WMI_TLV_HDR;
 			CHECK(r[0] == 0x82 && r[3] == 0x96 && r[4] == 12 && r[11] == 108, "PEER_ASSOC's rates: CCK with bit 7");
@@ -1045,6 +1150,8 @@ static void fw_wmi(const u8 *c, u32 len)
 	}
 	case WMI_TLV_PEER_SET_PARAM_CMDID:
 		if (get32(v + 12) == WMI_TLV_PEER_AUTHORIZE) fw.authorized = get32(v + 16) == 1;
+		if (get32(v + 12) == WMI_TLV_PEER_SMPS_STATE) fw.smps = get32(v + 16) + 1;
+		if (get32(v + 12) == WMI_TLV_PEER_DUMMY_VAR) fw.dummy++;
 		break;
 	case WMI_TLV_VDEV_DOWN_CMDID:
 		fw.up = false;
@@ -1111,6 +1218,15 @@ static void fw_htt_cmd(const u8 *p, u32 len)
 			CHECK(!memcmp(f, p + 1 + HTT_TX_DESC_LEN, flen < 46 ? flen : 46), "the prefetch is the frame's start");
 		}
 		fw.htt_tx_frames++;
+		if (mode == HTT_TX_MODE_NATIVE_WIFI && flen >= 32 + 20) {
+			u32 tid = get16(d + 1) >> 6 & 0x1f;
+			if (f[30] == 0x88 && f[31] == 0x8e) fw.tid_eapol = tid;
+			else if (f[30] == 0x08 && f[31] == 0x00) {
+				fw.ip_frames++;
+				fw.tid_last_ip = tid;
+				if ((f[32 + 1] & 0xfc) == 0xb8) fw.tid_ef = tid;     /* DSCP 46 (EF) */
+			}
+		}
 		fw_to_air(f, flen);
 		m[0] = HTT_T2H_TX_COMPL_IND, m[1] = 0, m[2] = 1, m[3] = 0;
 		put16(m + 4, (u16)id);
@@ -1178,6 +1294,13 @@ static void fw_poll(void)
 			beacon_status = 0;
 		}
 		fw_scan_event(WMI_SCAN_EVENT_COMPLETED);
+	}
+	/* the beacon's TIM: what the AP kept, fetched (PS-Poll or a null
+	 * frame: the firmware's) */
+	if (fw.ntim && now % 100 == 0) {
+		for (u32 i = 0; i < fw.ntim; i++) fw_data_rx(fw.tim_q[i].f, fw.tim_q[i].len);
+		fw.tim_delivered += fw.ntim;
+		fw.ntim = 0;
 	}
 	give_pending();
 }
@@ -1276,6 +1399,13 @@ int main(int argc, char **argv)
 	srand(7);
 	fw.next_eid = 1;
 	fw.mgmt_wmi = !IS("wrongpsk");
+	/* the AP: HT40 with WMM (normal), none of it (legacy), HT20 with
+	 * U-APSD and admission control on VO (uapsd) */
+	apc.ht = !IS("legacy");
+	apc.ht40 = IS("normal");
+	apc.wmm = !IS("legacy");
+	apc.uapsd = !IS("legacy");
+	apc.acm_vo = IS("uapsd");
 	PKCS5_PBKDF2_HMAC_SHA1(passphrase, (int)strlen(passphrase), (const u8 *)ssid, (int)strlen(ssid), 4096, 32, ap.pmk);
 	for (int i = 0; i < 16; i++) ap.gtk[i] = (u8)(0x40 + i), ap.gtk2[i] = (u8)(0x80 + i);
 	/* the engines as Linux left them (indices at 5, swaps on) */
@@ -1290,12 +1420,17 @@ int main(int argc, char **argv)
 	struct wifi_conf c;
 	const char *why;
 	char text[200];
-	snprintf(text, sizeof(text), "# the device test's network\nssid=%s\r\npsk=%s\n", ssid,
-		 IS("wrongpsk") ? "not the passphrase" : passphrase);
+	snprintf(text, sizeof(text), "# the device test's network\nssid=%s\r\npsk=%s\n%s", ssid,
+		 IS("wrongpsk") ? "not the passphrase" : passphrase,
+		 IS("uapsd") ? "uapsd=on\ncountry=AT\n" : IS("legacy") ? "powersave=off\n" : "");
 	CHECK(wifi_conf_parse(text, strlen(text), &c, &why) == 0 && c.ssid_len == 10 && !c.have_bssid, "the configuration file");
 	CHECK(wifi_conf_parse("psk=x\n", 6, &c, &why) == -1, "no SSID: refused (%s)", why);
 	CHECK(wifi_conf_parse("ssid=a\npsk=12345678\nbssid=02:a9:00:00:00:06\n", 44, &c, &why) == 0 && c.have_bssid &&
-	      !memcmp(c.bssid, ap_mac, 6), "a BSSID");
+	      !memcmp(c.bssid, ap_mac, 6) && !strcmp(c.country, "AT") && !c.no_ps && !c.uapsd_queues,
+	      "a BSSID; AT, power save on, no U-APSD by default");
+	CHECK(wifi_conf_parse("ssid=a\npsk=12345678\ncountry=de\n", 32, &c, &why) == -1 &&
+	      wifi_conf_parse("ssid=a\npsk=12345678\ncountry=00\nuapsd=on\npowersave=off\n", 54, &c, &why) == 0 &&
+	      !strcmp(c.country, "00") && c.no_ps && c.uapsd_queues == 0x0f, "country=de refused; 00, uapsd=on, powersave=off");
 	wifi_conf_parse(text, strlen(text), &c, &why);
 	struct wifi_hw h = { { rd, wr, dma_alloc }, dma_alloc32, wlan_enable, now_ms, rnd, rx_eth, on_link };
 	wifi_start(&h, &c);
@@ -1332,12 +1467,63 @@ int main(int argc, char **argv)
 
 	run_until(now + 20000, is_up);
 	CHECK(is_up(), "up (%s)", wifi_state_name(wifi_state()));
+	run_until(now + 100, NULL);             /* the commands of the way up through the firmware */
 	CHECK(fw.inits == 1 && fw.pdev_params == 5 && fw.vdev_freq == 2437 && fw.mgmt_tx == 2 && fw.regdomain,
 	      "INIT, 5 parameters, the regulatory domain, 2437 MHz, auth and assoc by WMI");
 	CHECK(!memcmp(wifi_stats()->bssid, ap_mac, 6), "the CCMP AP: not the TKIP one with more SNR, nor the other SSID, "
 	      "nor a beacon with a CRC error; one with EXT_INFO taken");
-	CHECK(fw.peer_flags == (WMI_TLV_PEER_AUTH | WMI_TLV_PEER_NEED_PTK_4_WAY) && fw.peer_aid == 1 &&
-	      fw.peer_phymode == MODE_11G && fw.peer_nrates == 12, "PEER_ASSOC: auth + 4-way, AID 1, 11g, 12 rates");
+	if (IS("normal")) {
+		/* HT40 above channel 6 (mac80211's chandef, ath10k's vdev and peer) */
+		CHECK(fw.vdev_mode == MODE_11NG_HT40 && fw.vdev_center == 2447, "VDEV_START: 11ng HT40, center 2447 (%u %u)",
+		      fw.vdev_mode, fw.vdev_center);
+		CHECK(ap.assoc_had_ht && get16(ap.assoc_ht + 2) == 0x11ef && ap.assoc_ht[4] == 0x1b && ap.assoc_ht[5] == 0xff &&
+		      ap.assoc_ht[6] == 0xff && ap.assoc_ht[7] == 0 && ap.assoc_ht[5 + 12] == 0x01,
+		      "the association's HT capabilities: ath10k's (LDPC, 20/40, SM PS off, SGI, STBC), 64K/8 us, MCS 0-15 (%x)",
+		      get16(ap.assoc_ht + 2));
+		CHECK(ap.assoc_had_wmm && ap.assoc_wmm[8] == 0 && ap.assoc_rates == 12, "the WMM information element, QoS info 0; 12 rates");
+		CHECK(fw.peer_flags == (WMI_TLV_PEER_AUTH | WMI_TLV_PEER_NEED_PTK_4_WAY | WMI_TLV_PEER_QOS | WMI_TLV_PEER_HT |
+		      WMI_TLV_PEER_40MHZ | WMI_TLV_PEER_LDPC | WMI_TLV_PEER_STBC) && fw.peer_aid == 1 && fw.peer_phymode == MODE_11NG_HT40 &&
+		      fw.peer_nrates == 12, "PEER_ASSOC: auth, 4-way, QoS, HT, 40 MHz, LDPC, STBC; AID 1, 11ng HT40, 12 rates (%x)",
+		      fw.peer_flags);
+		CHECK(fw.peer_ht_caps == AP_HT_CAP && fw.peer_rate_caps == (WMI_RC_HT_FLAG | WMI_RC_CW40_FLAG | WMI_RC_SGI_FLAG |
+		      1u << WMI_RC_RX_STBC_FLAG_S | WMI_RC_DS_FLAG) && fw.peer_max_mpdu == 65535 && fw.peer_density == 4 &&
+		      fw.peer_nss == 2 && fw.peer_n_ht == 16, "PEER_ASSOC's HT: the AP's caps, HT/40/SGI/STBC/2 streams, 64K, 4 us, "
+		      "MCS 0-15 (%x %x)", fw.peer_ht_caps, fw.peer_rate_caps);
+		CHECK(fw.smps == 1 + WMI_PEER_SMPS_PS_NONE && fw.dummy >= 1 && fw.peer_stats >= 1,
+		      "after PEER_ASSOC: SMPS none, peer stats, the dummy peer parameter");
+		/* the AP's WMM parameters (BE, BK, VI, VO as the command has them) */
+		static const u32 want[4][4] = { { 15, 1023, 3, 0 }, { 15, 1023, 7, 0 }, { 7, 15, 2, 3008 }, { 3, 7, 2, 1504 } };
+		bool ok = true;
+		for (int i = 0; i < 4; i++)
+			for (int j = 0; j < 4; j++) ok &= fw.wmm[i][j] == want[i][j];
+		CHECK(ok && fw.wmm_cmds == 8 && fw.auto_trig == 8, "VDEV_SET_WMM_PARAMS: the AP's (BE 15/1023/3, BK 7, VI 7/15/2/3008 us, "
+		      "VO 3/7/2/1504 us), 4 at the start and 4 at the association; the U-APSD auto trigger off (%u %u)", fw.wmm_cmds, fw.auto_trig);
+		CHECK(fw.ps_param[WMI_STA_PS_PARAM_RX_WAKE_POLICY] == WMI_STA_PS_RX_WAKE_POLICY_WAKE &&
+		      fw.ps_param[WMI_STA_PS_PARAM_TX_WAKE_THRESHOLD] == WMI_STA_PS_TX_WAKE_THRESHOLD_ALWAYS &&
+		      fw.ps_param[WMI_STA_PS_PARAM_PSPOLL_COUNT] == WMI_STA_PS_PSPOLL_COUNT_NO_MAX && fw.ps_param[WMI_STA_PS_PARAM_UAPSD] == 0 &&
+		      fw.ps_param[WMI_STA_PS_PARAM_INACTIVITY_TIME] == 102, "power save: PS-Poll (no U-APSD), inactivity 102 ms");
+		CHECK(fw.nps_modes == 2 && fw.ps_modes[0] == WMI_STA_PS_MODE_DISABLED && fw.ps_modes[1] == WMI_STA_PS_MODE_ENABLED &&
+		      wifi_stats()->ps, "power save: off at the vdev's start, on once authorized (%u)", fw.nps_modes);
+		CHECK(fw.tid_eapol == 7, "EAPOL with TID 7 (control port)");
+	} else if (IS("legacy")) {
+		CHECK(fw.vdev_mode == MODE_11G && fw.peer_flags == (WMI_TLV_PEER_AUTH | WMI_TLV_PEER_NEED_PTK_4_WAY) &&
+		      fw.peer_phymode == MODE_11G && fw.peer_nrates == 12 && fw.peer_n_ht == 0 && !ap.assoc_had_ht && !ap.assoc_had_wmm,
+		      "legacy: 11g, no HT, no WMM, auth + 4-way, 12 rates");
+		CHECK(fw.tid_eapol == HTT_TID_NON_QOS && fw.nps_modes == 1 && fw.ps_modes[0] == WMI_STA_PS_MODE_DISABLED,
+		      "legacy: the non-QoS TID; powersave=off: off at the start, never on");
+		static const u32 want[4] = { 15, 1023, 3, 0 };
+		CHECK(fw.wmm[0][0] == want[0] && fw.wmm[0][1] == want[1] && fw.wmm[0][2] == want[2] && fw.wmm[2][0] == 7,
+		      "legacy: the defaults with QoS (mac80211: still enable QoS)");
+	} else {
+		CHECK(fw.vdev_mode == MODE_11NG_HT20 && fw.peer_phymode == MODE_11NG_HT20 && !(fw.peer_flags & WMI_TLV_PEER_40MHZ),
+		      "uapsd: HT20 (no secondary channel)");
+		CHECK(ap.assoc_had_wmm && ap.assoc_wmm[8] == 0x0f, "uapsd: QoS info 0x0f (all ACs, all of the service period)");
+		CHECK(fw.ps_param[WMI_STA_PS_PARAM_UAPSD] == 0xff && fw.ps_param[WMI_STA_PS_PARAM_RX_WAKE_POLICY] ==
+		      WMI_STA_PS_RX_WAKE_POLICY_POLL_UAPSD && fw.ps_param[WMI_STA_PS_PARAM_TX_WAKE_THRESHOLD] ==
+		      WMI_STA_PS_TX_WAKE_THRESHOLD_NEVER && fw.ps_param[WMI_STA_PS_PARAM_PSPOLL_COUNT] == WMI_STA_PS_PSPOLL_COUNT_UAPSD,
+		      "uapsd: all ACs delivery and trigger, RX wake by U-APSD poll, TX never wakes, PS-Poll count 3");
+		CHECK(fw.tid_eapol == 5, "uapsd: EAPOL downgraded from 7 to 5 (admission control on VO)");
+	}
 	CHECK(ap.m2 == 1 && ap.m4 == 1 && ap.bad_mic == 0, "the 4-way handshake at the AP: messages 2 and 4, their MICs right");
 	CHECK(fw.tk_set && !memcmp(fw.tk, ap.ptk + 32, 16), "the installed pairwise key is the AP's TK");
 	CHECK(fw.gtk_set[1] && !memcmp(fw.gtk[1], ap.gtk, 16), "the installed group key 1 is the AP's GTK");
@@ -1352,9 +1538,37 @@ int main(int argc, char **argv)
 	CHECK(ap.dhcp_discover >= 1 && ap.dhcp_request >= 1 && fw.decrypt_fail == 0 && ap.decrypt_fail == 0,
 	      "DISCOVER and REQUEST at the AP (CCMP with the installed key), the broadcast replies decrypted (GTK)");
 
-	ping_out();
+	ping_out(0);
 	run_until(now + 3000, echoed);
 	CHECK(ap.echo_replies == 1, "a ping answered (%u; ARP requests answered %u)", ap.echo_replies, ap.arp_requests);
+	CHECK(fw.tid_last_ip == (IS("legacy") ? HTT_TID_NON_QOS : 0), "the reply's TID: 0 (best effort), non-QoS without WMM");
+	ap.echo_replies = 0;
+	ping_out(0xb8);
+	run_until(now + 3000, echoed);
+	CHECK(ap.echo_replies == 1 && fw.tid_ef == (IS("legacy") ? HTT_TID_NON_QOS : IS("uapsd") ? 5u : 6u),
+	      "an EF ping (DSCP 46): TID 6 (voice), 5 under admission control (%u)", fw.tid_ef);
+	if (IS("normal")) {
+		/* idle: the host looks less often, the radio dozes; a ping then
+		 * comes with the next beacon and is answered */
+		CHECK(wifi_busy() && wifi_poll_ms() == 20, "frames just came: busy, polled every 20 ms");
+		run_until(now + 1500, NULL);
+		CHECK(!wifi_busy() && wifi_poll_ms() == 200, "1.5 s without frames: not busy, every 200 ms (%u)", wifi_poll_ms());
+		run_until(now + 10000, NULL);
+		CHECK(wifi_poll_ms() == 1000 && fw_dozing(), "11.5 s: every second; the radio dozes");
+		ap.echo_replies = 0;
+		u32 held = fw.tim_held;
+		ping_out(0);
+		run_until(now + 3000, echoed);
+		CHECK(ap.echo_replies == 1 && fw.tim_held > held && fw.tim_delivered >= fw.tim_held - fw.ntim,
+		      "a ping to the dozing station: kept by the AP, fetched at the beacon, answered (%u kept)", fw.tim_held - held);
+		CHECK(wifi_busy() && wifi_poll_ms() == 20, "busy again after it");
+	}
+	if (!IS("normal")) {
+		const struct wifi_stats *s = wifi_stats();
+		CHECK(s->tx_done == s->tx_frames && bad_access == 0, "every TX_FRM completed, no access outside the memory");
+		printf("%d passed, %d failed (%s)\n", passed, failed, scenario);
+		return failed != 0;
+	}
 
 	/* the group key handshake: a new GTK (id 2), then an ARP request
 	 * with it: answered only if the new key is in */
@@ -1384,6 +1598,10 @@ int main(int argc, char **argv)
 		run_until(now + 20000, is_up);
 		CHECK(is_up() && links_up == 2 && ap.m4 == 2 && wifi_stats()->restarts == 1, "up again (%s, %d)",
 		      wifi_state_name(wifi_state()), links_up);
+		run_until(now + 100, NULL);
+		CHECK(fw.nps_modes == 5 && fw.ps_modes[2] == WMI_STA_PS_MODE_DISABLED && fw.ps_modes[3] == WMI_STA_PS_MODE_DISABLED &&
+		      fw.ps_modes[4] == WMI_STA_PS_MODE_ENABLED, "power save: off when disconnected, off at the new start, on again (%u)",
+		      fw.nps_modes);
 	}
 
 	const struct wifi_stats *s = wifi_stats();

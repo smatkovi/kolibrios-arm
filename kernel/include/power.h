@@ -45,6 +45,7 @@ struct power_stats {
 	u32 irq_timer, irq_other;
 	u32 st_wfi, st_core, st_cluster;   /* the idle states entered */
 	u32 st_fail;                       /* CPU_SUSPEND refused */
+	u32 st_held;                       /* the SoC's sleep held off (power_hold_awake): a shallower state */
 	u32 resumed;                       /* back through cpu_resume (suspend.S) */
 	u32 why[WHY_N];                    /* the deadlines that woke it, by who */
 	u16 why_task[64];                  /* ... by the task's slot */
@@ -56,6 +57,12 @@ void power_init(void);                 /* the command line */
 void power_tick(void);                 /* from the tick */
 u32 power_next(void);
 u32 power_test_minutes(void);          /* kolibri.powertest=N, 0 */
+/* a device whose interrupts must reach the CPU (the Wi-Fi's copy engines
+ * while frames come): the SoC does not sleep before that tick (the
+ * cluster's deepest state, in which the GIC is off and only the MPM's pins
+ * wake it, is left for the next shallower one) */
+void power_hold_awake(u32 until_tick);
+bool power_soc_sleep_ok(void);
 extern bool power_standby;             /* the display off: timer slack */
 
 /* kernel/arch/arm64/psci.c: the CPU's idle states */

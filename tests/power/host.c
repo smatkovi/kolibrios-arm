@@ -70,6 +70,10 @@ static void sm6115(const void *fdt, const char *what)
 	CHECK(param_of(&d, power_dt_choose(&d, 600000000, true, true)) == 0x41000044, "%s: 10 min: collapse", what);
 	CHECK(param_of(&d, power_dt_choose(&d, 600000000, false, true)) == 0x40000003, "%s: 10 min PC: core", what);
 	CHECK(power_dt_choose(&d, 600000000, true, false) < 0, "%s: without the broadcast frame: wfi", what);
+	/* the SoC's sleep held off (power_hold_awake: psci_idle chooses for an
+	 * idle just short of the collapse's residency): GDHS, the GIC on */
+	CHECK(param_of(&d, power_dt_choose(&d, d.st[2].min_us - 1, true, true)) == 0x40000022,
+	      "%s: held awake: GDHS instead of the collapse", what);
 	CHECK(power_dt_powerdown(0x40000003, true) && power_dt_powerdown(0x41000044, true) &&
 	      !power_dt_powerdown(0x00000003, true), "%s: extended power-down bit", what);
 
