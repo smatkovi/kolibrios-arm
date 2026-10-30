@@ -529,11 +529,16 @@ void syscall(struct task *t)
 		return;
 	case 48:
 		switch (EBX) {
-		case 3: {
+		case 3: {                          /* the system colours */
 			u32 *c = uptr(t, ECX, MIN(EDX, 40));
-			static const u32 std[10] = { 0x101820, 0x2c5c9e, 0xd0d8e0, 0x101820, 0xffffff,
-						    0x2c5c9e, 0xffffff, 0x000000, 0x6080a0, 0xe8ecf0 };
-			if (c) memcpy(c, std, MIN(EDX, 40));
+			/* classic: KolibriOS's default skin's (skins/Leency/Shkvorka,
+			 * colors.dtp: taskbar, its text, work dark, light, title,
+			 * work, button, its text, text, graph); Hildon: its dark theme */
+			static const u32 kolibri[10] = { 0x586786, 0xfefefe, 0xc5bdb9, 0xf2efec, 0x333333,
+							 0xddd7cf, 0x7887a6, 0xfefefe, 0x000000, 0x7e7e7e };
+			static const u32 hildon[10] = { 0x101214, 0xffffff, 0x2a2e33, 0x4a5058, 0xffffff,
+							0x1c1f23, 0x3a78c8, 0xffffff, 0xe8ecf0, 0x8a96a3 };
+			if (c) memcpy(c, wm_look == LOOK_HILDON ? hildon : kolibri, MIN(EDX, 40));
 			return;
 		}
 		case 4: EAX = wm_look == LOOK_HILDON ? 0 : SKIN_H; return;
