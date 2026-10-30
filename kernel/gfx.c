@@ -52,19 +52,31 @@ static const char *cursor_img[CUR_H] = {
 };
 static u32 under[CUR_W * CUR_H];
 static int cur_x, cur_y, cur_shown, cur_hidden_depth;
+/* the picture as bits per line (bit x: column x), made once: the
+ * pointer comes and goes around every primitive drawn under it */
+static u16 cur_black[CUR_H], cur_white[CUR_H];
+static bool cur_masks;
 
 static void cursor_draw(void)
 {
-	for (int y = 0; y < CUR_H; y++)
-		for (int x = 0; x < CUR_W; x++) {
-			int sx = cur_x + x, sy = cur_y + y;
-			if (sx >= scr.w || sy >= scr.h) continue;
-			u32 *p = &scr.fb[sy * scr.stride + sx];
-			under[y * CUR_W + x] = *p;
-			char c = cursor_img[y][x];
-			if (c == 'X') *p = 0x000000;
-			else if (c == '.') *p = 0xffffff;
+	if (!cur_masks) {
+		for (int y = 0; y < CUR_H; y++)
+			for (int x = 0; x < CUR_W; x++) {
+				if (cursor_img[y][x] == 'X') cur_black[y] |= 1 << x;
+				if (cursor_img[y][x] == '.') cur_white[y] |= 1 << x;
+			}
+		cur_masks = true;
+	}
+	int n = MIN(CUR_W, scr.w - cur_x);
+	for (int y = 0; y < CUR_H && cur_y + y < scr.h && n > 0; y++) {
+		u32 *p = &scr.fb[(cur_y + y) * scr.stride + cur_x];
+		memcpy(&under[y * CUR_W], p, n * 4);
+		for (u32 m = cur_black[y] | cur_white[y]; m; m &= m - 1) {
+			int x = __builtin_ctz(m);
+			if (x >= n) break;
+			p[x] = cur_black[y] & (1 << x) ? 0x000000 : 0xffffff;
 		}
+	}
 	gfx_dirty(cur_y, cur_y + CUR_H);
 	cur_shown = 1;
 }
@@ -72,12 +84,9 @@ static void cursor_draw(void)
 static void cursor_erase(void)
 {
 	if (!cur_shown) return;
-	for (int y = 0; y < CUR_H; y++)
-		for (int x = 0; x < CUR_W; x++) {
-			int sx = cur_x + x, sy = cur_y + y;
-			if (sx >= scr.w || sy >= scr.h) continue;
-			scr.fb[sy * scr.stride + sx] = under[y * CUR_W + x];
-		}
+	int n = MIN(CUR_W, scr.w - cur_x);
+	for (int y = 0; y < CUR_H && cur_y + y < scr.h && n > 0; y++)
+		memcpy(&scr.fb[(cur_y + y) * scr.stride + cur_x], &under[y * CUR_W], n * 4);
 	gfx_dirty(cur_y, cur_y + CUR_H);
 	cur_shown = 0;
 }
