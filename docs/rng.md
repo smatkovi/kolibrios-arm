@@ -81,7 +81,7 @@ lx: signal-host: getrandom from the kernel's generator, seeded from virtio-rng (
 Linux programs; KolibriOS itself has no function for random numbers, its
 programs seed `rand()` from the time): `EBX` = 1, `ECX` the buffer, `EDX`
 the length (at most 4096); `EAX` the length, or -1 while the generator
-has no seed.
+has no seed. (102.0 is the system's state, docs/threads.md.)
 
 ## The Pro1X: the SoC's PRNG and kexec's seed
 
