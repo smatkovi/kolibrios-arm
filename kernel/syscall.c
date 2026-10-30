@@ -228,6 +228,16 @@ static void heap(struct task *t, u32 *r)
 	case 13:                               /* free: kept (not reused yet) */
 		EAX = 1;
 		return;
+	case 16: {                             /* a driver by name: the serial service (serial.c) */
+		extern u32 serial_load_driver(struct task *t, u32 name_va);
+		EAX = serial_load_driver(t, ECX);
+		return;
+	}
+	case 17: {                             /* a request to it */
+		extern u32 serial_control(struct task *t, u32 ctl_va);
+		EAX = serial_control(t, ECX);
+		return;
+	}
 	default:
 		EAX = -1;
 		return;
@@ -420,7 +430,7 @@ void syscall(struct task *t)
 		case 7: { struct task *a = wm_active(); EAX = a ? a->slot : 0; return; }
 		case 13: {
 			u8 *b = uptr(t, ECX, 16);
-			if (b) { b[0] = KOS_VERSION_MAJOR; b[1] = KOS_VERSION_MINOR; b[2] = 0; b[3] = 0; *(u32 *)(b + 4) = 0; b[8] = 0; *(u32 *)(b + 12) = 0; }
+			if (b) { memset(b, 0, 16); b[0] = KOS_VERSION_MAJOR; b[1] = KOS_VERSION_MINOR; }
 			return;
 		}
 		case 16: EAX = mm_free_kb(); return;
