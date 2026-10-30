@@ -144,9 +144,17 @@
 #define WMI_STA_PS_MODE_DISABLED 0
 #define WMI_STA_PS_PARAM_RX_WAKE_POLICY 0
 #define WMI_STA_PS_RX_WAKE_POLICY_WAKE 0
-#define MODE_11A 0
+#define MODE_11A 0                      /* enum wmi_phy_mode */
 #define MODE_11G 1
 #define MODE_11B 2
+#define MODE_11NA_HT20 4
+#define MODE_11NG_HT20 5
+#define MODE_11NA_HT40 6
+#define MODE_11NG_HT40 7
+#define WMI_CHAN_FLAG_HT40_PLUS 0x40
+#define WMI_CHAN_FLAG_ADHOC_ALLOWED 0x100
+#define WMI_CHAN_FLAG_ALLOW_HT 0x800
+#define WMI_CHAN_FLAG_ALLOW_VHT 0x1000
 #define WMI_CHAN_FLAG_PASSIVE 0x80
 #define WMI_CHAN_FLAG_DFS 0x400
 #define WMI_SCAN_PRIORITY_LOW 1
@@ -258,11 +266,17 @@ bool wmi_service(const struct wmi_svc_ready *s, u32 id);
 /* --- the commands of a station (wmi-tlv.c's ath10k_wmi_tlv_op_gen_*):
  * header and TLVs into o (big enough: see each), their length --------- */
 
-/* a channel (wmi_channel_arg), as ath10k_wmi_put_wmi_channel fills it */
+/* a channel (wmi_channel_arg), as ath10k_wmi_put_wmi_channel fills it:
+ * the scan channel list's (ath10k_update_channel_list: HT and VHT
+ * allowed, IBSS where not NO_IR, passive on NO_IR and radar, HT40+ where
+ * the regulatory domain has it, the radar flag), VDEV_START's
+ * (ath10k_vdev_start_restart for a station: the mode, the frequencies,
+ * the power, no flags) */
 struct wmi_chan {
-	u16 freq;
-	u8 mode;                            /* MODE_11A/G/B */
-	bool passive, dfs;
+	u16 freq, center1;                  /* the primary's, the whole channel's center (band_center_freq1) */
+	u8 mode;                            /* MODE_11A/G/B, MODE_11NA/NG_HT20/HT40 */
+	bool list;                          /* a channel list entry: HT and VHT allowed */
+	bool passive, dfs, ibss, ht40plus;
 	u8 max_power, reg_power;            /* in 0.5 dBm, as Linux's channel max_power * 2 */
 };
 u32 wmi_pdev_set_param(u8 *o, u32 id, u32 value);

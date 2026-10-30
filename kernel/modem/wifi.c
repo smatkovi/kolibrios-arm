@@ -15,6 +15,7 @@
 #include "wlan.h"
 #include "wpa.h"
 #include "crypto.h"
+#include "regd.h"
 
 #define VDEV 0
 #define SCAN_ID 0                       /* ATH10K_SCAN_ID */
@@ -291,23 +292,47 @@ static u8 eapol_pending[512];           /* an EAPOL frame before the association
 static u32 eapol_pending_len;
 static void eapol_in(const u8 *p, u32 len);
 
-/* the channels: 802.11b/g 1-13 and 5 GHz 36-64, 100-140 at EU limits (the
- * regulatory database's "EU": 20 dBm in 2.4 GHz, 23 dBm 5150-5350 MHz, 30
- * dBm 5470-5725, DFS from 5250), passive where DFS */
-static struct wmi_chan chans[13 + 8 + 11];
-static u16 freqs[sizeof(chans) / sizeof(chans[0])];
+/* the regulatory domain (regd.c): the EEPROM's code from SERVICE_READY,
+ * the configured country; the channel list from it */
+static struct regd regd;
+static struct wmi_chan chans[REGD_MAX_CHANS];
+static u16 freqs[REGD_MAX_CHANS];
 static u32 nchan;
 
+/* ath10k_update_channel_list: the enabled channels, passive on NO_IR and
+ * radar, the power in 0.5 dBm */
 static void chans_init(void)
 {
 	nchan = 0;
-	for (u32 c = 1; c <= 13; c++)
-		chans[nchan++] = (struct wmi_chan){ (u16)(2407 + 5 * c), MODE_11G, false, false, 40, 40 };
-	for (u32 c = 36; c <= 64; c += 4)
-		chans[nchan++] = (struct wmi_chan){ (u16)(5000 + 5 * c), MODE_11A, false, c >= 52, 46, 46 };
-	for (u32 c = 100; c <= 140; c += 4)
-		chans[nchan++] = (struct wmi_chan){ (u16)(5000 + 5 * c), MODE_11A, false, true, 60, 60 };
-	for (u32 i = 0; i < nchan; i++) freqs[i] = chans[i].freq;
+	for (u32 i = 0; i < regd.nchan; i++) {
+		const struct regd_chan *c = &regd.ch[i];
+		if (c->flags & REGD_DISABLED) continue;
+		struct wmi_chan *w = &chans[nchan];
+		mzero(w, sizeof(*w));
+		w->freq = w->center1 = c->freq;
+		w->mode = c->freq < 5000 ? MODE_11G : MODE_11A;
+		w->list = true;
+		w->ibss = !(c->flags & REGD_NO_IR);
+		w->ht40plus = !(c->flags & REGD_NO_HT40PLUS);
+		w->dfs = c->flags & REGD_RADAR;
+		w->passive = (c->flags & REGD_NO_IR) || w->dfs;
+		w->max_power = (u8)(c->max_power * 2);
+		w->reg_power = (u8)(c->max_reg_power * 2);
+		freqs[nchan++] = c->freq;
+	}
+}
+
+static void regd_log(void)
+{
+	u32 passive = 0, radar = 0;
+	for (u32 i = 0; i < nchan; i++) {
+		passive += chans[i].passive;
+		radar += chans[i].dfs;
+	}
+	mlog("wifi: regulatory domain: EEPROM %x (%s, ath's \"%s\"), domain %x, CTL %x/%x (2/5 GHz); country %s%s: "
+	     "%u channels, %u passive, %u radar\n", regd.eeprom, regd.world ? "world" : "a country", regd.alpha2,
+	     regd.pair.reg_domain, regd.pair.ctl_2g, regd.pair.ctl_5g, regd.user[0] ? regd.user : "none",
+	     regd.user[0] && !regd.user_found ? " (not in the regulatory database: ignored)" : "", nchan, passive, radar);
 }
 
 static u16 chan_freq(u32 ch)
@@ -345,13 +370,19 @@ static void join(void)
 	print_mac("wifi: joining ", bss.bssid);
 	mlog(" on %u MHz (channel %u, SNR %d, beacon %u TU, DTIM %u)\n", bss.freq, bss.chan, bss.snr, bss.beacon_int,
 	     bss.dtim);
-	struct wmi_chan ch = { bss.freq, bss.freq < 5000 ? MODE_11G : MODE_11A, false, false, 40, 40 };
-	for (u32 i = 0; i < nchan; i++)
-		if (chans[i].freq == bss.freq) ch = chans[i];
-	/* the channel's mode (chan_to_phymode for 20 MHz without HT: 11g in
-	 * 2.4 GHz but channel 14's 11b, 11a in 5 GHz); the BSS's rates count
-	 * for the peer (PEER_ASSOC) */
-	if (bss.freq == 2484) ch.mode = MODE_11B;
+	/* ath10k_vdev_start_restart for a station: the mode, the
+	 * frequencies, the channel's power; no flags. The mode as
+	 * chan_to_phymode for 20 MHz without HT: 11g in 2.4 GHz but 11b on a
+	 * NO_OFDM channel (14), 11a in 5 GHz; the BSS's rates count for the
+	 * peer (PEER_ASSOC) */
+	const struct regd_chan *rc = regd_find(&regd, bss.freq);
+	struct wmi_chan ch;
+	mzero(&ch, sizeof(ch));
+	ch.freq = ch.center1 = bss.freq;
+	ch.mode = bss.freq < 5000 ? MODE_11G : MODE_11A;
+	if (rc && (rc->flags & REGD_NO_OFDM) && bss.freq < 5000) ch.mode = MODE_11B;
+	ch.max_power = rc ? (u8)(rc->max_power * 2) : 40;
+	ch.reg_power = rc ? (u8)(rc->max_reg_power * 2) : 40;
 	u64 pa;
 	u8 *b = msg_new(&pa);
 	if (b) wmi_cmd(b, wmi_vdev_start(b + HTC_HDR_LEN, VDEV, bss.beacon_int, bss.dtim, &ch));
@@ -552,6 +583,14 @@ static void service_ready(const u8 *p, u32 len)
 		fail("no RX full reorder (RX_IN_ORD_PADDR_IND): the ring-order RX path is not done");
 		return;
 	}
+	/* ath10k_mac_register's ath_regd_init (ath10k_mac_init_rd: the
+	 * EEPROM's code, 16 bits): Linux registers no wiphy without it */
+	const char *rwhy;
+	if (regd_init(&regd, svc.eeprom_rd, conf.country, (u16)svc.low_5ghz_chan, (u16)svc.high_5ghz_chan, &rwhy)) {
+		mlog("wifi: regulatory domain %x: %s\n", svc.eeprom_rd & 0xffff, rwhy);
+		fail("no regulatory domain");
+		return;
+	}
 	/* the host memory it wants, below 4 GiB (no
 	 * WMI_SERVICE_SUPPORT_EXTEND_ADDRESS taken): sized as
 	 * ath10k_wmi_event_service_ready_work does for TLV (33 peers, 4 vdevs) */
@@ -609,6 +648,17 @@ static void wmi_event(const u8 *p, u32 len)
 		mcopy(mac, r.mac, 6);
 		print_mac("wifi: READY: the MAC address ", mac);
 		mlog(", ABI %u\n", r.abi_version);
+		/* ath10k_mac_register: "invalid MAC address; choosing random"
+		 * (Linux's log on the phone: its firmware reports none),
+		 * eth_random_addr: unicast, locally administered */
+		bool zero = true;
+		for (int i = 0; i < 6; i++) zero &= mac[i] == 0;
+		if (zero || (mac[0] & 1)) {
+			hw.random(mac, 6);
+			mac[0] = (u8)((mac[0] & 0xfe) | 0x02);
+			print_mac("wifi: invalid MAC address; choosing random ", mac);
+			mlog("\n");
+		}
 		htt_setup();
 		return;
 	}
@@ -746,13 +796,16 @@ static void setup(void)
 		u8 *b = msg_new(&pa);
 		if (b) wmi_cmd(b, wmi_pdev_set_param(b + HTC_HDR_LEN, params[i][0], params[i][1]));
 	}
-	/* ath10k_regd_update: the channel list (pdev_set_regdomain needs
-	 * ath's regulatory tables for the EEPROM's domain: not sent, the
-	 * firmware keeps its own) */
+	/* ath10k_regd_update: the channel list, then the domain pair
+	 * (WMI_UNINIT_DFS_DOMAIN: no CONFIG_ATH10K_DFS_CERTIFIED) */
 	chans_init();
+	regd_log();
 	u64 pa;
 	u8 *b = msg_new(&pa);
 	if (b) wmi_cmd(b, wmi_scan_chan_list(b + HTC_HDR_LEN, chans, nchan));
+	b = msg_new(&pa);
+	if (b) wmi_cmd(b, wmi_pdev_set_rd(b + HTC_HDR_LEN, regd.pair.reg_domain, regd.pair.reg_domain, regd.pair.reg_domain,
+					  regd.pair.ctl_2g, regd.pair.ctl_5g, 0));
 	/* ath10k_add_interface for a station: the vdev, the power save
 	 * parameters; power save off (ath10k_mac_vif_setup_ps, ps disabled) */
 	b = msg_new(&pa);
@@ -1078,6 +1131,7 @@ static int hexd(char c)
 int wifi_conf_parse(const char *t, u32 len, struct wifi_conf *c, const char **why)
 {
 	mzero(c, sizeof(*c));
+	c->country[0] = 'A', c->country[1] = 'T';
 	bool have_ssid = false, have_psk = false;
 	for (u32 i = 0; i < len;) {
 		u32 e = i;
@@ -1102,6 +1156,10 @@ int wifi_conf_parse(const char *t, u32 len, struct wifi_conf *c, const char **wh
 			mcopy(c->psk, v, vl);
 			c->psk[vl] = 0;
 			have_psk = true;
+		} else if (kl == 7 && !crypto_memcmp(k, "country", 7)) {
+			bool ok = vl == 2 && ((v[0] >= 'A' && v[0] <= 'Z' && v[1] >= 'A' && v[1] <= 'Z') || (v[0] == '0' && v[1] == '0'));
+			if (!ok) { *why = "country=XX: two capital letters (ISO 3166), or 00"; return -1; }
+			c->country[0] = v[0], c->country[1] = v[1], c->country[2] = 0;
 		} else if (kl == 5 && !crypto_memcmp(k, "bssid", 5)) {
 			if (vl != 17) { *why = "bssid=aa:bb:cc:dd:ee:ff"; return -1; }
 			for (int j = 0; j < 6; j++) {

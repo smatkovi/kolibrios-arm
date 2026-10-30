@@ -31,6 +31,7 @@ struct wifi_conf {
 	char psk[65];
 	u8 bssid[6];
 	bool have_bssid;
+	char country[3];                    /* the regulatory domain's country: "AT" unless country= says */
 };
 
 struct wifi_hw {
@@ -50,7 +51,8 @@ enum wifi_state {
 };
 
 /* "ssid=NAME" and "psk=PASSPHRASE" (or 64 hex digits) lines, "bssid=
- * aa:bb:cc:dd:ee:ff" optional, '#' comments: 0, or -1 (*why) */
+ * aa:bb:cc:dd:ee:ff" and "country=XX" (ISO 3166 alpha-2, 00: none; AT
+ * by default) optional, '#' comments: 0, or -1 (*why) */
 int wifi_conf_parse(const char *text, u32 len, struct wifi_conf *c, const char **why);
 
 /* after WLFW said the firmware is ready (wlfw.c): the bring-up starts */

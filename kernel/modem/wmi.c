@@ -280,18 +280,18 @@ u32 wmi_pdev_set_rd(u8 *o, u32 rd, u32 rd2g, u32 rd5g, u32 ctl2g, u32 ctl5g, u32
 	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PDEV_SET_RD_LEN;
 }
 
-/* ath10k_wmi_put_wmi_channel for a 20 MHz channel; ath10k_update_channel_list's
- * flags (HT and VHT allowed, IBSS where not passive, passive on DFS) */
+/* ath10k_wmi_put_wmi_channel (20 and 40 MHz) */
 static void put_channel(u8 *ch, const struct wmi_chan *c)
 {
-	u32 flags = 0x800 | 0x1000;             /* WMI_CHAN_FLAG_ALLOW_HT, _ALLOW_VHT */
-	bool passive = c->passive || c->dfs;
-	if (passive) flags |= WMI_CHAN_FLAG_PASSIVE;
-	else flags |= 0x100;                    /* WMI_CHAN_FLAG_ADHOC_ALLOWED */
+	u32 flags = 0;
+	if (c->passive) flags |= WMI_CHAN_FLAG_PASSIVE;
+	if (c->ibss) flags |= WMI_CHAN_FLAG_ADHOC_ALLOWED;
+	if (c->list) flags |= WMI_CHAN_FLAG_ALLOW_HT | WMI_CHAN_FLAG_ALLOW_VHT;
+	if (c->ht40plus) flags |= WMI_CHAN_FLAG_HT40_PLUS;
 	if (c->dfs) flags |= WMI_CHAN_FLAG_DFS;
 	mzero(ch, WMI_CHANNEL_LEN);
 	put32(ch, c->freq);                     /* mhz */
-	put32(ch + 4, c->freq);                 /* band_center_freq1 */
+	put32(ch + 4, c->center1 ? c->center1 : c->freq);   /* band_center_freq1 */
 	put32(ch + 12, c->mode | flags);        /* the mode in the low byte, the flags around it */
 	ch[16] = 0;                             /* min_power */
 	ch[17] = c->max_power;

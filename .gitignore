@@ -9,3 +9,4 @@ tests/messenger/fakepeer/fakepeer
 tests/messenger/json_test
 tests/wifi/crypto
 tests/wifi/station
+tests/wifi/regd

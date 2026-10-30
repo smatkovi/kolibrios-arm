@@ -663,6 +663,7 @@ static struct {
 	u32 scan_until;
 	u64 pn;
 	u32 eapol_unencrypted;
+	bool chan_list, regdomain;
 } fw;
 
 static void fw_send(u32 pipe, u8 eid, const u8 *payload, u32 len, bool credit)
@@ -706,7 +707,7 @@ static void fw_service_ready(void)
 	put32(e + 28 + 48, 64);
 	p += 4 + WMI_SVC_RDY_LEN;
 	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_HAL_REG_CAPABILITIES, WMI_HAL_REG_LEN);
-	put32(p + 4, 0x37);
+	put32(p + 4, 0x406c);                   /* the Pro1X's EEPROM (Linux: "ath: EEPROM regdomain: 0x406c") */
 	put32(p + 4 + 20, 2312), put32(p + 4 + 24, 2732), put32(p + 4 + 28, 4900), put32(p + 4 + 32, 6100);
 	p += 4 + WMI_HAL_REG_LEN;
 	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_UINT32, 128);
@@ -897,7 +898,9 @@ static void fw_wmi(const u8 *c, u32 len)
 		memset(m + 4, 0, WMI_RDY_LEN);
 		put32(m + 4, WMI_TLV_ABI_VER0);
 		put32(m + 8, WMI_TLV_ABI_VER1);
-		memcpy(m + 4 + 24, fw_mac, 6);
+		/* the normal scenario as the phone's firmware: no MAC address
+		 * (Linux: "invalid MAC address; choosing random") */
+		if (!IS("normal")) memcpy(m + 4 + 24, fw_mac, 6);
 		fw_event(WMI_TLV_READY_EVENTID, m, 4 + WMI_RDY_LEN);
 		break;
 	}
@@ -906,18 +909,39 @@ static void fw_wmi(const u8 *c, u32 len)
 		fw.pdev_params++;
 		break;
 	case WMI_TLV_SCAN_CHAN_LIST_CMDID: {
+		/* the regulatory domain: the world domain 0x6c with AT on top
+		 * (tests/wifi/regd.c has the channels one by one) */
 		u32 n = get32(v);
 		const u8 *a = v + 4 + WMI_TLV_HDR;
-		CHECK(n == 32 && get16(v + 4) == n * 28, "the channel list: 32 channels (%u)", n);
-		CHECK(get16(a + 2) == WMI_TLV_TAG_STRUCT_CHANNEL && get32(a + 4) == 2412 && (a[4 + 12] & 0x7f) == MODE_11G &&
-		      a[4 + 17] == 40, "the first channel: 2412 MHz, 11g, 20 dBm");
-		const u8 *l = a + 28 * 31;
-		CHECK(get32(l + 4) == 5700 && (get32(l + 4 + 12) & WMI_CHAN_FLAG_DFS) && (l[4 + 12] & 0x80),
-		      "the last: 5700 MHz, DFS, passive");
+		CHECK(n == 39 && get16(v + 4) == n * 28, "the channel list: 39 channels (%u)", n);
+		u32 f0 = get32(a + 4 + 12);
+		CHECK(get16(a + 2) == WMI_TLV_TAG_STRUCT_CHANNEL && get32(a + 4) == 2412 && (f0 & 0x3f) == MODE_11G &&
+		      a[4 + 17] == 40 && (f0 & (WMI_CHAN_FLAG_ALLOW_HT | WMI_CHAN_FLAG_ALLOW_VHT | WMI_CHAN_FLAG_HT40_PLUS |
+		      WMI_CHAN_FLAG_ADHOC_ALLOWED)) == (WMI_CHAN_FLAG_ALLOW_HT | WMI_CHAN_FLAG_ALLOW_VHT | WMI_CHAN_FLAG_HT40_PLUS |
+		      WMI_CHAN_FLAG_ADHOC_ALLOWED) && !(f0 & WMI_CHAN_FLAG_PASSIVE),
+		      "the first channel: 2412 MHz, 11g, 20 dBm, active, HT and HT40+ (%x)", f0);
+		const u8 *c13 = a + 28 * 12, *c36 = a + 28 * 13, *c52 = a + 28 * 17, *l = a + 28 * 38;
+		CHECK(get32(c13 + 4) == 2472 && (get32(c13 + 16) & WMI_CHAN_FLAG_PASSIVE) && !(get32(c13 + 16) & WMI_CHAN_FLAG_HT40_PLUS),
+		      "13: passive, no HT40+");
+		CHECK(get32(c36 + 4) == 5180 && (c36[4 + 12] & 0x3f) == MODE_11A && (get32(c36 + 16) & WMI_CHAN_FLAG_PASSIVE) &&
+		      !(get32(c36 + 16) & WMI_CHAN_FLAG_DFS) && c36[4 + 17] == 46, "36: 11a, passive, 23 dBm");
+		CHECK(get32(c52 + 4) == 5260 && (get32(c52 + 16) & (WMI_CHAN_FLAG_DFS | WMI_CHAN_FLAG_PASSIVE)) ==
+		      (WMI_CHAN_FLAG_DFS | WMI_CHAN_FLAG_PASSIVE) && c52[4 + 17] == 40, "52: DFS, passive, 20 dBm");
+		CHECK(get32(l + 4) == 5845 && (get32(l + 16) & WMI_CHAN_FLAG_PASSIVE) && !(get32(l + 16) & WMI_CHAN_FLAG_DFS) &&
+		      l[4 + 17] == 26, "the last: 5845 MHz (169), passive, 13 dBm");
+		fw.chan_list = true;
 		break;
 	}
+	case WMI_TLV_PDEV_SET_REGDOMAIN_CMDID:
+		CHECK(tag == WMI_TLV_TAG_STRUCT_PDEV_SET_REGDOMAIN_CMD && fw.chan_list && get32(v + 4) == 0x6c &&
+		      get32(v + 8) == 0x6c && get32(v + 12) == 0x6c && get32(v + 16) == 0xff && get32(v + 20) == 0xff,
+		      "PDEV_SET_REGDOMAIN after the channel list: 0x6c, no CTL");
+		fw.regdomain = true;
+		break;
 	case WMI_TLV_VDEV_CREATE_CMDID:
-		CHECK(get32(v) == 0 && get32(v + 4) == WMI_VDEV_TYPE_STA && !memcmp(v + 12, fw_mac, 6), "VDEV_CREATE: a station, our MAC");
+		CHECK(get32(v) == 0 && get32(v + 4) == WMI_VDEV_TYPE_STA && !memcmp(v + 12, wifi_mac(), 6) &&
+		      (IS("normal") ? (v[12] & 3) == 2 : !memcmp(v + 12, fw_mac, 6)),
+		      "VDEV_CREATE: a station, our MAC (READY's, or a random local one when it has none)");
 		fw.vdev = true;
 		break;
 	case WMI_TLV_STA_POWERSAVE_PARAM_CMDID: case WMI_TLV_STA_POWERSAVE_MODE_CMDID:
@@ -941,7 +965,8 @@ static void fw_wmi(const u8 *c, u32 len)
 	case WMI_TLV_VDEV_START_REQUEST_CMDID: {
 		const u8 *ch = v + WMI_VDEV_START_LEN + WMI_TLV_HDR;
 		fw.vdev_freq = get32(ch);
-		CHECK(get32(v + 8) == 100 && get32(v + 12) == 1 && (ch[12] & 0x7f) == MODE_11G, "VDEV_START: beacon 100, DTIM 1, 11g");
+		CHECK(get32(v + 8) == 100 && get32(v + 12) == 1 && get32(ch + 12) == MODE_11G && ch[17] == 40,
+		      "VDEV_START: beacon 100, DTIM 1, 11g, no flags (a station's), 20 dBm");
 		fw.vdev_started = true;
 		wmi_put_tlv(m, WMI_TLV_TAG_STRUCT_VDEV_START_RESPONSE_EVENT, WMI_VDEV_START_RESP_LEN);
 		memset(m + 4, 0, WMI_VDEV_START_RESP_LEN);
@@ -1307,7 +1332,8 @@ int main(int argc, char **argv)
 
 	run_until(now + 20000, is_up);
 	CHECK(is_up(), "up (%s)", wifi_state_name(wifi_state()));
-	CHECK(fw.inits == 1 && fw.pdev_params == 5 && fw.vdev_freq == 2437 && fw.mgmt_tx == 2, "INIT, 5 parameters, 2437 MHz, auth and assoc by WMI");
+	CHECK(fw.inits == 1 && fw.pdev_params == 5 && fw.vdev_freq == 2437 && fw.mgmt_tx == 2 && fw.regdomain,
+	      "INIT, 5 parameters, the regulatory domain, 2437 MHz, auth and assoc by WMI");
 	CHECK(!memcmp(wifi_stats()->bssid, ap_mac, 6), "the CCMP AP: not the TKIP one with more SNR, nor the other SSID, "
 	      "nor a beacon with a CRC error; one with EXT_INFO taken");
 	CHECK(fw.peer_flags == (WMI_TLV_PEER_AUTH | WMI_TLV_PEER_NEED_PTK_4_WAY) && fw.peer_aid == 1 &&
