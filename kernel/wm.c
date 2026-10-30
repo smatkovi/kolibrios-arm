@@ -15,7 +15,13 @@
  *
  * In Hildon's look (function 48.8) the windows but the plain ones have
  * no frame or title and fill the work area (function 48.6), which the
- * shell's panel leaves free; they do not move. */
+ * shell's panel leaves free; they do not move. A dialog is the
+ * exception: a window first defined by a thread whose process shows
+ * another window already (msgbox's box, t_edit's key words' window:
+ * threads of their program, function 51.1). It keeps its size and place,
+ * fitted into the work area, with the classic frame and title (its
+ * height grows by the title's, which 48.4 gave as 0), and stays above
+ * its program's other windows when one of them is activated. */
 #include "gui.h"
 
 #define ABS(v) ((v) < 0 ? -(v) : (v))
@@ -29,6 +35,7 @@ int mouse_x, mouse_y, mouse_buttons;
 static int mouse_events;              /* function 37.3's event bits */
 
 static int drag_slot, drag_dx, drag_dy;
+static bool dialog[MAX_TASKS];        /* by slot: the window is a dialog (above) */
 static int press_slot = 0, press_idx = -1;
 static u32 press_buttons;
 
@@ -42,10 +49,17 @@ static bool visible(struct task *t)
 	return t->state != T_FREE && t->win.defined && !t->win.minimized;
 }
 
-/* in Hildon's look: maximised in the work area, without frame */
+/* the task of a window (each is a task's: tasks[].win) */
+static const struct task *task_of(const struct window *w)
+{
+	return (const struct task *)((const char *)w - __builtin_offsetof(struct task, win));
+}
+
+/* in Hildon's look: maximised in the work area, without frame (not a
+ * dialog) */
 static bool managed(const struct window *w)
 {
-	return wm_look == LOOK_HILDON && w->style != 1;
+	return wm_look == LOOK_HILDON && w->style != 1 && !dialog[task_of(w)->slot];
 }
 
 /* function 9's +70 bit 0: the Hildon look maximises it */
@@ -70,6 +84,30 @@ static void fit_work_area(struct window *w)
 	w->y = work_y0;
 	w->w = work_x1 - work_x0 + 1;
 	w->h = work_y1 - work_y0 + 1;
+}
+
+/* a window being defined is a dialog if another thread of its process
+ * shows one (defined, not minimised) */
+static bool is_dialog(const struct task *t)
+{
+	if (!t->proc) return false;
+	for (int i = 1; i < MAX_TASKS; i++)
+		if (&tasks[i] != t && tasks[i].proc == t->proc && visible(&tasks[i])) return true;
+	return false;
+}
+
+/* a dialog in Hildon's look: the title's height added (the program sized
+ * it by 48.4's 0), then moved and cut to fit the work area */
+static void fit_dialog(struct window *w)
+{
+	int ww = work_x1 - work_x0 + 1, wh = work_y1 - work_y0 + 1;
+	w->h += SKIN_H;
+	if (w->w > ww) w->w = ww;
+	if (w->h > wh) w->h = wh;
+	if (w->x + w->w > work_x1 + 1) w->x = work_x1 + 1 - w->w;
+	if (w->y + w->h > work_y1 + 1) w->y = work_y1 + 1 - w->h;
+	if (w->x < work_x0) w->x = work_x0;
+	if (w->y < work_y0) w->y = work_y0;
 }
 
 static bool intersects(struct window *w, int x, int y, int ww, int hh)
@@ -288,9 +326,12 @@ void wm_define_window(struct task *t, u32 ebx, u32 ecx, u32 edx, u32 esi, const 
 		w->style = style;
 		w->flags = (edx >> 28) & 0xf;
 		w->zpos = ZPOS_NORMAL;
+		dialog[t->slot] = is_dialog(t);
 		if (managed(w)) {
 			fit_work_area(w);
 			w->movable = false;
+		} else if (wm_look == LOOK_HILDON && dialog[t->slot]) {
+			fit_dialog(w);
 		}
 		if (title) strncpy0(w->title, title, sizeof(w->title));
 		w->defined = true;
@@ -309,6 +350,24 @@ void wm_define_window(struct task *t, u32 ebx, u32 ecx, u32 edx, u32 esi, const 
 	define_skin_buttons(t);
 }
 
+/* Hildon's look: a program's dialogs above it again, its window just
+ * activated (they would be hidden under its maximised window); the
+ * keys stay with the window activated */
+static void raise_dialogs(struct task *t)
+{
+	if (wm_look != LOOK_HILDON || dialog[t->slot] || !t->proc) return;
+	int n = nstack, d[MAX_TASKS], k = 0;
+	for (int i = 0; i < n; i++)
+		if (dialog[stack[i]] && tasks[stack[i]].proc == t->proc && visible(&tasks[stack[i]])) d[k++] = stack[i];
+	for (int i = 0; i < k; i++) {
+		struct task *o = &tasks[d[i]];
+		stack_push(d[i]);
+		owner_region(o->win.x, o->win.y, o->win.w, o->win.h);
+		wm_draw_frame(o);
+		task_post_event(o, EV_REDRAW);
+	}
+}
+
 void wm_activate(struct task *t)
 {
 	if (t->state == T_FREE || !t->win.defined) return;
@@ -319,6 +378,7 @@ void wm_activate(struct task *t)
 	owner_region(t->win.x, t->win.y, t->win.w, t->win.h);
 	wm_draw_frame(t);
 	task_post_event(t, EV_REDRAW);
+	raise_dialogs(t);
 	if (old && old != t) {
 		wm_draw_frame(old);
 		task_post_event(old, EV_REDRAW);
@@ -374,6 +434,7 @@ void wm_remove(struct task *t)
 	struct task *a = wm_active();
 	stack_remove(t->slot);
 	w->defined = false;
+	dialog[t->slot] = false;
 	w->zpos = ZPOS_NORMAL;
 	if (active_slot == t->slot) active_slot = 0;
 	if (press_slot == t->slot) press_slot = 0;

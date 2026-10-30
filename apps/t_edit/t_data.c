@@ -31,6 +31,8 @@ scrollbar ws_dir_lbox = SCROLLBAR(16, 0, 30, 70, 15, 100, 30, 0, 0, 0, 0, 1);
 
 const char default_dir[] = "/sys";     /* the folder by default */
 static char communication_area_name[] = "FFFFFFFF_open_dialog";
+const char open_dialog_name[] = "opendial";
+const char communication_area_default_path[] = "/sys/File managers/";
 
 #define FILTER_EXT "ASM\0CPP\0INC\0MAC\0INI\0TXT\0H\0C\0HTM\0HTML\0PY\0SH\0BAT\0LUA\0INF\0LOG\0DBG\0DAT\0"
 static struct { u32 size; char ext[sizeof(FILTER_EXT)]; } Filter = { sizeof(FILTER_EXT) - 1, FILTER_EXT };
@@ -122,6 +124,11 @@ char *msgbox_4_err = msgbox_4 + 10 + sizeof(MB4) - 1;
 char msgbox_6[] = "\1\0Warning\0" MB6 "?)\0Close\0";
 char *msgbox_6_err = msgbox_6 + 10 + sizeof(MB6) - 1;
 char msgbox_7[] = "\"Text not found.\r\nTry change the query and search again.\" -tI";
+/* .fdp: the dialog's path, 100 characters */
+#define MB9 "Error run 'open file dialog'.\r"
+char msgbox_9[] = "\3\0Warning\0" MB9 "                                                  "
+		  "                                                  \0Close\0";
+char *msgbox_9_fdp = msgbox_9 + 10 + sizeof(MB9) - 1;
 
 const char txtFindCapt[] = "Search:";
 const char txtFindNext[] = "Find next";

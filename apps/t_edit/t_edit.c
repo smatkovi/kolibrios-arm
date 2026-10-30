@@ -7,9 +7,11 @@
  * as shared libraries; here they are linked in (lib/boxlib, lib/msgbox,
  * lib/proc_lib, lib/libini, lib/kmenu), and the pictures libimg decoded
  * at the start (include_image_file) are decoded at build time
- * (tools/png2bgr.py). The message boxes, the open dialog, the menus
- * and the key words' window, threads or programs of their own in
- * KolibriOS, run in this window (their libraries say how). */
+ * (tools/png2bgr.py). As in KolibriOS the message boxes (msgbox) and the
+ * key words' window run in threads of their own (51.1, on the stacks
+ * thread and thread_coords), the open dialog is the program opendial
+ * (/sys/File managers/opendial, talking through shared memory: proc_lib);
+ * the menus (kmenu) are drawn in this window. */
 #include <string.h>
 #include <stdlib.h>
 #include "t_edit.h"
@@ -42,6 +44,10 @@ char file_name[4096];                  /* the parameters at first, then paths */
 char syntax_path[4096];                /* the syntax file's name */
 char plugin_path[4096];
 char filename_area[256];               /* the file's name for the dialog */
+/* the stacks: 4 KiB each in t_edit.asm (thread grows into procinfo's
+ * spare 1 KiB there), more for C */
+u8 thread_stack[THREAD_STACK] __attribute__((aligned(16)));
+u8 thread_coords_stack[THREAD_STACK] __attribute__((aligned(16)));
 
 extern char __params[], __path[];      /* lib/crt0.S: the header's */
 
@@ -258,18 +264,10 @@ int main(int argc, char **argv)
 	draw_window();                         /* red_win */
 	for (;;) {                             /* still */
 		int ev = kos_wait_event();
-		if (exit_code == 1) {
+		if (exit_code == 1) {          /* a message box's On_Exit, On_SaveAndExit */
 			ted_Exit();
 			continue;
 		}
-		/* a message box open takes the events */
-		int mb = mb_event(ev);
-		if (mb == 2) {
-			draw_window();
-			if (exit_code == 1) ted_Exit();
-			continue;
-		}
-		if (mb) continue;
 		if (ev == 1) draw_window();        /* the window changed */
 		else if (ev == 2) key();
 		else if (ev == 3) button();
