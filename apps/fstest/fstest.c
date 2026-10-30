@@ -100,6 +100,14 @@ int main(int argc, char **argv)
 	u8 info[40];
 	r = f70(5, 0, 0, 0, info, "/tmp0/1/a.txt");
 	check(r.eax == 0 && *(u32 *)(info + 32) == 3 && !(*(u32 *)info & 0x10), "70.5 size 3", r.eax, *(u32 *)(info + 32));
+	/* 70.6: attributes and times as given, 70.5 and 70.1 report them */
+	static u8 attr[32] = { 0x21, 0, 0, 0, 1, 0, 0, 0, 5, 4, 3, 0, 2, 1, 0xe4, 0x07,
+			       5, 4, 3, 0, 2, 1, 0xe4, 0x07, 5, 4, 3, 0, 2, 1, 0xe4, 0x07 };
+	r = f70(6, 0, 0, 0, attr, "/tmp0/1/a.txt");
+	u8 inf6[40];
+	struct kos_r2 r6 = f70(5, 0, 0, 0, inf6, "/tmp0/1/a.txt");
+	check(r.eax == 0 && r6.eax == 0 && (inf6[0] & 1) && !memcmp(inf6 + 8, attr + 8, 24), "70.6 then 70.5: 03:04:05 02.01.2020",
+	      inf6[24] | inf6[25] << 8, inf6[28] | inf6[29] << 8);
 	r = f70(3, 0, 0, 1, "x", "/tmp0/1/none");
 	check(r.eax == 5, "70.3 not there", r.eax, 0);
 	r = f70(0, 0, 0, 1, buf, "/tmp0/1");

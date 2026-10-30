@@ -178,7 +178,7 @@ static void thread_info(struct task *t, u32 *r)
 	*(u32 *)(b + 58) = sh;
 	*(u32 *)(b + 62) = w->w - 2 * fw - 1;
 	*(u32 *)(b + 66) = w->h - sh - fw - 1;
-	b[70] = w->minimized ? 2 : 0;
+	b[70] = (w->minimized ? 2 : 0) | (w->defined && wm_maximised(w) ? 1 : 0);
 	memcpy(b + 71, &o->event_mask, 4);
 }
 
