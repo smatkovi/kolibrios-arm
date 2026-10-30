@@ -96,6 +96,8 @@ void kmain(void)
 	wm_init();
 	input_init();
 	fs_init();
+	extern void kfs_init(void);
+	kfs_init();
 	plat->init();
 	/* the modem: the Pro1X's starts in its platform; in QEMU a fake one */
 #ifdef __aarch64__

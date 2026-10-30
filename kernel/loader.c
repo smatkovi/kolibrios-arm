@@ -13,14 +13,28 @@ struct kex_header {
 	u32 version, entry, img_end, mem, stack, params, path;
 };
 
+int kfs_file(const char *path, const u8 **data, void **node, u32 *size);
+u32 kfs_read(void *node, void *buf, u32 len, u32 off);
+
+/* path: absolute (or from /sys), on the ramdisk (/sys, /rd/1, written
+ * files too) or /tmp0/1 (kfs.c) */
 int load_program(const char *path, const char *params, struct task **out)
 {
-	const struct rd_file *f = fs_find(path);
-	if (!f) return -5;                         /* file not found */
-	const struct kex_header *h = (const void *)f->data;
+	const u8 *data;
+	void *node;
+	u32 fsize;
+	if (kfs_file(path, &data, &node, &fsize)) return -5;   /* file not found */
+	struct rd_file file = { path, data, fsize };
+	const struct rd_file *f = &file;
+	struct kex_header hbuf;
+	if (!data) {                               /* written since the start: read */
+		memset(&hbuf, 0, sizeof(hbuf));
+		kfs_read(node, &hbuf, sizeof(hbuf), 0);
+	}
+	const struct kex_header *h = data ? (const void *)data : &hbuf;
 #ifdef __aarch64__
 	/* a Linux program (kernel/linux): its path as Linux sees it */
-	if (f->size >= 4 && !memcmp(f->data, "\177ELF", 4)) {
+	if (data && f->size >= 4 && !memcmp(f->data, "\177ELF", 4)) {
 		extern int lx_exec(const char *path, const struct rd_file *f, const char *args, struct task *starter);
 		const char *lp = path;
 		for (const char *c = path; *c; c++)
@@ -39,7 +53,8 @@ int load_program(const char *path, const char *params, struct task **out)
 	addr_t pa = mm_alloc_mb_aligned(size >> 20, USER_ALIGN_MB);
 	if (!pa) return -30;                       /* no memory */
 	memset((void *)pa, 0, size);
-	memcpy((void *)pa, f->data, f->size);
+	if (data) memcpy((void *)pa, f->data, f->size);
+	else kfs_read(node, (void *)pa, f->size, 0);
 	t->mem_pa = pa;
 	t->mem_size = size;
 	t->img_end = h->img_end;

@@ -12,8 +12,8 @@
 
 static u8 bcd(int v) { return ((v / 10) << 4) | (v % 10); }
 
-/* the civil date of a Unix time */
-static void civil(u32 t, int *y, int *mo, int *d, int *h, int *mi, int *s)
+/* the civil date of a Unix time (kfs.c too) */
+void civil(u32 t, int *y, int *mo, int *d, int *h, int *mi, int *s)
 {
 	*s = t % 60; t /= 60;
 	*mi = t % 60; t /= 60;
@@ -197,150 +197,9 @@ static void wait_event(struct task *t, u32 *r, int timeout)
 	}
 }
 
-static u32 read_bdfe(u8 *e, const struct rd_file *f, bool with_name)
-{
-	memset(e, 0, with_name ? 304 : 40);
-	*(u32 *)e = 0x01;                      /* read-only */
-	e[4] = 1;                              /* cp866 */
-	*(u32 *)(e + 32) = f->size;
-	if (with_name) strncpy0((char *)e + 40, f->name, 264);
-	return 0;
-}
-
-#ifdef __aarch64__
-/* function 70 on the Linux personality's tree (kernel/linux/file.c): an
- * absolute path that is not /sys or /rd/1, its RAM file system writable
- * (/home/user, /tmp, ...: lost when KolibriOS ends). Subfunctions 0 read,
- * 2 create or rewrite, 3 write, 5 information, 9 create a folder (with
- * the missing folders above it) */
-long lx_kfs_read(const char *path, void *buf, u64 len, u64 off, u64 *size);
-long lx_kfs_write(const char *path, const void *buf, u64 len, u64 off, bool rewrite);
-long lx_kfs_mkdir(const char *path);
-long lx_kfs_info(const char *path, u64 *size, bool *dir);
-const char *fs_rd_name(const char *);
-
-static u32 kfs_error(long e)
-{
-	switch (-e) {
-	case 2: return 5;                      /* ENOENT: not found */
-	case 28: return 8;                     /* ENOSPC: the disk full */
-	case 12: return 12;                    /* ENOMEM */
-	default: return 10;                    /* access denied (EROFS, EISDIR, ...) */
-	}
-}
-
-static bool linux_tree(struct task *t, u32 *r, u32 sub, u32 off, u32 size, u32 buf, const char *path)
-{
-	if (*path >= 1 && *path <= 3) path++;  /* an encoding byte */
-	if (*path != '/' || fs_rd_name(path)) return false;
-	switch (sub) {
-	case 0: {
-		u8 *d = uptr(t, buf, size);
-		u64 total = 0;
-		if (!d) { EAX = 7; return true; }
-		long n = lx_kfs_read(path, d, size, off, &total);
-		if (n < 0) { EAX = kfs_error(n); EBX = -1; return true; }
-		EAX = (u32)n < size ? 6 : 0;
-		EBX = n;
-		return true;
-	}
-	case 2:
-	case 3: {
-		const u8 *d = size ? uptr(t, buf, size) : (const u8 *)"";
-		if (!d) { EAX = 7; return true; }
-		long n = lx_kfs_write(path, d, size, off, sub == 2);
-		if (n < 0) { EAX = kfs_error(n); EBX = 0; return true; }
-		EAX = 0;
-		EBX = n;
-		return true;
-	}
-	case 5: {
-		u8 *d = uptr(t, buf, 40);
-		u64 sz;
-		bool dir;
-		if (!d) { EAX = 7; return true; }
-		long e = lx_kfs_info(path, &sz, &dir);
-		if (e < 0) { EAX = kfs_error(e); return true; }
-		memset(d, 0, 40);
-		*(u32 *)d = dir ? 0x10 : 0;
-		*(u32 *)(d + 32) = (u32)sz;
-		*(u32 *)(d + 36) = (u32)(sz >> 32);
-		EAX = 0;
-		return true;
-	}
-	case 9: {
-		long e = lx_kfs_mkdir(path);
-		EAX = e < 0 ? kfs_error(e) : 0;
-		return true;
-	}
-	}
-	return false;
-}
-#endif
-
-static void file_system(struct task *t, u32 *r)
-{
-	u8 *info = uptr(t, EBX, 21);
-	if (!info) { EAX = 3; return; }
-	u32 sub = *(u32 *)info, off = *(u32 *)(info + 4), flags = *(u32 *)(info + 8);
-	u32 size = *(u32 *)(info + 12), buf = *(u32 *)(info + 16);
-	const char *path = info[20] ? ustr(t, EBX + 20) : (uptr(t, EBX + 21, 4) ? ustr(t, *(u32 *)(info + 21)) : NULL);
-	if (!path) { EAX = 3; return; }
-#ifdef __aarch64__
-	if (linux_tree(t, r, sub, off, size, buf, path)) return;
-#endif
-	switch (sub) {
-	case 0: {                              /* read file */
-		const struct rd_file *f = fs_find(path);
-		if (!f) { EAX = 5; EBX = -1; return; }
-		u32 n = off >= f->size ? 0 : MIN(size, f->size - off);
-		u8 *d = uptr(t, buf, n);
-		if (!d) { EAX = 3; return; }
-		memcpy(d, f->data + off, n);
-		EAX = n < size ? 6 : 0;            /* 6: end of file */
-		EBX = n;
-		return;
-	}
-	case 1: {                              /* read folder: /sys only */
-		extern const char *fs_rd_name(const char *);
-		const char *n = fs_rd_name(path);
-		if (!n || *n) { EAX = 5; return; }
-		u8 *hd = uptr(t, buf, 32 + size * 304);
-		if (!hd) { EAX = 3; return; }
-		memset(hd, 0, 32);
-		u32 got = 0;
-		for (u32 i = off; i < (u32)fs_count() && got < size; i++, got++)
-			read_bdfe(hd + 32 + got * 304, fs_get(i), true);
-		*(u32 *)hd = 1;
-		*(u32 *)(hd + 4) = got;
-		*(u32 *)(hd + 8) = fs_count();
-		EAX = got < size ? 6 : 0;
-		EBX = got;
-		(void)flags;
-		return;
-	}
-	case 5: {                              /* information */
-		const struct rd_file *f = fs_find(path);
-		if (!f) { EAX = 5; return; }
-		u8 *d = uptr(t, buf, 40);
-		if (!d) { EAX = 3; return; }
-		read_bdfe(d, f, false);
-		EAX = 0;
-		return;
-	}
-	case 7: {                              /* start a program */
-		const char *params = flags ? ustr(t, flags) : NULL;
-		char p[256];
-		if (params) strncpy0(p, params, sizeof(p));
-		int pid = load_program(path, params ? p : NULL, NULL);
-		EAX = pid;
-		return;
-	}
-	default:
-		EAX = 2;                           /* not supported (read-only) */
-		return;
-	}
-}
+/* function 70: kfs.c (the volumes, their files and folders); 30 too */
+void kfs_syscall(struct task *t, u32 *r);
+void kfs_cur_dir(struct task *t, u32 *r);
 
 static u32 heap_alloc(struct task *t, u32 size)
 {
@@ -702,6 +561,9 @@ void syscall(struct task *t)
 	case 65:
 		put_image_ext(t, r);
 		return;
+	case 30:
+		kfs_cur_dir(t, r);
+		return;
 	case 67:
 		wm_move(t, EBX, ECX, EDX, ESI);
 		return;
@@ -709,7 +571,7 @@ void syscall(struct task *t)
 		heap(t, r);
 		return;
 	case 70:
-		file_system(t, r);
+		kfs_syscall(t, r);
 		return;
 	case 100: {                            /* KolibriOS for ARM: the modem */
 		extern void sys_modem(struct task *t, u32 *r);
