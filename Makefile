@@ -29,7 +29,7 @@ ACFLAGS := $(CFLAGS) -Ilib -fno-strict-aliasing
 LDFLAGS := -nostdlib -Wl,--no-warn-rwx-segments
 LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 
-KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c loader.c main.c \
+KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c loader.c main.c \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
 	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c modem/ce.c

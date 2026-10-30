@@ -1344,3 +1344,115 @@ long lx_kfs_info(const char *path, u64 *size, bool *dir)
 	else return -ENOENT;
 	return 0;
 }
+
+/* a folder's entries one at a time (kfs.c's function 70.1): the RAM file
+ * system's, then the ramdisk's below it; 0 the entry, 1 past the last,
+ * or a negative errno */
+long lx_kfs_readdir(const char *path, u32 index, char *name, u32 namelen, bool *dir, u64 *size, u64 *mtime)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	struct look lk;
+	look_up(p, &lk);
+	if (!lk.node && !lk.rd_dir) return lk.rd || lk.special ? -ENOTDIR : -ENOENT;
+	if (lk.node && !lk.node->dir) return -ENOTDIR;
+	u32 i = 0;
+	if (lk.node)
+		for (int k = 0; k < MAX_NODES; k++) {
+			struct rnode *n = &nodes[k];
+			if (!n->used || n->unlinked || n->parent != lk.node || n == root) continue;
+			if (i++ != index) continue;
+			strncpy0(name, n->name, namelen);
+			*dir = n->dir;
+			*size = n->dir ? 0 : n->size;
+			*mtime = n->mtime;
+			return 0;
+		}
+	char pre[PATH_MAX + 8];
+	strncpy0(pre, "linux", sizeof(pre));
+	strncpy0(pre + 5, p, sizeof(pre) - 5);
+	u32 pl = strlen(pre);
+	if (pre[pl - 1] != '/') pre[pl++] = '/', pre[pl] = 0;
+	/* the ramdisk's names under it, each once (folders from longer names) */
+	for (int k = 0; k < fs_count(); k++) {
+		const char *nm = fs_get(k)->name;
+		if (strncmp(nm, pre, pl)) continue;
+		const char *rest = nm + pl, *sl = rest;
+		while (*sl && *sl != '/') sl++;
+		u32 l = sl - rest;
+		/* once: the first name with this part, and none in RAM above it */
+		bool seen = false;
+		for (int j = 0; j < k && !seen; j++) {
+			const char *o = fs_get(j)->name;
+			seen = !strncmp(o, pre, pl) && !strncmp(o + pl, rest, l) && (o[pl + l] == '/' || !o[pl + l]);
+		}
+		if (lk.node)
+			for (int q = 0; q < MAX_NODES && !seen; q++)
+				seen = nodes[q].used && !nodes[q].unlinked && nodes[q].parent == lk.node &&
+				       strlen(nodes[q].name) == l && !strncmp(nodes[q].name, rest, l);
+		if (seen) continue;
+		if (i++ != index) continue;
+		strncpy0(name, rest, MIN(l + 1, namelen));
+		*dir = *sl == '/';
+		*size = *dir ? 0 : fs_get(k)->size;
+		*mtime = 0;
+		return 0;
+	}
+	return 1;
+}
+
+/* a file or an empty folder (70.8) */
+long lx_kfs_delete(const char *path)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	struct look lk;
+	look_up(p, &lk);
+	if (!lk.node) return lk.rd || lk.rd_dir || lk.special ? -EROFS : -ENOENT;
+	if (lk.node == root) return -EBUSY;
+	if (lk.node->dir)
+		for (int i = 0; i < MAX_NODES; i++)
+			if (nodes[i].used && !nodes[i].unlinked && nodes[i].parent == lk.node) return -ENOTEMPTY;
+	if (lk.node->opens) lk.node->unlinked = true;
+	else node_free(lk.node);
+	return 0;
+}
+
+/* renamed or moved within the RAM file system (70.10); the new name must
+ * not be there */
+long lx_kfs_rename(const char *from, const char *to)
+{
+	char a[PATH_MAX], b[PATH_MAX];
+	int e = kfs_path(from, a);
+	if (!e) e = kfs_path(to, b);
+	if (e) return e;
+	struct look la, lb;
+	look_up(a, &la);
+	if (!la.node) return la.rd || la.rd_dir ? -EROFS : -ENOENT;
+	if (la.node == root) return -EBUSY;
+	look_up(b, &lb);
+	if (look_exists(&lb)) return -EEXIST;
+	if (!lb.parent) return no_parent(b);
+	for (struct rnode *q = lb.parent; q; q = q->parent)
+		if (q == la.node) return -EINVAL;  /* into itself */
+	la.node->parent = lb.parent;
+	strncpy0(la.node->name, lb.last, sizeof(la.node->name));
+	return 0;
+}
+
+/* the size set (70.4) */
+long lx_kfs_truncate(const char *path, u64 size)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	struct look lk;
+	look_up(p, &lk);
+	if (!lk.node) return lk.rd || lk.rd_dir || lk.special ? -EROFS : -ENOENT;
+	if (lk.node->dir) return -EISDIR;
+	node_truncate(lk.node, size);
+	lk.node->mtime = rtc_seconds();
+	return 0;
+}
