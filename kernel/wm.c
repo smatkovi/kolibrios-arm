@@ -419,11 +419,11 @@ static void button_event(struct task *t, u32 id, u32 mbuttons)
 	task_post_event(t, EV_BUTTON);
 }
 
+/* function 37.3's events: those of the last change of the mouse; they
+ * stay until the next one (KolibriOS's BTN_DOWN), reading keeps them */
 int wm_mouse_events(void)
 {
-	int e = mouse_events;
-	mouse_events = 0;
-	return e;
+	return mouse_events;
 }
 
 void wm_mouse(int x, int y, int buttons, int changed)
@@ -432,6 +432,7 @@ void wm_mouse(int x, int y, int buttons, int changed)
 	mouse_x = MAX(0, MIN(x, scr.w - 1));
 	mouse_y = MAX(0, MIN(y, scr.h - 1));
 	mouse_buttons = buttons;
+	mouse_events = 0;
 	for (int i = 0; i < 3; i++) {
 		if (changed & (1 << i))
 			mouse_events |= (buttons & (1 << i)) ? 1 << (8 + i) : 1 << (16 + i);

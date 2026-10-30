@@ -486,8 +486,13 @@ void syscall(struct task *t)
 	case 37:
 		switch (EBX) {
 		case 0: EAX = (u32)mouse_x << 16 | mouse_y; return;
-		case 1: wm_origin(t, &ox, &oy);
-			EAX = (u32)(mouse_x - t->win.x) << 16 | (u16)(mouse_y - t->win.y); return;
+		case 1: {                         /* relative to the client area, as KolibriOS's kernel does */
+			struct window *w = &t->win;
+			bool skinned = w->style == 3 || w->style == 4;
+			int cx = w->x + (skinned ? wm_frame_w(w) : 0), cy = w->y + (skinned ? wm_skin_h(w) : 0);
+			EAX = (u32)(mouse_x - cx) << 16 | (u16)(mouse_y - cy);
+			return;
+		}
 		case 2: EAX = mouse_buttons; return;
 		case 3: { extern int wm_mouse_events(void); EAX = mouse_buttons | wm_mouse_events(); return; }
 		case 7: {                         /* the wheel, for the active window, read once */
