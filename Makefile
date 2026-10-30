@@ -259,6 +259,9 @@ $(A)/lib/$(1)-imp.a: $$($(1)_IOBJ)
 -include $$($(1)_POBJ:.o=.d)
 endef
 $(foreach d,$(DLLS),$(eval $(call DLL_LIB,$(firstword $(subst :, ,$(d))),$(lastword $(subst :, ,$(d))))))
+# DLL in a file, written when it changes: the programs follow it
+$(A)/dll-mode: FORCE | dirs
+	@[ "$$(cat $@ 2> /dev/null)" = "$(DLL)" ] || echo "$(DLL)" > $@
 # on the ramdisk in /sys/lib, as in KolibriOS
 DLL_FILES := $(foreach d,$(DLLS),$(A)/lib/$(lastword $(subst :, ,$(d))))
 RD_DLLS := $(foreach d,$(DLLS),lib/$(lastword $(subst :, ,$(d)))=$(A)/lib/$(lastword $(subst :, ,$(d))))
@@ -273,7 +276,7 @@ $(1)_OBJ := $$(patsubst %.c,$(A)/$(1)/%.o,$$(SRC_$(1)))
 $(A)/$(1)/%.o: %.c | dirs
 	@mkdir -p $$(dir $$@)
 	$(CC32) $(ACFLAGS) $(LIBC_INC) $$(CFLAGS_$(1)) -MMD -MP -c $$< -o $$@
-$(A)/$(1).elf: $$($(1)_OBJ) $(A)/lib/crt0-libc.o $$(foreach l,$$(LIBS_$(1)) libc,$$(call libfile,$$(l))) lib/app.ld
+$(A)/$(1).elf: $$($(1)_OBJ) $(A)/lib/crt0-libc.o $$(foreach l,$$(LIBS_$(1)) libc,$$(call libfile,$$(l))) lib/app.ld $(A)/dll-mode
 	$(CC32) $(LDFLAGS) $$(if $$(MEM_$(1)),-Wl$$(comma)--defsym$$(comma)MEMORY_SIZE=$$(MEM_$(1))) \
 		-T lib/app.ld $(A)/lib/crt0-libc.o $$($(1)_OBJ) \
 		-Wl,--start-group $$(foreach l,$$(LIBS_$(1)) libc,$$(call libfile,$$(l))) -Wl,--end-group $(LIBGCC) -o $$@
