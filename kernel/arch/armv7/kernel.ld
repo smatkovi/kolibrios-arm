@@ -1,6 +1,6 @@
 /* KolibriOS for ARM: the kernel image, linked where it runs (KERNEL_BASE:
- * 0x70100000 on QEMU's realview-pb-a8, 0x80008000 on the N950, where
- * NOLO and kexec put a zImage) */
+ * 0x70010000 on QEMU's realview-pb-a8, where QEMU loads a raw image,
+ * 0x80008000 on the N950, where NOLO and kexec put a zImage) */
 ENTRY(_start)
 SECTIONS
 {

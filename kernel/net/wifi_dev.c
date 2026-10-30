@@ -4,9 +4,12 @@
  * clock, the random numbers and lwIP. Started by the platform once WLFW
  * says the firmware is ready (kolibri.wifi, the modem's QRTR). The copy
  * engines are polled from the tick (every 10 ms while the station is not
- * up, every 20 ms after), or by their interrupts with kolibri.wifi=irq. */
+ * up, then by wifi_poll_ms: 20 ms while frames come, 200 ms and 1 s when
+ * idle), or by their interrupts with kolibri.wifi=irq (then no SoC sleep
+ * while frames come, a look once a second when idle). */
 #include "net.h"
 #include "rng.h"
+#include "power.h"
 #include "../modem/wifi.h"
 #include "../modem/wlfw.h"
 
@@ -87,8 +90,15 @@ static u32 next_ticks(void)
 	if (s == WIFI_FAILED) return 0xffffffffu;
 	u32 t = wifi_next_ms();
 	t = t == 0xffffffffu ? t : (t + 9) / 10;
-	/* without the engines' interrupts: polled */
-	if (!irqs) t = MIN(t, s == WIFI_UP ? 2u : 1u);
+	/* without the engines' interrupts: polled, as often as wifi_poll_ms
+	 * says (slower when no frames come: the firmware's power save keeps
+	 * the radio asleep, the AP keeps the frames); with them a look once a
+	 * second when idle, for what came while the SoC slept (its GIC off),
+	 * and no SoC sleep while frames come */
+	u32 p = (wifi_poll_ms() + 9) / 10;
+	if (!irqs) t = MIN(t, p);
+	else if (s == WIFI_UP && !wifi_busy()) t = MIN(t, 100u);
+	if (irqs && wifi_busy()) power_hold_awake(ticks + 100);
 	return t;
 }
 

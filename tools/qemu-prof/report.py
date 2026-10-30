@@ -4,8 +4,10 @@
     report.py PROF.OUT KERNEL.ELF BASE [TOP] [--user]
 
 PROF.OUT: prof.so's output (block address, instructions, runs); KERNEL.ELF:
-the kernel that ran (linked at 0, position independent); BASE: where it
-ran (the kernel's "boot arguments" line, the second value). Prints the
+the kernel that ran; BASE: where it ran: the AArch64 kernel is linked at 0
+(position independent), BASE is the second value of its "boot arguments"
+line; the ARMv7 kernel is linked where it runs (BASE: its KERNEL_BASE,
+70010000 on QEMU's realview, 80008000 on the N950). Prints the
 TOP functions by executed instructions, the kernel's and the programs'
 totals (the programs run below 1 GiB, AArch32), and how often the
 exception vectors ran (the system calls and interrupts from AArch32
@@ -27,12 +29,21 @@ for line in subprocess.run(['llvm-nm', '-n', '--defined-only', elf], capture_out
     if len(p) == 3 and p[1] in 'tTwW':
         syms.append((int(p[0], 16), p[2]))
 syms.sort()
+# the ARMv7 kernel (a 32-bit ELF) is linked at its address: its symbols
+# are the addresses themselves; its vectors are 4 bytes apart
+with open(elf, 'rb') as f:
+    arm32 = f.read(5)[4] == 1
+link = base if arm32 else 0
 addrs = [a for a, _ in syms]
 vectors = dict(syms)
 vbase = next((a for a, n in syms if n == 'vectors'), None)
 kinds = ['EL1t sync', 'EL1t irq', 'EL1t fiq', 'EL1t serror', 'EL1 sync', 'EL1 irq (idle)', 'EL1 fiq',
          'EL1 serror', 'A64 sync (Linux svc)', 'A64 irq', 'A64 fiq', 'A64 serror', 'A32 sync (svc #0x40)',
          'A32 irq', 'A32 fiq', 'A32 serror']
+vstep = 0x80
+if arm32:
+    kinds = ['reset', 'undefined', 'svc', 'prefetch abort', 'data abort', '-', 'irq', 'fiq']
+    vstep = 4
 
 by_fn, ukern, uuser, vec = {}, 0, 0, {}
 ublocks = []
@@ -41,13 +52,13 @@ for line in open(prof):
     va, n, runs = int(va, 16), int(n), int(runs)
     insns = n * runs
     if va >= base and va < base + (64 << 20):
-        off = va - base
+        off = va - base + link
         i = bisect.bisect_right(addrs, off) - 1
         name = syms[i][1] if i >= 0 else '?'
         by_fn[name] = by_fn.get(name, 0) + insns
         ukern += insns
-        if vbase is not None and vbase <= off < vbase + 0x800 and (off - vbase) % 0x80 == 0:
-            vec[(off - vbase) // 0x80] = vec.get((off - vbase) // 0x80, 0) + runs
+        if vbase is not None and vbase <= off < vbase + 16 * vstep and (off - vbase) % vstep == 0:
+            vec[(off - vbase) // vstep] = vec.get((off - vbase) // vstep, 0) + runs
     else:
         uuser += insns
         ublocks.append((insns, va, n, runs))

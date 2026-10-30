@@ -1,6 +1,6 @@
 # Assembler: the kernel's hot paths, its fast ways in and out, programs
 
-KolibriOS itself is assembler from top to bottom; this kernel is C. Three
+KolibriOS itself is assembler from top to bottom; this kernel is C. Four
 things here bring some of that back where it pays:
 
 1. the AArch64 kernel's hottest loops (drawing, the Pro1X's flush,
@@ -10,11 +10,15 @@ things here bring some of that back where it pays:
    the interrupt, the task switch) tightened, the programs' FP/SIMD
    registers saved lazily;
 3. programs in assembler, KolibriOS's way: FASMARM (the flat assembler
-   for ARM), `lib/kos.inc` with the system calls, two examples.
+   for ARM), `lib/kos.inc` with the system calls, two examples;
+4. the same for the ARMv7 kernel (the N950, QEMU's realview): VFP and
+   NEON for programs, lazily; the drawing loops, the N950's flush and
+   memcpy/memset in ARMv7 NEON assembler for the Cortex-A8.
 
 Everything measured first, without trusting TCG's wall clock: QEMU's
-instruction counts (a TCG plugin), and on the phone the generic timer
-(`kolibri.bench`, `apps/sysbench`).
+instruction counts (a TCG plugin), and on the devices `kolibri.bench`
+(the Pro1X's generic timer, the N950's cycle counter) and
+`apps/sysbench`.
 
 ## Measuring
 
@@ -98,7 +102,7 @@ picture is drawn from bit masks, its background kept by `memcpy`.
 The choice: the assembler's unless the kernel is built with
 `make PLATFORM=arm64 SIMD=c` (C only, no `.S`) or started with
 `kolibri.simd=c`; the console says `drawing: NEON` or `drawing: C`. The
-ARMv7 kernels (QEMU's realview, the N950) keep C.
+ARMv7 kernels have their own (part 4).
 
 The kernel uses no FP/SIMD registers otherwise (`-mgeneral-regs-only`);
 before its NEON, `blit_begin()` saves a Linux thread's or a program's
@@ -351,22 +355,162 @@ QEMU_MACHINE=virt QEMU_APPEND="kolibri.run=/sys/hello kolibri.look=classic" \
     python3 scripts/qemu-shot.py build/arm64/kernel.bin /tmp/a wait:8 key:ret key:k shot:hello
 ```
 
-Both are also in the Hildon launcher. They are ARMv7 code; `hello`
-runs on the ARMv7 kernels too (realview, N950: tried in QEMU's
-realview), `asmclock` only on the AArch64 kernel: the ARMv7 kernel does
-not switch VFP/NEON on for programs, its first NEON instruction is
-undefined there and ends it.
+Both are also in the Hildon launcher. They are ARMv7 code and run on
+the ARMv7 kernels too (realview, N950: tried in QEMU's realview;
+`asmclock` since the ARMv7 kernel gives programs VFP and NEON, part 4).
+
+## 4. The ARMv7 kernel: the N950 and QEMU's realview
+
+The 32-bit kernel runs on a Cortex-A8 (the N950's OMAP3630; QEMU's
+realview-pb-a8): VFPv3 with 32 double registers and NEON, in order, the
+NEON unit behind the ARM pipeline. It had neither NEON routines nor VFP
+for programs; now it has both, chosen and checked as on AArch64.
+
+### VFP and NEON for programs (`arch/armv7/fpu.c`, `vfp.S`)
+
+At the start (`fpu_init`, after the MMU) CPACR gives CP10 and CP11 to
+PL1 only (01 01) and FPEXC.EN is set: the kernel may use NEON at any
+time, a program's VFP or NEON instruction is undefined. The undefined
+instruction exception (start.S's frame holds the address after it)
+asks whether the program holds the registers already. If not: the
+owner so far (another program) is saved, the program's own values are
+loaded (d0-d31 and FPSCR; zeros the first time, kept per slot and pid
+as on AArch64), CPACR gives CP10/CP11 to PL0 too, and the instruction
+runs again (pc - 4; in Thumb pc - 2, whatever its length). If it held
+them already, the instruction is really undefined and the program ends
+as before; no decoding needed. On the way back to a program
+(`trap_entry`) only CPACR is set: full access for the owner, PL1 only
+for the others; nothing is saved at a switch.
+
+NSACR is left alone: the N950's OMAP3 is a high-security part, its
+kernel runs non-secure, and Harmattan used NEON, so CP10/CP11 are its
+already; the bits read back say whether VFP is there (else
+`VFP/NEON: not there`, the C drawing, the programs' VFP undefined). The
+Cortex-A8 does all of VFPv3 in hardware; should FPEXC.EX or DEX ever be
+set, the program ends with "a VFP operation for software ... not
+emulated".
+
+The kernel's NEON saves the owner's values first (`blit_begin`, as on
+AArch64: the program reloads them at its next VFP instruction);
+memcpy and memset use NEON only when nobody's values are in the CPU
+(`neon_free`), general registers otherwise. The console says
+`VFP/NEON: FPSID 410330c0, MVFR0 11110222; the programs' registers
+lazily` (QEMU's Cortex-A8; the N950's should be 410330c3).
+
+`apps/fptest` (`kolibri.run=/sys/fptest`) says `fptest: ok, 3000
+rounds` twice on realview, also with the NEON drawing between its
+rounds; it fails in round 0 when CPACR always gives programs the
+registers (the peer's d0) and in round 1 when `blit_begin` does not
+save them (the kernel's fill colour in d0). `apps/asmclock` runs.
+
+### The routines (`arch/armv7/blit.S`, `string.S`)
+
+The Cortex-A8's NEON unit runs behind the ARM pipeline: a transfer
+from a NEON register to an ARM one waits for it (some 20 cycles). So
+the decisions are taken on the ARM side, from the owner bytes loaded
+into general registers; NEON only computes and stores. Stores are
+aligned where the screen lets them be (the pixels to a 16-byte
+boundary first; the N950's shadow lines are 3416 bytes apart, only
+8-byte aligned), alignment hints (`:128`) only on addresses known to
+keep them (a false hint faults on the A8, and in `qemu-arm -cpu
+cortex-a8`), `pld` ahead of the loads.
+
+| | NEON |
+| --- | --- |
+| `fill` | 16 pixels a step: their 16 owner bytes in four general registers, compared with the slot in each byte (`cmp`, `cmpeq`); all owned: 64 bytes stored (two `vst1.32 {d0-d3}, [r0 :128]!`); none (after `eor`, no zero byte in any word: `(x - 0x01010101) & ~x & 0x80808080` is 0): nothing; else `vceq`, `vmovl` to word masks, `vbit` into the old pixels; then 4 a step |
+| `glyph` | a row a step: the bits `vtst` against 0x80, 0x40, ...; `vorr` with all for fill, `vand` with the width and the owner bytes' `vceq`; `vbsl` makes the colours, `vbit` puts them in; the row is written back whether or not it changed (no NEON to ARM test); widths 8 and 6 (24 bytes), others in C |
+| `from_bgr` | `vld3.8` takes 8 pixels apart, `vst4.8` with a zero d3 writes them as words: two instructions for 8 pixels where no slot is asked, 16 a step; with a slot 8 a step, the owner test on the ARM side, mixed: `vzip.8`, `vzip.16` make the words, `vbit` |
+| `to_bgr` | `vld4.8`, `vst3.8`, 16 a step |
+| `rot90` | the N950's flush, a new op in `blit.h` (n950.c wrote the panel by columns before, a pixel at a time: 4-byte stores a panel line apart, into uncached memory). Bands of 16 screen lines from the bottom up, blocks of 4 columns along them: a 16-byte load from each of the 16 lines (`vld1.32 {q}, [r10], r12`, r12 the stride negative), four 4x4 transposes in place (`vtrn.32`, `vswp`), so that each column's 16 pixels, bottom line first, lie in four consecutive q registers; stored as 64 bytes to the column's panel line. 16 bpp: blocks of 2 columns, RGB565 by `vshrn`, `vmovn`, `vsri`, 32 bytes. n950.c rounds the dirty lines to whole blocks of 16, so that every panel line's run starts 64 (32) bytes aligned; `pld` 128 bytes ahead on each line; columns and lines left over in C |
+| `memcpy`, `memset` | from 128 bytes and when `neon_free`: to a 16-byte boundary of d, then 64 bytes a step (`vld1.32`/`vst1.32`, `:128` on the loads too where s is alike modulo 16), `pld` 192 bytes ahead; else `ldm`/`stm` of 8 registers; d and s alike only modulo 4 for words, else bytes (as the C: they also run with the MMU off). memmove stays C, on this memcpy |
+
+The kernel and its callers are soft-float, nobody keeps values in
+d8-d15: all of q0-q15 are free in these routines.
+
+The choice: NEON unless built with `make SIMD=c` (any platform) or
+started with `kolibri.simd=c`; the programs' VFP and NEON are lazy
+either way.
+
+### The numbers (QEMU, instructions)
+
+`make -C tests/asm bench32`: the routines on the N950's sizes (854 x
+480) under `qemu-arm -cpu cortex-a8` with the plugin, the C compiled
+as the kernel compiles it (arm-none-eabi-gcc -O2, soft-float):
+
+| routine, workload | C | NEON | |
+| --- | --- | --- | --- |
+| `fill`: three screens (everywhere, a window's, the covered part) | 6 162 240 | 1 363 200 | 4.5x |
+| `glyph`: 2000 8x16 (half with background) and 2000 6x10 | 4 331 213 | 1 508 000 | 2.9x |
+| `from_bgr`: nine 270x136 pictures | 4 053 888 | 499 392 | 8.1x |
+| `to_bgr`: 240 lines of 270 pixels | 613 680 | 32 160 | 19x |
+| the N950's flush, the whole screen at 32 and at 16 bpp: the old loop by columns | 9 037 502 | 1 351 040 | 6.7x |
+| ... the same in C by panel lines (`rot90_c`) | 6 171 515 | 1 351 040 | 4.6x |
+| `memcpy`: 1.6 MB, aligned | 1 229 778 | 179 371 | 6.9x |
+| `memset`: 410 KB (the owner map) | 179 363 | 25 654 | 7.0x |
+
+The kernel in QEMU's realview (800 x 480; its PL111 reads the frame
+buffer itself, no flush), the same workloads as on AArch64
+(`tools/qemu-prof/autorun.prof`, 20 s of the steady state after 15 s,
+and the first 20 s from the start):
+
+| kernel instructions | before | after |
+| --- | --- | --- |
+| steady state, the clock in front | 95.7 M (`fill_c` 85.7 M) | 24.1 M (`fill_neon` 14.5 M, `gfx_line` 2.9 M, the pointer 1.0 M, `memcpy` 1.0 M) |
+| the boot | 223.6 M (`fill_c` 191.5 M, `memset` 11.1 M) | 55.5 M (`fill_neon` 36.8 M, `memset` 2.3 M) |
+
+```sh
+make -C tools/qemu-prof
+make PLATFORM=realview AUTORUN=tools/qemu-prof/autorun.prof
+QEMU_EXTRA="-plugin build/qemu-prof/prof.so,out=/tmp/p.out,from=15" \
+    python3 scripts/qemu-shot.py build/realview/kernel.elf /tmp/p wait:35
+python3 tools/qemu-prof/report.py /tmp/p.out build/realview/kernel.elf 70010000 20
+```
+
+The CPACR test on the way back costs `trap_entry` some 18
+instructions a trap. QEMU runs NEON through TCG's helpers: the times
+that `kolibri.bench` shows in QEMU are meaningless, some of its NEON
+lines even slower than C there.
+
+### The command line
+
+The ARMv7 kernel had none: `boot_args` lay in the .bss, which start.S
+cleared after storing them. Now it is the image's own arguments
+(`make PLATFORM=n950 CMDLINE="..."`, `build/<platform>/cmdline.h`),
+then the boot loader's from the ATAGs (r2: kexec's, NOLO's). QEMU
+passes `-append` as ATAGs to the raw `kernel.bin`, which it loads 64
+KiB into the RAM as a Linux image: realview's kernel is linked there
+now (0x70010000), and `QEMU_APPEND="..." scripts/qemu-shot.py
+build/realview/kernel.bin` reaches it. `kolibri.run`, `kolibri.simd`,
+`kolibri.bench`, `kolibri.look` work on both kernels.
+
+### `kolibri.bench` on the ARMv7 kernel
+
+The Cortex-A8 has no generic timer: the clock is its cycle counter
+(PMCCNTR), its rate measured over 50 ms against a counter of the
+platform's (realview's 24 MHz one, the N950's 32 kHz sync timer); the
+first line shows it, the CPU's clock. Should the cycle counter not
+run, the 32 kHz counter itself (`32768 Hz counter`: times in 30 us
+steps). The jobs are AArch64's, with the N950's turn to RAM at 32 and
+at 16 bpp for the Pro1X's turn and double; on the N950 the real flush
+into DISPC's frame buffer (uncached, past its 30 frames a second) and
+once the old flush by columns (`the flush, by columns (old)`, one
+time, no C against NEON). The lines also go onto the screen (8x16,
+white on black) and stay there for `kolibri.benchhold=S` seconds (20)
+before the system starts: the N950 has no serial port at hand. The
+device test: `docs/n950.md`.
 
 ## Tests
 
 ```sh
-make -C tests/asm          # blit.S and string.S against the C, bit for bit (147592 checks)
-make -C tests/asm bench    # their instructions
-make -C tests/asm qemu     # fptest, the C and NEON screens the same, sysbench's counts
+make -C tests/asm          # blit.S and string.S against the C, bit for bit:
+                           # AArch64 (test64, 147592 checks), ARMv7 (test32, 210424)
+make -C tests/asm bench    # their instructions (bench64, bench32)
+make -C tests/asm qemu     # qemu64: fptest, the C and NEON screens the same, sysbench's counts;
+                           # qemu32: realview's fptest, asmclock, the screens, SIMD=c
 ```
 
-`tests/asm/test.c` (a Linux program for AArch64, under `qemu-aarch64`)
-runs both versions on the same random buffers and compares every byte,
+`tests/asm/test.c` (a Linux program for AArch64, under `qemu-aarch64`,
+and for ARMv7, under `qemu-arm -cpu cortex-a8`) runs both versions on the same random buffers and compares every byte,
 also around what should be written: fills of 0-99 and 1080-2000 pixels
 at 8 alignments, 3 owner-map alignments, slots -1, 0, 5, 63 and five
 owner patterns (all, none, random, alternating, runs); glyphs of widths
@@ -380,6 +524,20 @@ and the 32-bit size with garbage in the register's upper half. Changed
 instructions in blit.S make it fail (tried: a wrong mask register, a
 wrong zip, a wrong lane, a wrong transpose step).
 
+On ARMv7 the same for fill, glyph and the images; the turn (`rot90`)
+for widths 1-40 and 0-48 lines at both depths, with the panel and its
+stride aligned and not (the C path), and the N950's 854 x 480 in seven
+bands at both depths, NEON against C and C against the old flush by
+columns (the geometry: n950.c's band rounding aside); memcpy and memset
+both ways, with NEON (`neon_free` 1) and with general registers (0).
+The C is compiled by arm-none-eabi-gcc as the kernel's, the program by
+zig's `cc` for arm-linux-musleabi (static). Changed instructions fail it
+too (tried: a wrong mask register, the colours swapped, a wrong lane, a
+wrong zip, a wrong transpose step, a wrong shift, a lost store in
+memcpy and memset; a store moved off its alignment faults).
+`tests/asm/qemu32.sh` runs realview's kernel: fptest, asmclock, the
+C and NEON screens the same in both looks, and fptest with `SIMD=c`.
+
 The existing tests stay green: `make -C tests/power` (host and its 8
 QEMU runs), `tests/modem`, `tests/audio`, `tests/wifi`, the Linux
 personality's Go hello (`kolibri.run=/bin/hello`), the three platforms'
@@ -392,8 +550,11 @@ builds and `SIMD=c`.
 - `gfx_line` (Bresenham, per pixel with its checks; the clock's hands)
   is now the third in the profile, then the pointer; the background
   gradient (`wm_redraw_background`) is a fill per line.
-- The 32-bit kernel (realview, N950): no NEON routines, VFP/NEON not
-  switched on for programs (so no `asmclock` there).
+- The N950's numbers: `kolibri.bench` on the device (docs/n950.md).
+- `apps/sysbench` on the ARMv7 kernel: it reads the generic timer
+  (CNTVCT), which the Cortex-A8 does not have.
+- A VFP operation the hardware hands back to software (FPEXC.EX) is not
+  emulated: the Cortex-A8 does all of VFPv3 itself.
 - The system call's C side (`syscall()`'s prologue, `wake_waiters`'s
   scan of the used slots) is most of the remaining 223 instructions.
 - FASMARM from source (needs FASM 1.73 x86 and its sources); programs

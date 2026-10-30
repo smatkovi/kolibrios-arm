@@ -28,14 +28,17 @@ boot:
 	cpsid	if
 	cps	#0x13
 	ldr	sp, =svc_stack_top
-	ldr	r4, =boot_args
-	stm	r4, {r0-r2}
+	mov	r5, r0
+	mov	r6, r1
+	mov	r7, r2
 	ldr	r0, =__bss_start
 	ldr	r1, =__bss_end
 	mov	r2, #0
 1:	cmp	r0, r1
 	strlo	r2, [r0], #4
 	blo	1b
+	ldr	r4, =boot_args			/* in the .bss: after clearing it */
+	stm	r4, {r5-r7}
 	ldr	r0, =vectors
 	mcr	p15, 0, r0, c12, c0, 0		/* VBAR */
 	isb

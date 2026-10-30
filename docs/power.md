@@ -247,6 +247,15 @@ rpm: this minute: vmin 0 (+0, ...), vlow 3 (+3, 41 s), ...; MPM hand-overs 120
 A count that does not move while the hand-overs do: another master or a
 vote still holds the SoC up (the display is the first: stage 4).
 
+**Devices whose interrupts must get through** (`power_hold_awake`,
+`kernel/power.c`): the Wi-Fi's copy engines (SPIs 358-369) are no MPM
+pins, so with `kolibri.wifi=irq` the driver holds the SoC's sleep off for
+a second after each frame: `psci_idle` then takes the state for an idle
+just short of the collapse's residency (GDHS, 40000022: the GIC on) and
+counts it (`SoC sleep held N` in the power test's lines). Idle Wi-Fi
+holds nothing; a frame that comes while the SoC sleeps waits at its
+engine for the next wake-up by time (docs/pro1x-network.md, stage 7c).
+
 ## Stage 4: the display off, the battery
 
 **The display** (`display_power`, `kernel/platform/pro1x.c`): Linux

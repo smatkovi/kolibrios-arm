@@ -38,6 +38,8 @@
 #define WMI_TLV_MGMT_TX_SEND_CMD 0x7008
 #define WMI_TLV_STA_POWERSAVE_MODE_CMDID 0x9001
 #define WMI_TLV_STA_POWERSAVE_PARAM_CMDID 0x9002
+#define WMI_TLV_VDEV_SET_WMM_PARAMS_CMDID 0x500d
+#define WMI_TLV_STA_UAPSD_AUTO_TRIG_CMDID 0x1c004
 #define WMI_TLV_SERVICE_READY_EVENTID 0x0001
 #define WMI_TLV_READY_EVENTID 0x0002
 #define WMI_TLV_SERVICE_AVAILABLE_EVENTID 0x0003
@@ -85,6 +87,10 @@
 #define WMI_TLV_TAG_STRUCT_VHT_RATE_SET 102
 #define WMI_TLV_TAG_STRUCT_STA_POWERSAVE_MODE_CMD 108
 #define WMI_TLV_TAG_STRUCT_STA_POWERSAVE_PARAM_CMD 109
+#define WMI_TLV_TAG_STRUCT_WMM_PARAMS 84
+#define WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_CMD 121
+#define WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_PARAM 122
+#define WMI_TLV_TAG_STRUCT_VDEV_SET_WMM_PARAMS_CMD 199
 #define WMI_TLV_TAG_STRUCT_MGMT_TX_CMD 422
 #define WMI_TLV_TAG_STRUCT_MGMT_TX_COMPL_EVENT 423
 #define WMI_TLV_TAG_STRUCT_MGMT_TX_COMPL_BUNDLE_EVENT 552
@@ -116,6 +122,9 @@
 #define WMI_MGMT_TX_FRAME_MAX 64        /* WMI_TLV_MGMT_TX_FRAME_MAX_LEN: the frame's start in the command */
 #define WMI_STA_PS_MODE_LEN 8
 #define WMI_STA_PS_PARAM_LEN 12
+#define WMI_VDEV_WMM_LEN 116            /* wmi_tlv_vdev_set_wmm_cmd: vdev, 4 x (a dummy word, wmi_wmm_params 24) */
+#define WMI_UAPSD_TRIG_LEN 16           /* wmi_sta_uapsd_auto_trig_cmd_fixed_param: vdev, mac, num_ac */
+#define WMI_UAPSD_TRIG_AC_LEN 20        /* wmi_sta_uapsd_auto_trig_param */
 /* the events' (wmi_tlv_policies' min_len) */
 #define WMI_SCAN_EVENT_LEN 24
 #define WMI_MGMT_RX_LEN 40              /* wmi_tlv_mgmt_rx_ev */
@@ -130,20 +139,68 @@
 #define WMI_TLV_PDEV_PARAM_ARP_AC_OVERRIDE 35
 #define WMI_TLV_PDEV_PARAM_ANI_ENABLE 37
 #define WMI_TLV_PDEV_PARAM_IDLE_PS_CONFIG 44
+#define WMI_TLV_PDEV_PARAM_PEER_STATS_INFO_ENABLE 139
 #define WMI_VDEV_TYPE_STA 2
 #define WMI_VDEV_SUBTYPE_NONE 0
 #define WMI_PEER_TYPE_DEFAULT 0
-#define WMI_TLV_PEER_AUTHORIZE 3        /* the peer parameter */
+#define WMI_TLV_PEER_SMPS_STATE 1       /* the peer parameters */
+#define WMI_TLV_PEER_AUTHORIZE 3
+#define WMI_TLV_PEER_DUMMY_VAR 0xff
+#define WMI_PEER_SMPS_PS_NONE 0
+#define WMI_PEER_SMPS_STATIC 1
+#define WMI_PEER_SMPS_DYNAMIC 2
 #define WMI_TLV_PEER_AUTH 0x1           /* peer flags */
 #define WMI_TLV_PEER_QOS 0x2
 #define WMI_TLV_PEER_NEED_PTK_4_WAY 0x4
+#define WMI_TLV_PEER_NEED_GTK_2_WAY 0x10
+#define WMI_TLV_PEER_HT 0x1000
+#define WMI_TLV_PEER_40MHZ 0x2000
+#define WMI_TLV_PEER_STBC 0x8000
+#define WMI_TLV_PEER_LDPC 0x10000
+#define WMI_TLV_PEER_PMF 0x8000000
+/* the rate control's flags (WMI_RC_*) */
+#define WMI_RC_DS_FLAG 0x01
+#define WMI_RC_CW40_FLAG 0x02
+#define WMI_RC_SGI_FLAG 0x04
+#define WMI_RC_HT_FLAG 0x08
+#define WMI_RC_TX_STBC_FLAG 0x20
+#define WMI_RC_RX_STBC_FLAG_S 6
+#define WMI_RC_TS_FLAG 0x200
+/* the HT capabilities SERVICE_READY reports (WMI_HT_CAP_*) */
+#define WMI_HT_CAP_ENABLED 0x0001
+#define WMI_HT_CAP_HT20_SGI 0x0002
+#define WMI_HT_CAP_DYNAMIC_SMPS 0x0004
+#define WMI_HT_CAP_TX_STBC 0x0008
+#define WMI_HT_CAP_RX_STBC 0x0030
+#define WMI_HT_CAP_RX_STBC_MASK_SHIFT 4
+#define WMI_HT_CAP_LDPC 0x0040
+#define WMI_HT_CAP_L_SIG_TXOP_PROT 0x0080
+#define WMI_HT_CAP_HT40_SGI 0x0800
+#define WMI_HT_CAP_RX_LDPC 0x1000
+#define WMI_HT_CAP_TX_LDPC 0x2000
+#define WMI_VHT_CAP_MAX_MPDU_LEN_MASK 0x3
 #define WMI_TLV_CIPHER_NONE 0
 #define WMI_TLV_CIPHER_AES_CCM 4
 #define WMI_KEY_PAIRWISE 0x0
 #define WMI_KEY_GROUP 0x1
-#define WMI_STA_PS_MODE_DISABLED 0
+#define WMI_STA_PS_MODE_DISABLED 0     /* enum wmi_sta_ps_mode, wmi_sta_powersave_param and their values */
+#define WMI_STA_PS_MODE_ENABLED 1
 #define WMI_STA_PS_PARAM_RX_WAKE_POLICY 0
+#define WMI_STA_PS_PARAM_TX_WAKE_THRESHOLD 1
+#define WMI_STA_PS_PARAM_PSPOLL_COUNT 2
+#define WMI_STA_PS_PARAM_INACTIVITY_TIME 3
+#define WMI_STA_PS_PARAM_UAPSD 4
 #define WMI_STA_PS_RX_WAKE_POLICY_WAKE 0
+#define WMI_STA_PS_RX_WAKE_POLICY_POLL_UAPSD 1
+#define WMI_STA_PS_TX_WAKE_THRESHOLD_NEVER 0
+#define WMI_STA_PS_TX_WAKE_THRESHOLD_ALWAYS 1
+#define WMI_STA_PS_PSPOLL_COUNT_NO_MAX 0
+#define WMI_STA_PS_PSPOLL_COUNT_UAPSD 3
+#define WMI_STA_PS_UAPSD_AC0_DELIVERY_EN 0x01  /* (AC0 BK, AC1 BE, AC2 VI, AC3 VO; trigger at twice) */
+#define WMI_STA_PS_UAPSD_AC0_TRIGGER_EN 0x02
+#define WMI_STA_UAPSD_MAX_INTERVAL_MSEC 0xffffffffu
+#define WMI_TLV_SERVICE_STA_UAPSD_BASIC_AUTO_TRIG 27
+#define WMI_TLV_SERVICE_STA_UAPSD_VAR_AUTO_TRIG 28
 #define MODE_11A 0                      /* enum wmi_phy_mode */
 #define MODE_11G 1
 #define MODE_11B 2
@@ -296,11 +353,23 @@ u32 wmi_vdev_stop(u8 *o, u32 vdev);
 u32 wmi_peer_create(u8 *o, u32 vdev, const u8 mac[6], u32 type);
 u32 wmi_peer_delete(u8 *o, u32 vdev, const u8 mac[6]);
 u32 wmi_peer_set_param(u8 *o, u32 vdev, const u8 mac[6], u32 id, u32 value);
-/* PEER_ASSOC for a legacy (no HT/VHT) peer: ath10k_peer_assoc_h_basic,
- * _crypto, _rates, _phymode (rates as ath10k_mac_bitrate_to_rate: 500
- * kb/s, bit 7 for CCK) */
-u32 wmi_peer_assoc(u8 *o, u32 vdev, const u8 mac[6], u32 aid, u32 flags, u32 caps, u32 listen, u32 phymode,
-		   const u8 *rates, u32 nrates);
+/* PEER_ASSOC (ath10k_peer_assoc_prepare: _h_basic, _crypto, _rates
+ * as ath10k_mac_bitrate_to_rate: 500 kb/s, bit 7 for CCK; _ht, _phymode;
+ * no VHT) */
+struct wmi_peer_assoc_arg {
+	u8 mac[6];
+	u32 vdev, aid, flags, caps, listen, ht_caps, max_mpdu, mpdu_density, rate_caps, nss, phymode;
+	u8 rates[16], ht_rates[32];
+	u32 nrates, n_ht;
+};
+u32 wmi_peer_assoc(u8 *o, const struct wmi_peer_assoc_arg *a);
+/* VDEV_SET_WMM_PARAMS (ath10k_wmi_tlv_op_gen_vdev_wmm_conf): the ACs in
+ * the order BE, BK, VI, VO; txop in microseconds */
+struct wmi_wmm_ac { u32 cwmin, cwmax, aifs, txop, acm; };
+u32 wmi_vdev_wmm(u8 *o, u32 vdev, const struct wmi_wmm_ac ac[4]);
+/* STA_UAPSD_AUTO_TRIG for one AC (ath10k_conf_tx_uapsd: auto trigger
+ * off, the intervals at their maximum) */
+u32 wmi_uapsd_auto_trig(u8 *o, u32 vdev, const u8 peer[6], u32 ac, u32 prio);
 u32 wmi_sta_ps_mode(u8 *o, u32 vdev, u32 mode);
 u32 wmi_sta_ps_param(u8 *o, u32 vdev, u32 id, u32 value);
 /* MGMT_TX_SEND (ATH10K_FW_FEATURE_MGMT_TX_BY_REF): the frame by its

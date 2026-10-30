@@ -1,9 +1,11 @@
-/* The AArch64 kernel's assembler against its C (make -C tests/asm): the
- * drawing loops of arch/arm64/blit.S against kernel/blit.c's, and
- * string.S's memcpy, memmove, memset against byte loops, bit for bit,
- * over many sizes, alignments, owner maps and clippings; every byte of
- * the buffers compared, also around what should be written. A Linux
- * program for AArch64, run with qemu-aarch64 on the PC.
+/* The kernel's assembler against its C (make -C tests/asm): the drawing
+ * loops of arch/arm64/blit.S and arch/armv7/blit.S against kernel/blit.c's,
+ * and string.S's memcpy, memmove (AArch64), memset against byte loops,
+ * bit for bit, over many sizes, alignments, owner maps and clippings;
+ * every byte of the buffers compared, also around what should be
+ * written. A Linux program for AArch64 (qemu-aarch64) and one for ARMv7
+ * (qemu-arm -cpu cortex-a8, which faults on a false alignment hint as
+ * the Cortex-A8 does), run on the PC.
  *
  *   test         the comparisons
  *   test bench   the routines on the screen's sizes, C and assembler one
@@ -18,6 +20,11 @@
 void *k_memcpy(void *d, const void *s, unsigned n);
 void *k_memmove(void *d, const void *s, unsigned n);
 void *k_memset(void *d, int c, unsigned n);
+#ifdef __arm__
+/* arch/armv7/string.S: NEON only when nobody's registers are in the CPU
+ * (arch/armv7/fpu.c's); both ways are tried */
+uint32_t neon_free;
+#endif
 
 static unsigned long long rng = 0x9e3779b97f4a7c15ull;
 static u32 rnd(void)
@@ -124,9 +131,9 @@ static void test_bgr(void)
 	for (int ni = 0; ni < 80 + 3; ni++) {
 		int n = ni < 80 ? ni : sizes[ni - 80];
 		for (int off = 0; off < 5; off++) {
-			for (int si = 0; si < 3; si++)
+			for (int si = 0; si < 4; si++)
 				for (int kind = 0; kind < 5; kind++) {
-					int slot = (int[]){ -1, 1, 40 }[si];
+					int slot = (int[]){ -1, 1, 40, 0 }[si];
 					fill_rand(a, sizeof(a));
 					memcpy(b, a, sizeof(a));
 					fill_rand(img, sizeof(img));
@@ -146,6 +153,7 @@ static void test_bgr(void)
 	}
 }
 
+#ifdef __aarch64__
 static void test_rot2x(void)
 {
 	/* a panel of up to 64 x 2 * 40 pixels, a screen of 40 x 32 */
@@ -196,6 +204,94 @@ static void test_rot2x(void)
 	free(qa);
 	free(qb);
 }
+#endif
+
+#ifdef __arm__
+/* the N950's flush as it was (kernel/platform/n950.c before rot90): each
+ * screen line a panel column, pixel by pixel; for the turn's geometry */
+enum { N9_PW = 480, N9_PH = 864, N9_HID = 5, N9_SW = N9_PH - 2 * N9_HID, N9_SH = N9_PW };
+
+static void n9_old(void *lcd, int bpp, const u32 *shadow, int y0, int y1)
+{
+	for (int y = y0; y < y1; y++) {
+		const u32 *src = &shadow[y * N9_SW];
+		int px = N9_PW - 1 - y;
+		for (int x = 0; x < N9_SW; x++) {
+			int py = N9_HID + x;
+			u32 c = src[x];
+			if (bpp == 32)
+				((u32 *)lcd)[py * N9_PW + px] = c;
+			else
+				((uint16_t *)lcd)[py * N9_PW + px] =
+					((c >> 8) & 0xf800) | ((c >> 5) & 0x7e0) | ((c >> 3) & 0x1f);
+		}
+	}
+}
+
+/* n950.c's n9_copy, line for line (lcd_w 480, lcd_h 864): the band in
+ * whole blocks of 16 lines, clipped to the panel */
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+static void n9_new(void *lcd, int bpp, const u32 *shadow, int y0, int y1,
+		   void (*rot)(void *, u32, const u32 *, u32, u32, u32, u32))
+{
+	const int lcd_w = N9_PW, lcd_h = N9_PH, lcd_stride = N9_PW;
+	y0 &= ~15;
+	y1 = MIN((y1 + 15) & ~15, N9_SH);
+	int lo = MAX(y0, N9_PW - lcd_w), hi = MIN(y1, N9_PW);
+	int w = MIN(N9_SW, lcd_h - N9_HID);
+	if (lo >= hi || w <= 0) return;
+	u32 bytes = bpp / 8;
+	char *d = (char *)lcd + (u32)N9_HID * lcd_stride * bytes + (u32)(N9_PW - hi) * bytes;
+	rot(d, lcd_stride * bytes, shadow + lo * N9_SW, N9_SW, w, hi - lo, bpp);
+}
+
+static void test_rot90(void)
+{
+	/* small: panels of up to 40 lines of up to 48 pixels (+ guards) */
+	enum { SW = 40, SH = 48, PL = 48 };
+	static u32 src[SW * SH + 64];
+	static u8 pa[SW * (PL * 4 + 32) + 2 * GUARD * 4 + 64] __attribute__((aligned(64))), pb[sizeof(pa)]
+		__attribute__((aligned(64)));
+	fill_rand(src, sizeof(src));
+	for (int bpp = 16; bpp <= 32; bpp += 16)
+		for (int w = 1; w <= SW; w += (w < 10 ? 1 : 7))
+			for (int n = 0; n <= SH; n += (n < 18 ? 1 : (n < 32 ? 7 : 8)))
+				for (int rep = 0; rep < 6; rep++) {
+					int ss = w + (rep & 1) * 3, ds = n * (bpp / 8) + (rep & 2 ? 16 : 0);
+					ds = (ds + 15) & ~15;
+					if (rep == 4) ds += bpp / 8;       /* the stride not aligned: C */
+					if (ds < n * (bpp / 8)) ds = n * (bpp / 8);
+					int off = rep == 5 ? bpp / 8 : 0;  /* dst not aligned: C */
+					fill_rand(pa, sizeof(pa));
+					memcpy(pb, pa, sizeof(pa));
+					rot90_c(pa + GUARD * 4 + off, ds, src, ss, w, n, bpp);
+					rot90_neon(pb + GUARD * 4 + off, ds, src, ss, w, n, bpp);
+					check(!memcmp(pa, pb, sizeof(pa)), "rot90", w, n, bpp, rep);
+				}
+	/* the N950's: 854 x 480 to 480 x 864, in bands as n9_copy makes
+	 * them, against the old loop (geometry) and C against NEON */
+	static u32 sh[N9_SW * N9_SH];
+	u8 *qa = aligned_alloc(64, N9_PW * N9_PH * 4), *qb = aligned_alloc(64, N9_PW * N9_PH * 4);
+	fill_rand(sh, sizeof(sh));
+	const int bands[][2] = { { 0, 480 }, { 0, 16 }, { 464, 480 }, { 16, 272 }, { 96, 112 }, { 0, 1 }, { 3, 37 } };
+	for (int bpp = 16; bpp <= 32; bpp += 16)
+		for (int i = 0; i < 7; i++) {
+			int y0 = bands[i][0], y1 = bands[i][1];
+			memset(qa, 0x5a, N9_PW * N9_PH * 4);
+			memset(qb, 0x5a, N9_PW * N9_PH * 4);
+			/* the old loop over the lines n9_copy rounds the band to */
+			n9_old(qa, bpp, sh, y0 & ~15, MIN((y1 + 15) & ~15, N9_SH));
+			n9_new(qb, bpp, sh, y0, y1, rot90_c);
+			check(!memcmp(qa, qb, N9_PW * N9_PH * 4), "rot90 n950 geometry", bpp, y0, y1, 0);
+			memset(qa, 0x5a, N9_PW * N9_PH * 4);
+			n9_new(qa, bpp, sh, y0, y1, rot90_neon);
+			check(!memcmp(qa, qb, N9_PW * N9_PH * 4), "rot90 n950", bpp, y0, y1, 0);
+		}
+	free(qa);
+	free(qb);
+}
+#endif
 
 static void test_string(void)
 {
@@ -223,7 +319,8 @@ static void test_string(void)
 			void *r = k_memset(b + GUARD + da, c, n);
 			check(!memcmp(a, b, sizeof(a)) && r == b + GUARD + da, "memset", n, da, c, 0);
 		}
-		/* overlapping both ways, and apart */
+		/* overlapping both ways, and apart (ARMv7's memmove is C) */
+#ifdef __aarch64__
 		if (n > 1000) continue;
 		for (int d = -20; d <= 20; d++) {
 			fill_rand(a, sizeof(a));
@@ -233,7 +330,9 @@ static void test_string(void)
 			void *r = k_memmove(b + to, b + from, n);
 			check(!memcmp(a, b, sizeof(a)) && r == b + to, "memmove", n, d, 0, 0);
 		}
+#endif
 	}
+#ifdef __aarch64__
 	/* the size is 32 bits: the register's upper half must not count */
 	fill_rand(a, sizeof(a));
 	memcpy(b, a, sizeof(a));
@@ -241,19 +340,25 @@ static void test_string(void)
 	cpy(b + GUARD, s, 0xffffffff00000010ul);
 	memcpy(a + GUARD, s, 16);
 	check(!memcmp(a, b, sizeof(a)), "memcpy 32-bit size", 0, 0, 0, 0);
+#endif
 }
 
 /* the routines on the screen's sizes, for the instruction counts: a
- * screen of 1080 x 540 (the Pro1X's), its windows' rows owned by one
- * slot (the common case) and a half covered one; text; the task
- * switcher's pictures; the flush; the strings */
+ * screen of 1080 x 540 (the Pro1X's) or 854 x 480 (the N950's), its
+ * windows' rows owned by one slot (the common case) and a half covered
+ * one; text; the task switcher's pictures; the flush; the strings */
 static void bench(const struct blit_ops *b, void *(*cpy)(void *, const void *, unsigned),
 		  void *(*set)(void *, int, unsigned))
 {
+#ifdef __aarch64__
 	enum { W = 1080, H = 540 };
-	static u32 scr[W * H];
-	static u8 own[W * H], img[270 * 136 * 3];
 	static u32 panel[1080 * 2160];
+#else
+	enum { W = 854, H = 480 };
+	static u32 panel[854 * 480] __attribute__((aligned(64)));
+#endif
+	static u32 scr[W * H] __attribute__((aligned(64)));
+	static u8 own[W * H], img[270 * 136 * 3];
 	memset(own, 2, sizeof(own));
 	for (int i = 0; i < W * H; i++) if (i % W > 700) own[i] = 3;
 	for (int y = 0; y < H; y++) b->fill(scr + y * W, own + y * W, -1, 0x123456, W);   /* boot */
@@ -270,7 +375,12 @@ static void bench(const struct blit_ops *b, void *(*cpy)(void *, const void *, u
 	for (int r = 0; r < 9; r++)
 		for (int y = 0; y < 136; y++) b->from_bgr(scr + y * W, own + y * W, 2, img + y * 270 * 3, 270);
 	for (int y = 0; y < H / 2; y++) b->to_bgr(img, scr + y * W, 270);
+#ifdef __aarch64__
 	b->rot2x(panel, 1080 * 4, scr, W, W, 0, H, 1080);
+#else
+	b->rot90(panel, H * 4, scr, W, W, H, 32);         /* the N950's flush, both formats */
+	b->rot90(panel, H * 2, scr, W, W, H, 16);
+#endif
 	cpy(panel, scr, sizeof(scr));
 	set(own, 0, sizeof(own));
 }
@@ -280,11 +390,28 @@ void *c_memcpy(void *d, const void *s, unsigned n);
 void *c_memset(void *d, int c, unsigned n);
 
 __attribute__((noinline)) void bench_c(void) { bench(&blit_c, c_memcpy, c_memset); }
+#ifdef __arm__
+/* the N950's flush before rot90 (n950old.c), the whole screen in both
+ * formats, for its count */
+void n950_flush_old(u32 *lcd, int lcd_bpp, int lcd_w, int lcd_h, const u32 *shadow, int y0, int y1);
+__attribute__((noinline)) void bench_old(void)
+{
+	static u32 lcd[N9_PW * N9_PH], sh[N9_SW * N9_SH];
+	n950_flush_old(lcd, 32, N9_PW, N9_PH, sh, 0, N9_SH);
+	n950_flush_old(lcd, 16, N9_PW, N9_PH, sh, 0, N9_SH);
+}
+#endif
 __attribute__((noinline)) void bench_neon(void) { bench(&blit_neon, k_memcpy, k_memset); }
 
 int main(int argc, char **argv)
 {
+#ifdef __arm__
+	neon_free = 1;
+#endif
 	if (argc > 1 && !strcmp(argv[1], "bench")) {
+#ifdef __arm__
+		bench_old();
+#endif
 		bench_c();
 		bench_neon();
 		printf("bench: done\n");
@@ -293,8 +420,15 @@ int main(int argc, char **argv)
 	test_fill();
 	test_glyph();
 	test_bgr();
+#ifdef __aarch64__
 	test_rot2x();
 	test_string();
+#else
+	test_rot90();
+	test_string();                  /* NEON when free */
+	neon_free = 0;
+	test_string();                  /* general registers */
+#endif
 	printf("%d checks, %d failed\n", checks, failed);
 	return failed != 0;
 }

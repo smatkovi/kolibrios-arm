@@ -468,32 +468,76 @@ u32 wmi_peer_set_param(u8 *o, u32 vdev, const u8 mac[6], u32 id, u32 value)
 	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_PEER_SET_PARAM_LEN;
 }
 
-u32 wmi_peer_assoc(u8 *o, u32 vdev, const u8 mac[6], u32 aid, u32 flags, u32 caps, u32 listen, u32 phymode,
-		   const u8 *rates, u32 nrates)
+u32 wmi_peer_assoc(u8 *o, const struct wmi_peer_assoc_arg *a)
 {
 	u8 *c = cmd_start(o, WMI_TLV_PEER_ASSOC_CMDID, WMI_TLV_TAG_STRUCT_PEER_ASSOC_COMPLETE_CMD, WMI_PEER_ASSOC_LEN);
-	put_mac(c, mac);
-	put32(c + 8, vdev);
+	put_mac(c, a->mac);
+	put32(c + 8, a->vdev);
 	put32(c + 12, 1);                       /* new_assoc */
-	put32(c + 16, aid);
-	put32(c + 20, flags);
-	put32(c + 24, caps);
-	put32(c + 28, listen);
-	put32(c + 48, 1);                       /* nss: ath10k_peer_assoc_h_basic */
-	put32(c + 56, phymode);
-	put32(c + 68, nrates);
-	put32(c + 72, 0);                       /* no HT rates */
+	put32(c + 16, a->aid);
+	put32(c + 20, a->flags);
+	put32(c + 24, a->caps);
+	put32(c + 28, a->listen);
+	put32(c + 32, a->ht_caps);
+	put32(c + 36, a->max_mpdu);
+	put32(c + 40, a->mpdu_density);
+	put32(c + 44, a->rate_caps);
+	put32(c + 48, a->nss);
+	put32(c + 56, a->phymode);              /* (vht_caps at 52, ht_info at 60: 0, as Linux) */
+	put32(c + 68, a->nrates);
+	put32(c + 72, a->n_ht);
 	u8 *p = c + WMI_PEER_ASSOC_LEN;
-	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)round4(nrates));
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)round4(a->nrates));
 	p += WMI_TLV_HDR;
-	mzero(p, round4(nrates));
-	mcopy(p, rates, nrates);
-	p += round4(nrates);
-	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, 0);
+	mzero(p, round4(a->nrates));
+	mcopy(p, a->rates, a->nrates);
+	p += round4(a->nrates);
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_BYTE, (u16)round4(a->n_ht));
 	p += WMI_TLV_HDR;
+	mzero(p, round4(a->n_ht));
+	mcopy(p, a->ht_rates, a->n_ht);
+	p += round4(a->n_ht);
 	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_VHT_RATE_SET, WMI_VHT_RATE_SET_LEN);
 	mzero(p + WMI_TLV_HDR, WMI_VHT_RATE_SET_LEN);
 	p += WMI_TLV_HDR + WMI_VHT_RATE_SET_LEN;
+	return (u32)(p - o);
+}
+
+u32 wmi_vdev_wmm(u8 *o, u32 vdev, const struct wmi_wmm_ac ac[4])
+{
+	u8 *c = cmd_start(o, WMI_TLV_VDEV_SET_WMM_PARAMS_CMDID, WMI_TLV_TAG_STRUCT_VDEV_SET_WMM_PARAMS_CMD, WMI_VDEV_WMM_LEN);
+	put32(c, vdev);
+	for (int i = 0; i < 4; i++) {
+		/* wmi_tlv_vdev_wmm_params: a dummy word, then wmi_wmm_params
+		 * (cwmin, cwmax, aifs, txop, acm, no_ack: ath10k_wmi_set_wmm_param) */
+		u8 *w = c + 4 + 28 * i + 4;
+		put32(w, ac[i].cwmin);
+		put32(w + 4, ac[i].cwmax);
+		put32(w + 8, ac[i].aifs);
+		put32(w + 12, ac[i].txop);
+		put32(w + 16, ac[i].acm);
+		put32(w + 20, 0);
+	}
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_VDEV_WMM_LEN;
+}
+
+u32 wmi_uapsd_auto_trig(u8 *o, u32 vdev, const u8 peer[6], u32 ac, u32 prio)
+{
+	u8 *c = cmd_start(o, WMI_TLV_STA_UAPSD_AUTO_TRIG_CMDID, WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_CMD, WMI_UAPSD_TRIG_LEN);
+	put32(c, vdev);
+	put_mac(c + 4, peer);
+	put32(c + 12, 1);                       /* num_ac */
+	u8 *p = c + WMI_UAPSD_TRIG_LEN;
+	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_STRUCT, WMI_TLV_HDR + WMI_UAPSD_TRIG_AC_LEN);
+	p += WMI_TLV_HDR;
+	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_PARAM, WMI_UAPSD_TRIG_AC_LEN);
+	p += WMI_TLV_HDR;
+	put32(p, ac);                           /* wmm_ac */
+	put32(p + 4, prio);                     /* user_priority */
+	put32(p + 8, 0);                        /* service_interval: the auto trigger off */
+	put32(p + 12, WMI_STA_UAPSD_MAX_INTERVAL_MSEC);   /* suspend_interval */
+	put32(p + 16, WMI_STA_UAPSD_MAX_INTERVAL_MSEC);   /* delay_interval */
+	p += WMI_UAPSD_TRIG_AC_LEN;
 	return (u32)(p - o);
 }
 
