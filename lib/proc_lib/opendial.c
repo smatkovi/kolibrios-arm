@@ -237,6 +237,7 @@ static void text(int x, int y, const char *s, int n, u32 c)
 
 static void button(int x, int y, int w, u32 id, const char *s)
 {
+	kos_button_delete(id);                 /* drawn again: defined once */
 	kos_button(x, y, w, BTN_H, id, sc.work_button);
 	text(x + (w - (int)strlen(s) * 6) / 2, y + (BTN_H - 9) / 2, s, strlen(s), sc.work_button_text);
 }
@@ -286,16 +287,18 @@ static void draw_list(void)
 static void draw(void)
 {
 	layout();
-	kos_rect(dx, dy, dw, dh, sc.frame);
-	kos_rect(dx + 1, dy + 1, dw - 2, CAPT_H - 1, sc.grab);
+	kos_rect(dx, dy, dw, dh, sc.work_graph);
+	kos_rect(dx + 1, dy + 1, dw - 2, CAPT_H - 1, sc.work_light);
 	kos_rect(dx + 1, dy + CAPT_H, dw - 2, dh - CAPT_H - 1, sc.work);
 	kos_call(4, (u32)(dx + 8) << 16 | (u16)(dy + 6), 0x80000000u | (sc.grab_text & 0xffffff), (u32)title(), 0, 0);
 	int cx = dx + dw - CAPT_H, cy = dy + 2;
-	kos_button(cx, cy, CAPT_H - 4, CAPT_H - 4, ID_CLOSE, sc.grab);
+	kos_button_delete(ID_CLOSE);
+	kos_button(cx, cy, CAPT_H - 4, CAPT_H - 4, ID_CLOSE, sc.work_light);
 	kos_line(cx + 4, cy + 4, cx + CAPT_H - 9, cy + CAPT_H - 9, sc.grab_text);
 	kos_line(cx + CAPT_H - 9, cy + 4, cx + 4, cy + CAPT_H - 9, sc.grab_text);
 	/* the folder above, the path */
 	int by = dy + CAPT_H + PAD;
+	kos_button_delete(ID_UP);
 	kos_button(dx + PAD, by, BTN_H, BTN_H, ID_UP, sc.work_button);
 	for (int i = 0; i < 5; i++)                /* an arrow up */
 		kos_rect(dx + PAD + 11 - i, by + 7 + i, 2 * i + 1, 1, sc.work_button_text);

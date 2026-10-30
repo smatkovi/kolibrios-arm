@@ -10,6 +10,13 @@
 #define PI_CLIENT_W (*(s32 *)(procinfo + 62))
 #define PI_CLIENT_H (*(s32 *)(procinfo + 66))
 
+/* a panel's button, its earlier definition first (draw_but_icon says why) */
+static void panel_button(u32 ebx, u32 ecx, u32 id)
+{
+	kos_button_delete(id);
+	kos_call(8, ebx, ecx, id, sc.work_button, 0);
+}
+
 static void text_z(u32 ebx, u32 color, const char *s)
 {
 	kos_call(4, ebx, color | 0x80000000u, (u32)s, 0, 0);
@@ -38,6 +45,10 @@ static void draw_but_icon(u32 ecx, u32 edx)
 	u32 bc = (ebx & 0xffff) << 16 | 19;
 	ebx = (ebx & 0xffff0000u) | 19;
 	if ((s32)((ebx >> 16) + 20) >= PI_CLIENT_W) return;   /* the button does not fit */
+	/* the toolbar is drawn again after the editor's changes, outside a
+	 * redraw: the button's earlier definition goes first (KolibriOS keeps
+	 * thousands of buttons, this kernel 64 a window) */
+	kos_button_delete(ecx & 0xffff);
 	kos_call(8, ebx, bc, ecx, sc.work_button, 0);
 	const u8 *img = bmp_icon;
 	if (!(ecx & 0x40000000u)) img += TOOLBAR_ICONS_SIZE;  /* the gray ones */
@@ -104,7 +115,7 @@ static void p_find(text_editor *edi)
 	panel_bg(edi);
 	edit_box_draw(&edit_find);
 	u32 ecx = (edi->wnd.top << 16) + (111 << 16) + 20;
-	kos_call(8, 5 << 16 | 85, ecx, 201, sc.work_button, 0);
+	panel_button(5 << 16 | 85, ecx, 201);
 	text_z((23 << 16 | 7) + edi->wnd.top, sc.work_text, txtFindCapt);
 	text_z((15 << 16 | 118) + edi->wnd.top, sc.work_button_text, txtFindNext);
 	option_box_draw(opt_grlist1);
@@ -117,9 +128,9 @@ static void p_replace(text_editor *edi)
 	edit_box_draw(&edit_replace);
 	edit_box_draw(&edit_find);
 	u32 ecx = (edi->wnd.top << 16) + (133 << 16) + 20;
-	kos_call(8, 5 << 16 | 95, ecx, 202, sc.work_button, 0);   /* replace next */
+	panel_button(5 << 16 | 95, ecx, 202);   /* replace next */
 	ecx += 26 << 16;
-	kos_call(8, 5 << 16 | 95, ecx, 203, sc.work_button, 0);   /* replace all */
+	panel_button(5 << 16 | 95, ecx, 203);   /* replace all */
 	u32 ebx = edi->wnd.top + (23 << 16 | 7);
 	text_z(ebx, sc.work_text, txtFindCapt);
 	text_z(ebx + 93, sc.work_text, txtRerlaceCapt);
@@ -134,7 +145,7 @@ static void p_goto(text_editor *edi)
 	panel_bg(edi);
 	edit_box_draw(&edit_goto);
 	u32 ecx = (edi->wnd.top << 16) + (40 << 16) + 20;
-	kos_call(8, 5 << 16 | 85, ecx, 204, sc.work_button, 0);
+	panel_button(5 << 16 | 85, ecx, 204);
 	text_z((23 << 16 | 7) + edi->wnd.top, sc.work_text, txtGotoCapt);
 	text_z((15 << 16 | 47) + edi->wnd.top, sc.work_button_text, txtGoto);
 }
@@ -151,7 +162,7 @@ static void p_syntax(text_editor *edi)
 	ecx = (ecx & 0xffff0000u) | (u16)((u16)ecx + edi->scr_h->y_size - 20 - tree1.box_height + 1);
 	kos_call(13, TED_PANEL_WIDTH, ecx, sc.work, 0, 0);    /* the bottom background */
 	ecx = (edi->wnd.top + 25 + tree1.box_height) << 16 | 20;
-	kos_call(8, 5 << 16 | 65, ecx, 200, sc.work_button, 0);
+	panel_button(5 << 16 | 65, ecx, 200);
 	text_z((30 << 16 | 5) + edi->wnd.top, sc.work_text, txtFormatCapt);
 	text_z((10 << 16 | 31) + tree1.box_height + edi->wnd.top, sc.work_button_text, txtFormatApply);
 }

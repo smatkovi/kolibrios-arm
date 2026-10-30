@@ -56,12 +56,15 @@ static void prop_red_win(void)
 {
 	place();
 	int x = bx + 1, y = by + CAPT_H;
-	kos_rect(bx, by, bw, bh, sc.frame);
-	kos_rect(bx + 1, by + 1, bw - 2, CAPT_H - 1, sc.grab);
+	kos_rect(bx, by, bw, bh, sc.work_graph);
+	kos_rect(bx + 1, by + 1, bw - 2, CAPT_H - 1, sc.work_light);
 	kos_rect(x, y, bw - 2, bh - CAPT_H - 1, 0xffffd0);   /* the window's colour, 0x33ffffd0 */
 	kos_call(4, (u32)(bx + 8) << 16 | (u16)(by + 6), 0x80000000u | (sc.grab_text & 0xffffff), (u32)txt_caption, 0, 0);
 	int cx = bx + bw - CAPT_H, cy = by + 2;
-	kos_button(cx, cy, CAPT_H - 4, CAPT_H - 4, ID_CLOSE, sc.grab);
+	kos_button_delete(ID_CLOSE);
+	kos_button_delete(ID_FIND);
+	kos_button_delete(ID_COPY);
+	kos_button(cx, cy, CAPT_H - 4, CAPT_H - 4, ID_CLOSE, sc.work_light);
 	kos_line(cx + 4, cy + 4, cx + CAPT_H - 9, cy + CAPT_H - 9, sc.grab_text);
 	kos_line(cx + CAPT_H - 9, cy + 4, cx + 4, cy + CAPT_H - 9, sc.grab_text);
 	kos_call(8, (u32)(x + 5) << 16 | 19, (u32)(y + 5) << 16 | 19, ID_FIND, sc.work_button, 0);

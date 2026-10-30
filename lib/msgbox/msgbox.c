@@ -129,6 +129,7 @@ static void MsgBoxDrawAllBut(void)
 		int w = len * CHAR_WIDTH + MB_BUT_OTX_2;
 		int focus = id == mb_key_foc;
 		u32 bg = focus ? sc.work_button_text : sc.work_button, fg = focus ? sc.work_button : sc.work_button_text;
+		kos_button_delete(MB_ID_BASE + id);   /* drawn again: defined once */
 		kos_button(bx - MB_BUT_OTX_1, by - MB_BUT_OTY_1, w + 1, MB_BUT_HEIGHT + 1, MB_ID_BASE + id, bg);
 		kos_call(4, (u32)bx << 16 | (u16)(by + 1), (fg & 0xffffff), (u32)txtBut[k], len, 0);
 		bx += len * CHAR_WIDTH + MB_BUT_OTX_3;
@@ -140,14 +141,15 @@ void mb_draw(void)
 	if (!mb_open) return;
 	int x = mb_left, y = mb_top, w = mb_width, h = mb_height;
 	/* the frame, the caption, the work area */
-	kos_rect(x, y, w, h, sc.frame);
-	kos_rect(x + 1, y + 1, w - 2, MB_CAPT_H - 1, sc.grab);
+	kos_rect(x, y, w, h, sc.work_graph);
+	kos_rect(x + 1, y + 1, w - 2, MB_CAPT_H - 1, sc.work_light);
 	kos_rect(x + 1, y + MB_CAPT_H, w - 2, h - MB_CAPT_H - 1, sc.work);
 	kos_call(4, (u32)(x + 8) << 16 | (u16)(y + 6), 0x80000000u | (sc.grab_text & 0xffffff),
 		 (u32)(mb_text + MB_TEXT_OFFSET), 0, 0);
 	/* the close button: a cross */
 	int cx = x + w - MB_CAPT_H, cy = y + 2;
-	kos_button(cx, cy, MB_CAPT_H - 4, MB_CAPT_H - 4, MB_ID_CLOSE, sc.grab);
+	kos_button_delete(MB_ID_CLOSE);
+	kos_button(cx, cy, MB_CAPT_H - 4, MB_CAPT_H - 4, MB_ID_CLOSE, sc.work_light);
 	kos_line(cx + 4, cy + 4, cx + MB_CAPT_H - 9, cy + MB_CAPT_H - 9, sc.grab_text);
 	kos_line(cx + MB_CAPT_H - 9, cy + 4, cx + 4, cy + MB_CAPT_H - 9, sc.grab_text);
 	/* the text, line by line */
