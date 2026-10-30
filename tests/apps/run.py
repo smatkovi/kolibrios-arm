@@ -135,13 +135,14 @@ def test_terminal(img):
 
 
 def test_kfar(img):
-    # the left panel /sys (icons/, settings/, @hildon, @hstatus, @taskbar,
-    # ...), the right one /tmp0/1: two copies (F5), a folder (F7), a
-    # delete (F8); fstest (autorun.kfar) looks at /tmp0/1 at 45 s
+    # the left panel /sys, the right one /tmp0/1: two copies (F5) of files
+    # found by kfar's quick search (Alt+letter: board, example), a folder
+    # (F7), a delete (F8 on board); fstest (autorun.kfar) looks at /tmp0/1
+    # at 45 s
     make('realview', 'autorun.kfar')
-    steps = keys('wait:3', 'down', 'down', 'down', 'f5', 'wait:1', 'ret', 'wait:2', 'down', 'f5', 'wait:1', 'ret',
-                 'wait:2', 'shot:kfar-copied', 'tab', 'f7', 'wait:1', 'newdir', 'ret', 'wait:2', 'home', 'down', 'f8',
-                 'wait:1', 'shot:kfar-delete', 'ret', 'wait:2', 'shot:kfar-done', 'f3', 'wait:2', 'shot:kfar-view',
+    steps = keys('wait:3', 'alt-b', 'f5', 'wait:1', 'ret', 'wait:2', 'alt-e', 'f5', 'wait:1', 'ret', 'wait:2',
+                 'shot:kfar-copied', 'tab', 'f7', 'wait:1', 'newdir', 'ret', 'wait:2', 'alt-b', 'f8', 'wait:1',
+                 'shot:kfar-delete', 'ret', 'wait:2', 'shot:kfar-done', 'f3', 'wait:2', 'shot:kfar-view',
                  'esc', 'wait:25')
     log = qemu('realview', f'{OUT}/kfar', steps)
     n_ok = log.count('fstest: expect ok')

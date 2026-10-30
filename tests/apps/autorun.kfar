@@ -1,4 +1,4 @@
 /sys/kfar
-/sys/fstest wait 4500 expect /tmp0/1/@taskbar MENUETA1
-/sys/fstest wait 4500 expect /tmp0/1/@hstatus -
+/sys/fstest wait 4500 expect /tmp0/1/example MENUETA1
+/sys/fstest wait 4500 expect /tmp0/1/board -
 /sys/fstest wait 4500 expect /tmp0/1/newdir /
