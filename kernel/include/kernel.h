@@ -126,6 +126,8 @@ extern struct platform platform_realview, platform_n950, platform_virt, platform
 void mmu_init(void);
 void *mmu_new_user_table(void);
 void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size);
+void mmu_map_user_ro(void *root, addr_t va, addr_t pa, u32 size, bool ro);  /* ro: the program may only read */
+void mmu_unmap_user(void *root, addr_t va, u32 size);
 void mmu_switch(void *root);
 void mmu_free_user_table(void *root);
 void mmu_asid_forget(const void *root);  /* AArch64: a tree made anew (ASIDs) */

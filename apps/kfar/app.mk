@@ -9,7 +9,7 @@ LIBS_kfar := libini
 MEM_kfar := 0x1000000
 # kfar.ini beside the program (app_path with .ini): KolibriOS's
 # data/common/File Managers/kfar.ini
-RD_kfar := kfar.ini=apps/kfar/kfar.ini
+RD_kfar := kfar.ini=apps/kfar/kfar.ini arc.zip=$(A)/kfar-gen/arc.zip arc.7z=$(A)/kfar-gen/arc.7z
 KFAR_FONT ?= font8x16
 KFAR_GEN := $(A)/kfar-gen/$(KFAR_FONT)
 KFAR_SRC := third_party/kolibrios/programs/fs/kfar
@@ -21,3 +21,13 @@ $(KFAR_GEN)/font.h: apps/kfar/mkfont.py $(KFAR_SRC)/$(KFAR_FONT).bmp
 	python3 apps/kfar/mkfont.py $(KFAR_SRC)/$(KFAR_FONT).bmp $(KFAR_GEN)
 $(KFAR_GEN)/font_data.h: $(KFAR_GEN)/font.h
 $(patsubst %.c,$(A)/kfar/%.o,$(SRC_kfar)): $(KFAR_GEN)/font.h $(KFAR_GEN)/font_data.h
+
+# archives for kfar_arc (kfar's plugin, lib/kfar_arc) to open: made by
+# apps/kfar/mkarc.py with Python's zipfile and lzma (no tools, no
+# downloads)
+$(A)/kfar-gen/arc.zip: apps/kfar/mkarc.py
+	@mkdir -p $(dir $@)
+	python3 -I apps/kfar/mkarc.py zip $@
+$(A)/kfar-gen/arc.7z: apps/kfar/mkarc.py
+	@mkdir -p $(dir $@)
+	python3 -I apps/kfar/mkarc.py 7z $@

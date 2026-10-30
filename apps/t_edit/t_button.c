@@ -3,12 +3,18 @@
  * GPL-2.0): the toolbar's and the panels' buttons, new, open and save
  * with their messages, the syntax files, the panels, the code pages.
  *
+ * The message boxes are msgbox's threads, as there: the functions of
+ * their buttons (On_SaveAndExit, On_NewFile, ...) run in the box's
+ * thread, which ends after them; t_edit's window is drawn again when the
+ * box's window goes (the window manager's redraw), and On_Exit's
+ * exit_code ends t_edit there. The open and save dialogs are the program
+ * opendial (proc_lib's OpenDialog_start waits for it).
+ *
  * Differences, and why: the messages of @notify (the replacements made,
  * the text not found) are message boxes, as there is no @notify here;
  * "Save" in the message "Save changes?" saves to the file's name if it
  * has one (the original passes the message box's register to
- * ted_but_save_file, which then always asks for a name); the dialog of
- * the key words runs in the window, not in a thread of its own. */
+ * ted_but_save_file, which then always asks for a name). */
 #include <string.h>
 #include <stdlib.h>
 #include "t_edit.h"
@@ -58,9 +64,12 @@ void button(void)
 
 void ted_Exit(void)
 {
-	wnd_k_words_run = 0;                   /* (a thread of its own in KolibriOS) */
+	if (wnd_k_words_run) {                 /* the key words' window ended (18.18) */
+		kos_kill_pid(wnd_k_words_run);
+		wnd_k_words_run = 0;
+	}
 	if (exit_code != 1 && ted_can_save(&tedit0)) {
-		mb_create(msgbox_2, NULL);         /* save the buffer in the file? */
+		mb_create(msgbox_2, thread);       /* save the buffer in the file? */
 		mb_setfunctions(msgbox_2E_funct);
 		return;
 	}
@@ -109,13 +118,13 @@ void but_goto_line(void)
 void ted_on_init_synt_err(int al)
 {
 	*msgbox_3_err = '0' + al;
-	mb_create(msgbox_3, NULL);             /* the colours' file did not open */
+	mb_create(msgbox_3, thread);           /* the colours' file did not open */
 }
 
 void ted_but_new_file(void)
 {
 	if (ted_can_save(&tedit0)) {
-		mb_create(msgbox_2, NULL);         /* save the changes? */
+		mb_create(msgbox_2, thread);       /* save the changes? */
 		mb_setfunctions(msgbox_2N_funct);
 	} else {
 		On_NewFile();
@@ -184,17 +193,26 @@ void ted_but_ctrl_all(u32 opt_key)
 void ted_but_open_file(void)
 {
 	if (ted_can_save(&tedit0)) {
-		mb_create(msgbox_2, NULL);         /* save the changes? */
+		mb_create(msgbox_2, thread);       /* save the changes? */
 		mb_setfunctions(msgbox_2O_funct);
 		return;
 	}
 	ted_but_open_file_no_msg();
 }
 
+/* .no_msg: also the function of "Discard" in the message */
 void ted_but_open_file_no_msg(void)
 {
+	copy_path(open_dialog_name, communication_area_default_path, file_name);   /* the dialog's path */
 	OpenDialog_data.type = 0;
 	OpenDialog_start(&OpenDialog_data);
+	if (OpenDialog_data.status == 2) {    /* the dialog did not start */
+		memset(msgbox_9_fdp, ' ', 100);
+		u32 n = str_len(file_name);
+		memcpy(msgbox_9_fdp, file_name, n > 100 ? 100 : n);
+		mb_create(msgbox_9, thread);
+		return;
+	}
 	if (OpenDialog_data.status == 1) {
 		auto_open_syntax(OpenDialog_data.openfile_path);
 		ted_messages_after_open_file(ted_open_file(&tedit0, run_file_70, openfile_path));
@@ -218,6 +236,7 @@ void auto_open_syntax(const char *of_path)
 void ted_but_save_file(int dialog)
 {
 	if (dialog || !openfile_path[0]) {
+		copy_path(open_dialog_name, communication_area_default_path, file_name);
 		OpenDialog_data.type = 1;
 		OpenDialog_start(&OpenDialog_data);
 		if (OpenDialog_data.status != 1) return;
@@ -230,13 +249,13 @@ void ted_messages_after_open_file(int err)
 {
 	if (!err) return;
 	*msgbox_4_err = err < 10 ? '0' + err : '?';
-	mb_create(msgbox_4, NULL);             /* the file did not open */
+	mb_create(msgbox_4, thread);           /* the file did not open */
 }
 
 void ted_save_err_msg(int al)
 {
 	*msgbox_6_err = al;
-	mb_create(msgbox_6, NULL);             /* the file was not saved */
+	mb_create(msgbox_6, thread);           /* the file was not saved */
 }
 
 /* [Apply] on the syntax panel */
@@ -321,10 +340,12 @@ void ted_on_find_err(void)
 	notify_window_run(msgbox_7);           /* the text not found */
 }
 
-/* the key words' search */
+/* the key words' search: its window, a thread (one at a time) */
 void but_find_key_w(void)
 {
-	if (!wnd_k_words_run) prop_start();
+	if (wnd_k_words_run) return;
+	int tid = kos_thread_create(prop_start, thread_coords);
+	wnd_k_words_run = tid == -1 ? 0 : tid;
 }
 
 /* the invisible characters shown or not */
@@ -344,10 +365,13 @@ void but_use_syntax(text_editor *edit)
 	ted_draw(edit);
 }
 
-/* @notify's message ("title\r\ntext" -tI) as a message box */
+/* @notify's message ("title\r\ntext" -tI) as a message box; a few
+ * buffers, as a box reads its text while it is shown */
 void notify_window_run(const char *text)
 {
-	static char mb[512];
+	static char mbs[4][512];
+	static int next;
+	char *mb = mbs[next++ & 3];
 	const char *s = text;
 	if (*s == '"') s++;
 	const char *nl = strstr(s, "\r\n"), *end = strrchr(s, '"');
@@ -360,9 +384,9 @@ void notify_window_run(const char *text)
 	o += tl;
 	mb[o++] = 0;
 	if (tl) s = nl + 2;
-	for (; s < end && o < sizeof(mb) - 16; s++)
+	for (; s < end && o < sizeof(mbs[0]) - 16; s++)
 		if (*s != '\n') mb[o++] = *s;      /* the text, its lines ended by 13 */
 	mb[o++] = 0;
 	memcpy(mb + o, "Close\0", 7);
-	mb_create(mb, NULL);
+	mb_create(mb, thread);
 }

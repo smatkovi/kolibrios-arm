@@ -2,46 +2,68 @@
  * programs/develop/libraries/msgbox/msgbox.asm (IgorA, the KolibriOS
  * team; strlen.inc: Thomas Mathys, linlen: Igor Afanasiev; GPL-2.0).
  *
- * The box's measures are the original's: the text in lines of 10
- * pixels, 6 a character, the buttons 20 high with their margins
- * (MB_BUT_OTX_*, MB_BUT_OTY_1). Its window, a skinned one in the middle
- * of the screen there, is a framed box with a caption in the middle of
- * the program's window here, with a close button in the caption; Enter
- * presses the focused button, Left, Right and Tab move the focus, and
- * Escape closes the box (an addition: the original's window has its
- * skin's close button for that). */
+ * As there: MsgBoxCreate starts a thread (51.1) on the stack the caller
+ * gives; the thread (start) makes a skinned window in the middle of the
+ * screen, sized by MsgBoxReInit from the text (lines of 10 pixels, 6 a
+ * character, the buttons 20 high with their margins MB_BUT_OTX_*,
+ * MB_BUT_OTY_1), with the caption as its title. Enter presses the
+ * focused button, Left, Right and Tab move the focus, the window's close
+ * button gives 0. The button goes into the data's first byte, the
+ * thread calls the button's function (mb_setfunctions) and ends (-1);
+ * the program goes on meanwhile and learns the answer from the byte or
+ * the function.
+ *
+ * What differs: the original keeps the box in the library's variables,
+ * so a second box (a function of the first one showing a message, as
+ * t_edit's do when a file does not open) took over the first's text and
+ * started on the stack the first one still ran on. Here each box has its
+ * variables (struct box) and its stack: the caller's if no box runs on
+ * it, else one of the library's own (MB_SPARE of them); a box finds its
+ * variables by its stack. */
 #include <string.h>
 #include <kos.h>
 #include "msgbox.h"
 
-#define MB_FIRST_BUT_ID 3
-#define MB_MAX_BUT 8
-#define MB_BUT_HEIGHT 20
-#define CHAR_WIDTH 6
-#define MB_BUT_OTY_1 5
+#define MB_FIRST_BUT_ID 3              /* the first button's identifier */
+#define MB_MAX_BUT 8                   /* the most buttons of a box */
+#define MB_BUT_HEIGHT 20               /* a button's height */
+#define CHAR_WIDTH 6                   /* a character's width */
+#define MB_BUT_OTY_1 5                 /* between the title and the text, the text and the buttons */
+/* the margins at a button: [<-1->Caption<-2->]<-3-> */
 #define MB_BUT_OTX_1 5
 #define MB_BUT_OTX_2 10
 #define MB_BUT_OTX_3 15
-#define MB_TEXT_OFFSET 2
-/* the box in the program's window */
-#define MB_CAPT_H 20                   /* its caption (the skin's place) */
-#define MB_ID_BASE 0xf000              /* its buttons' identifiers */
-#define MB_ID_CLOSE (MB_ID_BASE + 1)
+#define MB_TEXT_OFFSET 2               /* the caption's start in the data */
+#define SF_DRAW_TEXT 4                 /* (the original's width adds it twice) */
 
-static struct {
-	u32 frame, grab, work_dark, work_light, grab_text, work, work_button, work_button_text, work_text, work_graph;
-} sc;
+#define MB_BOXES 4                     /* boxes at once */
+#define MB_SPARE 2                     /* the library's own stacks */
+#define MB_SPARE_SIZE 16384
 
-static char *mb_text;                  /* the data */
-static const char *txtMsg;             /* the text */
-static const char *txtBut[MB_MAX_BUT];
-static int ot_left, ot_top, but_width;
-static int mb_left, mb_width = 300, mb_top, mb_height = 50;
-static int mb_key_foc = MB_FIRST_BUT_ID, mb_key_max = 1;
-static mb_function *mb_funct;
-static int mb_open;
+/* the original's variables, a box's */
+struct box {
+	volatile int running;          /* its thread runs (cleared as it ends) */
+	u32 tid;
+	u8 *stack;                     /* its stack's top */
+	char *mb_text;                 /* the data */
+	const char *txtMsg;            /* the text */
+	const char *txtBut[MB_MAX_BUT];/* the buttons' captions */
+	int ot_left, ot_top;           /* the buttons' place */
+	int but_width;                 /* all buttons with their gaps */
+	int mb_left, mb_width, mb_top, mb_height;   /* the window on the screen */
+	int mb_key_foc;                /* the focused button (from MB_FIRST_BUT_ID) */
+	int mb_key_max;                /* the buttons */
+	mb_function *volatile mb_funct;
+	struct { u32 frame, grab, work_dark, work_light, grab_text, work, work_button, work_button_text, work_text,
+		     work_graph; } sc;
+	u8 mb_procinfo[1024];
+};
 
-/* linlen: the length up to a 13 (or n) */
+static struct box boxes[MB_BOXES];
+static struct box *mb_cur;             /* the box created last */
+static u8 mb_spare[MB_SPARE][MB_SPARE_SIZE] __attribute__((aligned(16)));
+
+/* strlen.inc's linlen: the length up to a 13, n at most */
 static int linlen(const char *s, int n)
 {
 	int i = 0;
@@ -49,185 +71,223 @@ static int linlen(const char *s, int n)
 	return i;
 }
 
-/* the client area of the program's window */
-static void client_size(int *w, int *h)
+/* the box of the running thread: the one whose stack's top is the
+ * nearest above a variable of its stack */
+static struct box *box_of_stack(void)
 {
-	u8 pi[1024];
-	kos_call(9, (u32)pi, -1, 0, 0, 0);
-	*w = *(s32 *)(pi + 62) + 1;
-	*h = *(s32 *)(pi + 66) + 1;
+	volatile char probe;
+	u8 *sp = (u8 *)&probe;
+	struct box *m = NULL;
+	for (int i = 0; i < MB_BOXES; i++) {
+		struct box *b = &boxes[i];
+		if (b->running && b->stack > sp && (!m || b->stack < m->stack)) m = b;
+	}
+	return m;
 }
 
-void mb_reinit(char *data)
+/* MsgBoxReInit: the text's and the buttons' places, the window's size
+ * and its place in the middle of the screen */
+static void reinit(struct box *b, char *data)
 {
-	mb_text = data;
+	b->mb_text = data;
 	const char *s = data + MB_TEXT_OFFSET;
-	txtMsg = s + strlen(s) + 1;            /* after the caption */
-	/* the width from the longest line */
-	mb_width = 300;
-	s = txtMsg;
-	for (;;) {
-		int n = strlen(s), l = linlen(s, n), w = l * 6 + 10 + 2 * 4;
-		if (w > mb_width) mb_width = w;
-		s += l + 1;
-		if (n - l <= 5) break;             /* the rest's length */
-	}
-	/* the buttons' captions */
-	s = txtMsg + strlen(txtMsg) + 1;
-	int k = 0;
-	for (; k < MB_MAX_BUT && *s; k++) {
-		txtBut[k] = s;
-		s += strlen(s) + 1;
-	}
-	mb_key_max = k;
-	for (; k < MB_MAX_BUT; k++) txtBut[k] = NULL;
-	/* the buttons' top */
-	int lines = 1;
-	for (s = txtMsg + 1; *s && s[-1]; s++)
-		if (*s == 13) lines++;
-	ot_top = lines * 10 + 2 * MB_BUT_OTY_1;
-	/* the box's height */
-	mb_height = ot_top + MB_BUT_OTY_1 + MB_BUT_HEIGHT + 5 + MB_CAPT_H;
-	/* the buttons' width */
-	int chars = 0;
-	for (k = 0; k < mb_key_max; k++) chars += strlen(txtBut[k]);
-	but_width = chars * CHAR_WIDTH + mb_key_max * MB_BUT_OTX_3 + MB_BUT_OTX_2 - MB_BUT_OTX_3;
-	/* in the middle of the window */
-	int cw, ch;
-	client_size(&cw, &ch);
-	if (mb_width > cw) mb_width = cw;
-	mb_left = (cw - mb_width) / 2;
-	mb_top = (ch - mb_height) / 2;
-	if (mb_left < 0) mb_left = 0;
-	if (mb_top < 0) mb_top = 0;
-}
-
-void mb_create(char *data, void *thread)
-{
-	(void)thread;
-	kos_call(48, 3, (u32)&sc, sizeof(sc), 0, 0);
-	mb_key_foc = MB_FIRST_BUT_ID + (u8)data[0] - 1;   /* the button focused first */
-	mb_reinit(data);
-	if (mb_key_foc < MB_FIRST_BUT_ID || mb_key_foc >= MB_FIRST_BUT_ID + mb_key_max) mb_key_foc = MB_FIRST_BUT_ID;
-	mb_funct = NULL;
-	mb_open = 1;
-	mb_draw();
-}
-
-void mb_setfunctions(mb_function *funcs)
-{
-	mb_funct = funcs;
-}
-
-int mb_is_open(void) { return mb_open; }
-
-static void MsgBoxDrawAllBut(void)
-{
-	int bx = mb_left + 1 + ot_left, by = mb_top + MB_CAPT_H + ot_top + MB_BUT_OTY_1;
-	for (int k = 0; k < mb_key_max; k++) {
-		int id = MB_FIRST_BUT_ID + k, len = strlen(txtBut[k]);
-		int w = len * CHAR_WIDTH + MB_BUT_OTX_2;
-		int focus = id == mb_key_foc;
-		u32 bg = focus ? sc.work_button_text : sc.work_button, fg = focus ? sc.work_button : sc.work_button_text;
-		kos_button_delete(MB_ID_BASE + id);   /* drawn again: defined once */
-		kos_button(bx - MB_BUT_OTX_1, by - MB_BUT_OTY_1, w + 1, MB_BUT_HEIGHT + 1, MB_ID_BASE + id, bg);
-		kos_call(4, (u32)bx << 16 | (u16)(by + 1), (fg & 0xffffff), (u32)txtBut[k], len, 0);
-		bx += len * CHAR_WIDTH + MB_BUT_OTX_3;
-	}
-}
-
-void mb_draw(void)
-{
-	if (!mb_open) return;
-	int x = mb_left, y = mb_top, w = mb_width, h = mb_height;
-	/* the frame, the caption, the work area */
-	kos_rect(x, y, w, h, sc.work_graph);
-	kos_rect(x + 1, y + 1, w - 2, MB_CAPT_H - 1, sc.work_light);
-	kos_rect(x + 1, y + MB_CAPT_H, w - 2, h - MB_CAPT_H - 1, sc.work);
-	kos_call(4, (u32)(x + 8) << 16 | (u16)(y + 6), 0x80000000u | (sc.grab_text & 0xffffff),
-		 (u32)(mb_text + MB_TEXT_OFFSET), 0, 0);
-	/* the close button: a cross */
-	int cx = x + w - MB_CAPT_H, cy = y + 2;
-	kos_button_delete(MB_ID_CLOSE);
-	kos_button(cx, cy, MB_CAPT_H - 4, MB_CAPT_H - 4, MB_ID_CLOSE, sc.work_light);
-	kos_line(cx + 4, cy + 4, cx + MB_CAPT_H - 9, cy + MB_CAPT_H - 9, sc.grab_text);
-	kos_line(cx + MB_CAPT_H - 9, cy + 4, cx + 4, cy + MB_CAPT_H - 9, sc.grab_text);
-	/* the text, line by line */
-	ot_left = (w - 2 - but_width) / 2 + MB_BUT_OTX_1;
-	const char *s = txtMsg;
-	int ty = y + MB_CAPT_H + MB_BUT_OTY_1;
+	s += strlen(s) + 1;                    /* after the caption */
+	b->txtMsg = s;
+	/* --- calc window width --- */
 	for (;;) {
 		int n = strlen(s), l = linlen(s, n);
-		if (!l && !n) break;
-		if (l) kos_call(4, (u32)(x + 1 + MB_BUT_OTX_1) << 16 | (u16)ty, sc.work_text & 0xffffff, (u32)s, l, 0);
+		int w = l * 6 + 10 + 2 * SF_DRAW_TEXT;
+		if (b->mb_width < w) b->mb_width = w;
+		s += l + 1;
+		if (n - l <= 5) break;             /* the length of the remaining text */
+	}
+	/* --- go to first button text --- buttons 1 ... MB_MAX_BUT */
+	s = b->txtMsg + strlen(b->txtMsg) + 1;
+	for (int k = 0; k < MB_MAX_BUT; k++) {
+		b->txtBut[k] = s;
+		if (!*s) break;
+		s += strlen(s) + 1;
+	}
+	/* --- calc button top --- */
+	int lines = 1;
+	for (s = b->txtMsg; *++s;)
+		if (*s == 13) lines++;
+	b->ot_top = lines * 10 + 2 * MB_BUT_OTY_1;
+	/* --- calc window height --- */
+	b->mb_height = b->ot_top + MB_BUT_OTY_1 + MB_BUT_HEIGHT + 5;   /* 5: the border */
+	b->mb_height += kos_call(48, 4, 0, 0, 0, 0);                    /* the skin's title */
+	/* --- calc window top, left --- */
+	u32 scr = kos_call(14, 0, 0, 0, 0, 0);
+	b->mb_top = (u16)((scr & 0xffff) - b->mb_height) >> 1;
+	b->mb_left = (u16)((scr >> 16) - b->mb_width) >> 1;
+	/* --- calc button width --- */
+	int chars = 0, n = 0;
+	b->mb_key_max = 0;
+	for (s = b->txtBut[0]; *s; s += strlen(s) + 1) {
+		n++;
+		chars += strlen(s);
+		b->mb_key_max++;
+	}
+	b->but_width = chars * CHAR_WIDTH + n * MB_BUT_OTX_3 + MB_BUT_OTX_2 - MB_BUT_OTX_3;
+}
+
+/* MsgBoxDrawButton: button id, its caption s of len characters, x << 16
+ * | y the caption's place */
+static void MsgBoxDrawButton(struct box *b, int id, const char *s, int len, u32 ebx)
+{
+	u32 face = id == b->mb_key_foc ? b->sc.work_button_text : b->sc.work_button;
+	u32 x = (ebx >> 16) - MB_BUT_OTX_1, y = (ebx & 0xffff) - MB_BUT_OTY_1;
+	/* drawn again on a key: defined again (KolibriOS keeps thousands of
+	 * buttons, this kernel 64 a window) */
+	kos_button_delete(id);
+	kos_call(8, x << 16 | (len * CHAR_WIDTH + MB_BUT_OTX_2), y << 16 | MB_BUT_HEIGHT, id, face, 0);
+	u32 c = b->sc.work_button_text;
+	if (face == c) c = b->sc.work_button;
+	kos_call(4, ebx, c & 0xffffff, (u32)s, len, 0);
+}
+
+/* MsgBoxDrawAllBut */
+static void MsgBoxDrawAllBut(struct box *b)
+{
+	u32 ebx = (u32)b->ot_left << 16 | (u16)(b->ot_top + MB_BUT_OTY_1);
+	int id = MB_FIRST_BUT_ID;
+	for (int k = 0; k < MB_MAX_BUT; k++, id++) {
+		const char *s = b->txtBut[k];
+		int len = strlen(s);
+		if (!len) break;
+		MsgBoxDrawButton(b, id, s, len, ebx);
+		ebx += (u32)(len * CHAR_WIDTH + MB_BUT_OTX_3) << 16;
+	}
+}
+
+/* red_win */
+static void red_win(struct box *b)
+{
+	kos_begin_draw();
+	kos_call(0, (u32)b->mb_left << 16 | (u16)b->mb_width, (u32)b->mb_top << 16 | (u16)b->mb_height,
+		 (b->sc.work & 0xffffff) | 0x33000000u, 0, (u32)(b->mb_text + MB_TEXT_OFFSET));
+	kos_call(9, (u32)b->mb_procinfo, -1, 0, 0, 0);
+	int cw = *(s32 *)(b->mb_procinfo + 62);    /* client_box.width */
+	b->ot_left = (cw > b->but_width ? (cw - b->but_width) >> 1 : 0) + MB_BUT_OTX_1;
+	/* the text, line by line */
+	u32 ebx = MB_BUT_OTX_1 << 16 | MB_BUT_OTY_1;
+	const char *s = b->txtMsg;
+	for (;;) {
+		int l = linlen(s, strlen(s));
+		if (!l) break;
+		kos_call(4, ebx, b->sc.work_text & 0xffffff, (u32)s, l, 0);
 		s += l;
 		if (!*s) break;
 		s++;
-		ty += 10;
+		ebx += 10;
 	}
-	MsgBoxDrawAllBut();
+	MsgBoxDrawAllBut(b);
+	kos_end_draw();
 }
 
-/* the box closed with button k (1 ...; 0: closed), its function called */
-static void close_box(int k)
+/* close: the button (1 ...; 0 the window closed) in the data, its
+ * function called, the thread ended */
+static void close(struct box *b, int k)
 {
-	mb_text[0] = k;
-	mb_open = 0;
-	kos_button_delete(MB_ID_CLOSE);
-	for (int i = 0; i < mb_key_max; i++) kos_button_delete(MB_ID_BASE + MB_FIRST_BUT_ID + i);
-	if (k && mb_funct && mb_funct[k - 1]) mb_funct[k - 1]();
+	b->mb_text[0] = k;
+	mb_function *f = b->mb_funct;
+	if (k && f && f[k - 1]) f[k - 1]();
+	b->running = 0;
+	kos_exit();
 }
 
-int mb_event(int ev)
+/* start: the box's thread */
+static void start(void)
 {
-	if (!mb_open) return 0;
-	if (ev == 1) return 0;                 /* the program redraws, mb_draw at its end */
-	if (ev == 2) {
-		u32 key = kos_get_key();
-		if ((key & 0xff) == 1) return 1;
-		u8 ah = key >> 8;
-		enum { NONE, ENTER, LEFT, RIGHT, ESC } k = NONE;
-		if (kos_call(66, 2, 0, 0, 0, 0) == 1) {   /* the program reads scan codes */
-			if (ah == 0x1c) k = ENTER;
-			else if (ah == 0x4b) k = LEFT;
-			else if (ah == 0x4d || ah == 0x0f) k = RIGHT;
-			else if (ah == 0x01) k = ESC;
-		} else {
-			if (ah == 13) k = ENTER;
-			else if (ah == 176) k = LEFT;
-			else if (ah == 179 || ah == 9) k = RIGHT;
-			else if (ah == 27) k = ESC;
+	struct box *b = box_of_stack();
+	if (!b) kos_exit();
+	kos_call(48, 3, (u32)&b->sc, sizeof(b->sc), 0, 0);
+	kos_event_mask(0x27);                  /* EVM_MOUSE + EVM_BUTTON + EVM_KEY + EVM_REDRAW */
+	/* the button focused first */
+	b->mb_key_foc = (u8)(b->mb_text[0] + MB_FIRST_BUT_ID - 1);
+	reinit(b, b->mb_text);
+	if (b->mb_key_foc < MB_FIRST_BUT_ID || b->mb_key_foc >= MB_FIRST_BUT_ID + b->mb_key_max)
+		b->mb_key_foc = MB_FIRST_BUT_ID;   /* (an addition: a focus beyond the buttons) */
+	for (;;) {                             /* still */
+		int ev = kos_wait_event();
+		if (ev == 1) {
+			red_win(b);
+		} else if (ev == 2) {              /* key: ASCII codes, a new thread's mode */
+			u8 ah = kos_get_key() >> 8;
+			if (ah == 13) close(b, b->mb_key_foc - MB_FIRST_BUT_ID + 1);
+			if (ah == 176) {               /* Left */
+				if (b->mb_key_foc <= MB_FIRST_BUT_ID) b->mb_key_foc += b->mb_key_max;
+				b->mb_key_foc--;
+				MsgBoxDrawAllBut(b);
+			}
+			if (ah == 9 || ah == 179) {    /* Tab, Right */
+				int al = b->mb_key_max + MB_FIRST_BUT_ID;
+				if (b->mb_key_foc != al) {
+					if (++b->mb_key_foc >= al) b->mb_key_foc = MB_FIRST_BUT_ID;
+					MsgBoxDrawAllBut(b);
+				}
+			}
+		} else if (ev == 3) {
+			u32 ah = kos_get_button() >> 8;
+			if (ah >= MB_FIRST_BUT_ID) close(b, ah - MB_FIRST_BUT_ID + 1);
+			if (ah == 1) close(b, 0);      /* .exit */
 		}
-		if (k == ENTER) {
-			close_box(mb_key_foc - MB_FIRST_BUT_ID + 1);
-			return 2;
-		}
-		if (k == ESC) {
-			close_box(0);
-			return 2;
-		}
-		if (k == LEFT) {
-			if (mb_key_foc <= MB_FIRST_BUT_ID) mb_key_foc += mb_key_max;
-			mb_key_foc--;
-			MsgBoxDrawAllBut();
-		}
-		if (k == RIGHT && mb_key_max > 1) {
-			if (++mb_key_foc >= MB_FIRST_BUT_ID + mb_key_max) mb_key_foc = MB_FIRST_BUT_ID;
-			MsgBoxDrawAllBut();
-		}
-		return 1;
 	}
-	if (ev == 3) {
-		u32 id = kos_get_button() >> 8;
-		if (id == MB_ID_CLOSE || id == 1) {    /* its close button, or the window's */
-			close_box(0);
-			return 2;
-		}
-		if (id >= MB_ID_BASE + MB_FIRST_BUT_ID && id < MB_ID_BASE + MB_FIRST_BUT_ID + (u32)mb_key_max) {
-			close_box(id - MB_ID_BASE - MB_FIRST_BUT_ID + 1);
-			return 2;
-		}
-		return 1;                          /* the program's buttons wait */
+}
+
+/* a box whose thread is gone (ended by another, 18.2 or 18.18) is free */
+static void sweep(void)
+{
+	for (int i = 0; i < MB_BOXES; i++)
+		if (boxes[i].running && !kos_slot_of_pid(boxes[i].tid)) boxes[i].running = 0;
+}
+
+static int stack_busy(const u8 *top)
+{
+	for (int i = 0; i < MB_BOXES; i++)
+		if (boxes[i].running && boxes[i].stack == top) return 1;
+	return 0;
+}
+
+/* MsgBoxCreate */
+void mb_create(char *data, void *thread)
+{
+	sweep();
+	u8 *top = thread;
+	if (!top || stack_busy(top)) {         /* that stack in use: one of the library's */
+		top = NULL;
+		for (int i = 0; i < MB_SPARE && !top; i++)
+			if (!stack_busy(mb_spare[i] + MB_SPARE_SIZE)) top = mb_spare[i] + MB_SPARE_SIZE;
 	}
-	return 1;                              /* the mouse: the box is modal */
+	struct box *b = NULL;
+	for (int i = 0; i < MB_BOXES && !b; i++)
+		if (!boxes[i].running) b = &boxes[i];
+	if (!top || !b) return;                /* no room: not shown */
+	memset(b, 0, sizeof(*b));
+	b->mb_text = data;
+	b->stack = top;
+	b->mb_width = 300;
+	b->mb_height = 50;
+	b->mb_key_max = 1;
+	b->running = 1;
+	b->mb_funct = NULL;
+	mb_cur = b;
+	int tid = kos_thread_create(start, top);
+	if (tid == -1) {
+		b->running = 0;
+		return;
+	}
+	b->tid = tid;
+}
+
+/* MsgBoxReInit (exported): the box created last */
+void mb_reinit(char *data)
+{
+	if (mb_cur) reinit(mb_cur, data);
+}
+
+/* MsgBoxSetFunctions: the box created last */
+void mb_setfunctions(mb_function *funcs)
+{
+	if (mb_cur) mb_cur->mb_funct = funcs;
 }

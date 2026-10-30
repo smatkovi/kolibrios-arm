@@ -1,8 +1,9 @@
 /* KolibriOS for ARM: tasks, their events and the scheduler.
  *
- * A task is a KolibriOS thread with its own address space (threads of
- * one program, function 51, are not there yet). The kernel keeps no
- * stack per task: a task's state is its saved trap frame, and a task
+ * A task is a KolibriOS thread: its slot, PID, window and events; the
+ * threads of one program (function 51) share its process, the address
+ * space (kernel/proc.c), which ends with its last thread. The kernel
+ * keeps no stack per task: a task's state is its saved trap frame, and a task
  * that waits (functions 5, 10, 23) gets its return value written into
  * that frame when it wakes. Round robin, preempted by the 100 Hz tick;
  * when nothing is ready, sched_next_work says when the next timeout is
@@ -56,11 +57,12 @@ void task_exit(struct task *t)
 	extern void fp_task_gone(struct task *t);     /* arch/<arch>/fpu.c */
 	fp_task_gone(t);
 	wm_remove(t);
-	if (t->mem_pa) mm_free_mb(t->mem_pa, t->mem_size >> 20);
-	if (t->l1) mmu_free_user_table(t->l1);
+	if (t->proc) proc_thread_gone(t);  /* the last thread: the address space goes */
 	t->state = T_FREE;
 	t->l1 = NULL;
 	t->mem_pa = 0;
+	t->mem_size = 0;
+	t->proc = NULL;
 	if (t == current) need_resched = true;
 }
 
@@ -125,8 +127,11 @@ void wake_waiters(void)
 static void switch_to(struct task *t)
 {
 	if (t == current) return;
+	/* threads of one process: the same tables (ARMv7 flushes its TLB
+	 * at every switch of them) */
+	bool same = t && current && t->l1 && current->l1 == t->l1;
 	current = t;
-	mmu_switch(t ? t->l1 : NULL);
+	if (!same) mmu_switch(t ? t->l1 : NULL);
 }
 
 void schedule(void)
@@ -234,17 +239,44 @@ u32 sched_next_work(void)
 	return n;
 }
 
+/* the image, or one of the process's maps (shared memory, libraries):
+ * the kernel's address of va and how many bytes from there are its. A
+ * read-only area (68.22 with SHM_READ) is no buffer for uptr, whose
+ * callers may write (as KolibriOS's kernel faults on such pages); its
+ * strings (ustr) are fine */
+static void *ubase(struct task *t, u32 va, u32 *left, bool write)
+{
+	if (va < t->mem_size) {
+		*left = t->mem_size - va;
+		return (void *)(t->mem_pa + va);
+	}
+	struct proc *p = t->proc;
+	if (!p) return NULL;
+	for (int i = 0; i < p->nmap; i++) {
+		struct umap *m = &p->map[i];
+		if (va - m->va < m->size) {
+			if (write && m->ro) return NULL;
+			*left = m->size - (va - m->va);
+			return (void *)(m->pa + (va - m->va));
+		}
+	}
+	return NULL;
+}
+
 void *uptr(struct task *t, u32 va, u32 len)
 {
-	if (va >= t->mem_size || len > t->mem_size - va) return NULL;
-	return (void *)(t->mem_pa + va);
+	if (va < t->mem_size && len <= t->mem_size - va) return (void *)(t->mem_pa + va);
+	u32 left;
+	void *k = ubase(t, va, &left, true);
+	return k && len <= left ? k : NULL;
 }
 
 const char *ustr(struct task *t, u32 va)
 {
-	if (va >= t->mem_size) return NULL;
-	const char *s = (const char *)(t->mem_pa + va);
-	for (u32 i = 0; va + i < t->mem_size && i < 4096; i++)
+	u32 left;
+	const char *s = ubase(t, va, &left, false);
+	if (!s) return NULL;
+	for (u32 i = 0; i < left && i < 4096; i++)
 		if (!s[i]) return s;
 	return NULL;
 }

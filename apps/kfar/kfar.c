@@ -11,10 +11,13 @@
  *   frame (and 48.4 = 0); there the window is treated as maximised (it
  *   cannot be resized to whole characters, function 67 does nothing) and
  *   Alt+F9 does nothing;
- * - libini is linked in (no 68.19), so the settings are always read;
- *   the plugins of [Plugins] are not loaded (see kfar.h). */
+ * - libini comes through the program's imports (or linked in, DLL=0),
+ *   so the settings are always read;
+ * - the plugins of [Plugins] get their lib_init before plugin_load
+ *   (tools.c: load_dll_and_import_do). */
 #include "kfar.h"
 #include "font_data.h"
+#include "kos_dll.h"
 
 /* the window's frame: 5 pixels in KolibriOS's skinned windows, 0 in
  * Hildon's look (function 9: the client area's x offset) */
@@ -38,6 +41,9 @@ static const char aEditor[] = "Editor";
 static const char aEolStyle[] = "EOLStyle";
 static const char aAssociations[] = "Associations";
 static const char aFolderShortcuts[] = "FolderShortcuts";
+static const char aPlugins[] = "Plugins";
+static const char aVersion[] = "version";
+static const char aPluginLoad[] = "plugin_load";
 static char aShortcut[] = "Shortcut0";
 #define aShortcut_d aShortcut[8]
 
@@ -136,9 +142,28 @@ int main(int argc, char **argv)
 		strcpy(p, edi);
 		FolderShortcuts[aShortcut_d - '0'] = p;
 	}
-	/* .skip_shortcuts: the plugins are not loaded (see kfar.h), so
-	 * EditPlugInfo stays 0, as with no plugins in the original */
-	EditPlugInfo = 0;
+	/* .skip_shortcuts: load plugins */
+	ini_enum_keys(app_path, aPlugins, enum_plugins_callback);
+	/* calculate info for editor */
+	u32 ebx = 0;
+	for (int ecx = 0; ecx < num_plugins; ecx++) {
+		plugins[ecx].EditInfoOffs = ebx;
+		u32 sum = ebx + plugins[ecx].EditInfoSize;
+		if (sum < ebx) {
+			ebx = (u32)-1;
+			break;
+		}
+		ebx = sum;
+	}
+	/* since the size of a block in the editor is limited, so is the
+	 * memory kept for plugins; 512 is a rough upper bound that keeps the
+	 * editor working, real plugins should need less */
+	if (ebx >= 512) {
+		ebx = (u32)-1;
+		EditPlugInfo = ebx;             /* disable plugins for editor */
+		SayErr(2, EditConfigErr_ptr, 1, ContinueBtn);
+	}
+	EditPlugInfo = (ebx + 3) & ~3u;
 	/* .noini */
 	editor_calc_datasize();
 	strcpy(panel1.dir, def_left_dir);
@@ -185,7 +210,10 @@ void kfar_exit(void)
 		pgfree(s->data);
 		num_screens--;
 	}
-	/* (no plugins to unload) */
+	/* unload all plugins */
+	for (int ecx = num_plugins; --ecx >= 0;)
+		plugins[ecx].unload();
+	/* .unload_done */
 	ini_set_int(app_path, aPanels, aLeftViewMode, panel1.colmode);
 	ini_set_int(app_path, aPanels, aRightViewMode, panel2.colmode);
 	ini_set_int(app_path, aPanels, aLeftSortMode, panel1.sortmode);
@@ -770,4 +798,174 @@ u8 get_ascii_char(u32 eax)
 	int ecx = (ctrlstate & 3) ? 2 : 1;
 	kos_call(26, 2, ecx, (u32)layout, 0, 0);
 	return layout[eax & 0x7f];
+}
+
+/* kfar.asm: plugin_exported, the names a plugin may export (PluginInfo's
+ * words in turn), and plugin_exported_default, kfar's own for those it
+ * does not */
+static const char *const plugin_exported[] = {
+	"plugin_unload", "getattr", "open", "read", "setpos", "close", "OpenFilePlugin", "ClosePlugin",
+	"ReadFolder", "SetFolder", "GetOpenPluginInfo", "GetPanelTitle", "GetFiles", "EditInfoSize", 0
+};
+static void plugin_unload_default(void) {}
+static HANDLE OpenFilePlugin_default(HANDLE basefile, const void *attr, const void *data, int datasize,
+				     void *baseplugin_id, HANDLE baseplugin_instance, const char *name)
+{
+	return 0;
+}
+static void GetFiles_default(HANDLE hPlugin, int NumItems, void *items[], addfile_t *addfile, adddir_t *adddir) {}
+static void ClosePlugin_default(HANDLE hPlugin) {}
+static void GetOpenPluginInfo_default(HANDLE hPlugin, OpenPluginInfo *Info) {}
+static bool SetFolder_default(HANDLE hPlugin, const char *relative_path, const char *absolute_path)
+{
+	return false;
+}
+static HANDLE open_default(HANDLE hPlugin, const char *filename, int mode)
+{
+	return 0;
+}
+/* kfar.asm: ReadFolder_default: "not supported" */
+static int ReadFolder_default(HANDLE hPlugin, unsigned dirinfo_start, unsigned dirinfo_size, void *dirdata)
+{
+	return 2;
+}
+/* kfar.asm: GetPanelTitle_default: the host file's name (without its
+ * folder), then the plugin's folder unless it is the root */
+static void GetPanelTitle_default(HANDLE hPlugin, char title[1024], const char *host_file, const char *curdir)
+{
+	char *edi = title;
+	int ecx = 1024;
+	if (host_file) {
+		const char *edx = strrchr(host_file, '/');
+		const char *esi = edx ? edx + 1 : host_file;
+		while (ecx > 1 && *esi) {
+			*edi++ = *esi++;
+			ecx--;
+		}
+	}
+	/* .nohost */
+	if (!(curdir[0] == '/' && !curdir[1]))
+		while (ecx > 1 && *curdir) {
+			*edi++ = *curdir++;
+			ecx--;
+		}
+	/* .nodir */
+	*edi = 0;
+}
+static void *const plugin_exported_default[] = {
+	plugin_unload_default, getattr_default, open_default, read, setpos_default, close,
+	OpenFilePlugin_default, ClosePlugin_default, ReadFolder_default, SetFolder_default,
+	GetOpenPluginInfo_default, GetPanelTitle_default, GetFiles_default,
+	0,                      /* default value for EditInfoSize */
+};
+_Static_assert(sizeof(plugin_exported_default) == sizeof(PluginInfo) - 4, "PluginInfo's imported words");
+
+/* kfar.asm: enum_plugins_callback: LongBool __stdcall callback(f_name,
+ * sec_name, key_name, key_value): the plugin key_value (a path relative
+ * to kfar's folder, or absolute) loaded and initialised; true: go on */
+int enum_plugins_callback(const char *f_name, const char *sec_name, const char *key_name, const char *key_value)
+{
+	const char *name = key_value;
+	if (name[0] != '/') {
+		/* convert path to absolute: execdata = the name, saved_file_name
+		 * = kfar's folder, then the name's components ("." and ".."
+		 * resolved) */
+		if (strlen(name) >= 1024) goto overflow;
+		strcpy(execdata, name);
+		char *edi = saved_file_name;
+		const char *slash = strrchr(app_path, '/');
+		int ecx = slash ? slash + 1 - app_path : 0;
+		if (ecx > 1024) goto overflow;
+		memcpy(edi, app_path, ecx);
+		edi += ecx;
+		name = saved_file_name;
+		const char *esi = execdata;
+		for (;;) {
+			/* .z */
+			if (esi[0] == '.' && !esi[1]) return 1;
+			if (esi[0] == '.' && esi[1] == '/') {
+				esi += 2;
+				continue;
+			}
+			if (esi[0] == '.' && esi[1] == '.' && (!esi[2] || esi[2] == '/')) {
+				if (!esi[2]) return 1;
+				esi += 3;
+				do {
+					if (--edi <= saved_file_name) return 1;
+				} while (edi[-1] != '/');
+				continue;
+			}
+			break;
+		}
+		/* .c */
+		do {
+			if (edi >= saved_file_name + 1024) goto overflow;
+		} while ((*edi++ = *esi++));
+	}
+	/* .absolute: allocate space for plugin info */
+	num_plugins++;
+	u32 ecx = num_plugins * sizeof(PluginInfo);
+	if (ecx > alloc_plugins) {
+		PluginInfo *eax = xpgrealloc(plugins, ecx);
+		if (!eax) {
+			num_plugins--;          /* .dec_ret */
+			return 1;
+		}
+		plugins = eax;
+		alloc_plugins = (ecx + 0xFFF) & ~0xFFFu;
+	}
+	/* .norealloc */
+	PluginInfo *esi = &plugins[num_plugins - 1];
+	/* load plugin DLL */
+	const struct kos_export *edx = load_dll_and_import_do(name);
+	if (!edx) {
+		num_plugins--;
+		return 1;
+	}
+	/* find exported functions */
+	void *v;
+	u32 ver = find_exported_function(edx, aVersion, &v) ? (u32)v : 0;
+	const char *reason = aIncompatibleVersion;
+	if (ver != KFAR_INTERFACE_VERSION) {    /* MIN_INTERFACE_VER ... MAX_INTERFACE_VER */
+	cantload:;
+		const char *strings[3] = { aCannotLoadPlugin, name, reason };
+		SayErr(3, strings, 1, ContinueBtn);
+		num_plugins--;
+		return 1;
+	}
+	/* .version_ok: the imports */
+	void **edi = (void **)esi;
+	for (int i = 0; plugin_exported[i]; i++)
+		edi[i] = find_exported_function(edx, plugin_exported[i], &v) ? v : plugin_exported_default[i];
+	/* initialize plugin */
+	if (find_exported_function(edx, aPluginLoad, &v)) {
+		int eax = ((plugin_load_t *)v)(&kfar_info_data);
+		if (eax == 1) {
+			reason = aInitFailed;
+			goto cantload;
+		}
+		if (eax > 1) {
+			num_plugins--;
+			return 1;
+		}
+	}
+	return 1;
+overflow:
+	execdata[1023] = 0;
+	{
+		/* load_dll_and_import.big */
+		const char *strings[3] = { aFileNameTooBig, aCannotLoadDLL, execdata };
+		const char *buttons[1] = { aOk };
+		SayErr(3, strings, 1, buttons);
+	}
+	return 1;
+}
+
+/* the host file's name of the panel's plugin: the name of the last
+ * state in parents (kfar.asm: "dec esi; cmp byte [esi-1], 0") */
+char *panel_host_name(PanelData *ebp)
+{
+	char *esi = (char *)ebp->parents + ebp->parents_sz;
+	do esi--; while (esi[-1]);
+	return esi;
 }

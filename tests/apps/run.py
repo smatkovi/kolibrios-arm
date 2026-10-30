@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """tests/apps: KolibriOS's ported programs in QEMU (make -C tests/apps).
 
-    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar, t_edit (all: none given)
+    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar, kfar_arc, t_edit (all: none given)
 
 Each builds the kernel with an autorun of its own (tests/apps/autorun.*),
 runs it through scripts/qemu-shot.py, types with keys.py's steps and
 checks the debug output (fstest's lines; the shell runs fstest's
 "expect" to look at the files it made) or what reaches a socket (the
 terminal on realview's UART1). Screenshots go to the output directory
-(/tmp/kolibri-apps-test), or with --img to the documentation's images.
+(/tmp/kolibri-apps-test, or $KOLIBRI_APPS_OUT: worktrees testing at the
+same time), or with --img to the documentation's images.
 """
 import os
 import shutil
@@ -19,7 +20,7 @@ import threading
 import time
 
 TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUT = '/tmp/kolibri-apps-test'
+OUT = os.environ.get('KOLIBRI_APPS_OUT', '/tmp/kolibri-apps-test')
 HERE = os.path.join(TOP, 'tests', 'apps')
 failed = []
 
@@ -77,10 +78,13 @@ def test_shell(img):
                  'ret', 'ls', 'ret', 'more sub/d.txt', 'ret', 'wait:1', 'shot:shell-files',
                  'fstest expect /tmp0/1/w/a.txt hello', 'ret', 'fstest expect /tmp0/1/w/sub/d.txt hello', 'ret',
                  'fstest expect /tmp0/1/w/c.txt -', 'ret', 'rm a.txt', 'ret', 'fstest expect /tmp0/1/w/a.txt -',
-                 'ret', 'clear', 'ret', 'kfetch', 'ret', 'wait:2', 'shot:shell-kfetch')
+                 'ret', 'clear', 'ret', 'kfetch', 'ret', 'wait:2', 'shot:shell-kfetch',
+                 # a program in the shell's console: threadtest's "PID-SHELL" area (68.22)
+                 'clear', 'ret', 'threadtest shellapi', 'ret', 'wait:3', 'shot:shell-api')
     log = qemu('realview', f'{OUT}/shell', steps)
     n_ok = log.count('fstest: expect ok')
     check(n_ok == 4 and 'expect FAIL' not in log, f'shell: mkdir, cd, echo >, cp, ren, mv, rm ({n_ok} of 4 files as expected)')
+    check('threadtest: ok the shell\'s console' in log, 'shell: a program writes into its console through named shared memory')
     if img:
         for n in ('shell-files', 'shell-kfetch'):
             shutil.copy(f'{OUT}/shell/{n}.png', os.path.join(img, n + '.png'))
@@ -151,6 +155,29 @@ def test_kfar(img):
         shutil.copy(f'{OUT}/kfar/kfar-delete.png', os.path.join(img, 'kfar-delete.png'))
 
 
+def test_kfar_arc(img):
+    # kfar's plugin kfar_arc (/sys/lib/kfar_arc.obj) on /sys/arc.zip and
+    # /sys/arc.7z (apps/kfar/mkarc.py): Enter opens the zip, its folder
+    # sub, F3 on a file in it, F5 copies the file out, ".." back, F5 copies
+    # the folder sub (GetFiles), ".." at the root closes it; Enter opens
+    # the 7z, F5 copies big.txt (LZMA, its CRC checked) and stored.txt
+    # (Copy); fstest (autorun.kfar_arc) looks at /tmp0/1 at 60 s
+    make('realview', 'autorun.kfar_arc')
+    steps = keys('wait:4', 'alt-a', 'rc.z', 'ret', 'wait:2', 'shot:kfar-archive', 'down', 'down', 'ret', 'wait:1',
+                 'down', 'down', 'f3', 'wait:2', 'shot:kfar-archive-view', 'esc', 'wait:1', 'f5', 'wait:1', 'ret',
+                 'wait:2', 'home', 'ret', 'wait:1', 'f5', 'wait:1', 'ret', 'wait:3', 'home', 'ret', 'wait:1',
+                 'shot:kfar-archive-closed', 'alt-a', 'rc.7', 'ret', 'wait:3', 'shot:kfar-archive-7z', 'alt-b', 'ig',
+                 'f5', 'wait:1', 'ret', 'wait:3', 'alt-s', 'to', 'f5', 'wait:1', 'ret', 'wait:2',
+                 'shot:kfar-archive-copied', 'wait:25')
+    log = qemu('realview', f'{OUT}/kfar_arc', steps)
+    n_ok = log.count('fstest: expect ok')
+    check(n_ok == 5 and 'expect FAIL' not in log,
+          f'kfar_arc: zip and 7z opened, F3 in them, files and a folder copied out ({n_ok} of 5 as expected)')
+    if img:
+        for n in ('kfar-archive', 'kfar-archive-7z'):
+            shutil.copy(f'{OUT}/kfar_arc/{n}.png', os.path.join(img, n + '.png'))
+
+
 class Mouse:
     """qemu-shot.py's relative mouse steps to screen positions (realview's
     PS/2 mouse: steps of at most 100 pixels, the first move to the corner)"""
@@ -173,25 +200,38 @@ class Mouse:
 
 
 def test_t_edit(img):
-    # t_edit with t_edit.ini (Hildon's look: the window from y 56): typed
-    # text, undo, replace all in the replace panel, a word selected,
-    # copied and pasted, saved as /tmp0/1/t.ini through the save dialog;
-    # fstest (autorun.t_edit) looks at the file at 75 s
+    # t_edit with t_edit.ini (Hildon's look: the window from y 56): the
+    # open dialog (opendial, a program of its own) shown and cancelled;
+    # typed text, undo, replace all in the replace panel (its message box,
+    # a thread with a window of its own, closed by Enter), a word
+    # selected, copied and pasted, saved as /tmp0/1/t.ini through the
+    # save dialog (opendial: Tab to the list, Alt+F1 "Select Disk",
+    # /tmp0/1, Tab to the name); then "Save changes?" (msgbox) cancelled,
+    # and again with "Discard", whose function (in the box's thread)
+    # opens the dialog, where Enter opens t.ini; fstest (autorun.t_edit)
+    # looks at the file at 75 s
     make('realview', 'autorun.t_edit')
     m = Mouse()
-    steps = (keys('wait:5', 'ab', 'xyz', 'ctrl-z', 'ctrl-z', 'ctrl-z', 'ctrl-h', 'wait:1') +
+    steps = (keys('wait:5', 'ctrl-o', 'wait:3', 'down', 'down', 'down', 'wait:0.5', 'shot:t_edit-open', 'esc',
+                  'wait:2', 'ab', 'xyz', 'ctrl-z', 'ctrl-z', 'ctrl-z', 'ctrl-h', 'wait:1') +
              m.at(60, 133) + ['click'] + keys('Window') + m.at(60, 226) + ['click'] + keys('Fenster') +
              m.at(11, 188) + ['click'] +          # the option "At first": the cursor is after the undone text
              m.at(40, 275) + ['click', 'wait:2', 'shot:t_edit-replace'] + keys('ret', 'wait:1') +
              m.at(182, 139) + ['click', 'wait:0.5'] +
              keys('shift-right', 'shift-right', 'ctrl-c', 'end', 'ctrl-v', 'wait:1', 'shot:t_edit-pasted',
-                  'ctrl-shift-s', 'wait:2', 'tab', 'ctrl-a', '/tmp0/1', 'ret', 'wait:1', 'tab', 'ctrl-a', 't.ini',
-                  'wait:0.5', 'shot:t_edit-save', 'ret', 'wait:2', 'shot:t_edit-saved', 'wait:40'))
+                  'ctrl-shift-s', 'wait:3', 'tab', 'wait:0.5', 'alt-f1', 'wait:1', 'down', 'ret', 'wait:1.5',
+                  'tab', 'wait:0.5', 'ctrl-a', 't.ini', 'wait:0.5', 'shot:t_edit-save', 'ret', 'wait:2',
+                  'shot:t_edit-saved', 'x', 'ctrl-n', 'wait:1.5', 'shot:t_edit-msgbox', 'ret', 'wait:1',
+                  'ctrl-o', 'wait:1.5', 'left', 'ret', 'wait:3', 'shot:t_edit-reopen', 'ret', 'wait:2',
+                  'shot:t_edit-opened', 'wait:25'))
     log = qemu('realview', f'{OUT}/t_edit', steps)
     check('fstest: expect ok' in log and 'expect FAIL' not in log,
-          't_edit: typing, undo, replace all, copy and paste, save as /tmp0/1/t.ini')
+          't_edit: typing, undo, replace all, copy and paste, save as /tmp0/1/t.ini in opendial')
+    check(log.count('started opendial') == 3, f't_edit: opendial started for open, save and open '
+          f'({log.count("started opendial")} of 3)')
     if img:
-        shutil.copy(f'{OUT}/t_edit/t_edit-replace.png', os.path.join(img, 't_edit-replace.png'))
+        for n in ('t_edit-replace', 't_edit-open', 't_edit-msgbox'):
+            shutil.copy(f'{OUT}/t_edit/{n}.png', os.path.join(img, n + '.png'))
 
 
 args = sys.argv[1:]
@@ -200,7 +240,7 @@ if args[:1] == ['--img']:
     img = os.path.join(TOP, args[1])
     args = args[2:]
 tests = {'fstest': test_fstest, 'shell': test_shell, 'terminal': test_terminal, 'kfar': test_kfar,
-         't_edit': test_t_edit}
+         'kfar_arc': test_kfar_arc, 't_edit': test_t_edit}
 for name in args or tests:
     tests[name](img)
 make('realview', '../../apps/autorun')

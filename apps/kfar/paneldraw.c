@@ -349,7 +349,11 @@ void draw_panel(PanelData *ebp)
 	}
 	/* the panel's header (the current folder) */
 	const char *s = ebp->dir;
-	/* (plugins: GetPanelTitle) */
+	if (ebp->hPlugin) {
+		PANEL_PLUGIN(ebp)->GetPanelTitle(ebp->hFile, execdata, panel_host_name(ebp), ebp->dir);
+		s = execdata;
+	}
+	/* .native */
 	char *d = cur_header;
 	int ecx = ebp->width - 6;
 	bool created = false;
@@ -555,8 +559,16 @@ void read_folder(PanelData *ebp)
 		ebp->selected_size = 0;
 		u32 eax, ebx;
 		for (;;) {
-			/* .retry: (a plugin's ReadFolder) .native */
-			eax = fs_call(&dirinfo, &ebx);
+			/* .retry */
+			if (ebp->hPlugin) {
+				u32 ecx = dirinfo.size;
+				if (ebp->plugin_flags & 1) ecx--;       /* reserve one entry for '..' */
+				eax = PANEL_PLUGIN(ebp)->ReadFolder(ebp->hFile, 0, ecx, dirinfo.data);
+				ebx = *(u32 *)((u8 *)dirinfo.data + 4);
+			} else {
+				/* .native */
+				eax = fs_call(&dirinfo, &ebx);
+			}
 			if (!eax || eax == 6) break;
 			/* failed to read folder, notify user */
 			if (bSilentFolderMode) goto dont_notify;
@@ -564,12 +576,16 @@ void read_folder(PanelData *ebp)
 			const char *strings[3] = { get_error_msg(eax), aCannotReadFolder, dirinfo.name };
 			if (SayErr(3, strings, 2, buttons)) goto dont_notify;
 		}
+	ok:;
 		/* .ok: all entries read? */
 		u8 *hdr = dirinfo.data;
 		u32 total = *(u32 *)(hdr + 8);
 		if (total != ebx) {
 			pgfree(ebp->files);
-			u32 n = (total + 0xF) & ~0xF;
+			/* (with room for the plugin's '..' too: the original
+			 * reads one less again and again when total is a
+			 * multiple of 16) */
+			u32 n = (total + (ebp->hPlugin && (ebp->plugin_flags & 1)) + 0xF) & ~0xF;
 			u8 **f = xpgalloc(n * (4 + 304) + 32);
 			if (!f) {
 				/* (the original goes on with the freed buffer) */
@@ -612,7 +628,14 @@ void read_folder(PanelData *ebp)
 		}
 		/* .loopdone */
 		ebp->numfiles = edi - ebp->files;
-		/* (plugin_flags & 1: a '..' for the plugin's root) */
+		if (!edx && (ebp->plugin_flags & 1)) {
+			/* the plugin's folder without '..': kfar's own, first */
+			memmove(ebp->files + 1, ebp->files, ebp->numfiles * sizeof(u8 *));
+			ebp->numfiles++;
+			e = ebp == &panel1 ? left_dotdot_entry : right_dotdot_entry;
+			ebp->files[0] = e;
+			highlight_init(e);
+		}
 		sort_files(ebp);
 		return;
 	dont_notify:
@@ -632,6 +655,18 @@ void read_folder(PanelData *ebp)
 				last = s;
 			}
 		/* .up1done */
+		if (ebp->hPlugin) {
+			if (slashes > 1) {
+				*last = 0;      /* .up */
+				continue;
+			}
+			/* reading from the plugin's panel failed completely, and
+			 * we are at its root already: as if the read had
+			 * returned 0 entries (a '..' is added if needed) */
+			*(u32 *)((u8 *)dirinfo.data + 8) = 0;
+			*(u32 *)((u8 *)dirinfo.data + 4) = 0;
+			goto ok;
+		}
 		if (slashes > 2) {
 			*last = 0;              /* .up */
 			continue;

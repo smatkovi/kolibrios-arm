@@ -14,10 +14,9 @@
  * data, "al"/"eax" the key's scan code, as in the original.
  *
  * Text is in CP866, as the original's; the strings are the English
- * (en_US) ones of the original. kfar's plugins (kfar_arc, api.txt) are
- * not supported: there are no shared libraries (function 68.19) in
- * KolibriOS for ARM; the panels keep their hPlugin fields and checks
- * (always 0), the calls into plugins are left out. */
+ * (en_US) ones of the original. kfar's plugins (api.txt, kfar_arc) are
+ * loaded by function 68.19 from [Plugins] of kfar.ini; their interface,
+ * shared with them, is kfar_api.h. */
 #ifndef KFAR_H
 #define KFAR_H
 
@@ -27,6 +26,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "kos.h"
+#include "kfar_api.h"
 #include "font.h"              /* generated: font_width, font_height, font[] */
 
 typedef unsigned long long u64;
@@ -69,7 +69,6 @@ static inline u32 fs_call(fileinfo *fi, u32 *ebx)
  * kfar keeps its own data in it, as the original: bytes 4-7 the colours
  * of the highlighting (normal, cursor, selected, selected under the
  * cursor), byte 303 the selection */
-#define BDFE_SIZE 304
 #define bdfe_attr(e) (*(u32 *)(e))
 #define bdfe_name(e) ((char *)(e) + 40)
 #define bdfe_sel(e) (((u8 *)(e))[303])
@@ -138,15 +137,39 @@ typedef struct highlight {
 extern int highlight_num_groups;
 extern const highlight *const highlight_groups[];
 
-/* plugins: kfar.asm's PluginInfo (not loaded here, see above) */
+/* plugins: kfar.asm's PluginInfo, a loaded plugin's functions (its
+ * exports or kfar's defaults, in the order of plugin_exported: the
+ * import loop fills the words in turn) */
 typedef struct PluginInfo {
-	void *unload, *getattr, *open, *read, *setpos, *close, *OpenFilePlugin, *ClosePlugin,
-		*ReadFolder, *SetFolder, *GetOpenPluginInfo, *GetPanelTitle, *GetFiles;
+	plugin_unload_t *unload;
+	getattr_t *getattr;
+	plugin_open_t *open;
+	plugin_read_t *read;
+	setpos_t *setpos;
+	plugin_close_t *close;
+	OpenFilePlugin_t *OpenFilePlugin;
+	ClosePlugin_t *ClosePlugin;
+	ReadFolder_t *ReadFolder;
+	SetFolder_t *SetFolder;
+	GetOpenPluginInfo_t *GetOpenPluginInfo;
+	GetPanelTitle_t *GetPanelTitle;
+	GetFiles_t *GetFiles;
 	u32 EditInfoSize, EditInfoOffs;
 } PluginInfo;
+_Static_assert(offsetof(PluginInfo, EditInfoSize) == 13 * 4 && sizeof(PluginInfo) == 15 * 4, "PluginInfo");
 extern PluginInfo *plugins;
 extern int num_plugins;
+extern u32 alloc_plugins;
 extern int EditPlugInfo;
+extern kfar_info kfar_info_data;       /* kfar.asm's kfar_info */
+/* kfar.asm: enum_plugins_callback (kfar.ini's [Plugins]) */
+int enum_plugins_callback(const char *f_name, const char *sec_name, const char *key_name, const char *key_value);
+/* the plugin's panel: the panel's hPlugin is its PluginInfo, hFile the
+ * plugin's handle; parents keeps the states below it: hPlugin, hFile,
+ * a 0 byte, the host file's full name (kfar.asm: .pluginok) */
+#define PANEL_PLUGIN(ebp) ((PluginInfo *)(ebp)->hPlugin)
+/* the host file's name of the panel's plugin (the last of parents) */
+char *panel_host_name(PanelData *ebp);
 
 /* ---- the screens: panels, viewers, editors, the file search ---- */
 
@@ -222,7 +245,10 @@ extern char keybar_panels[8 * 12 * 6], keybar_viewer[8 * 12 * 6], keybar_editor[
 
 /* ---- the console: cur_width x cur_height cells (char | attr << 8) ---- */
 
-extern int cur_width, cur_height, saved_width, saved_height, fill_width, fill_height;
+extern struct kfar_console_size cur_console_size;      /* kfar.asm: cur_width, cur_height */
+#define cur_width (cur_console_size.width)
+#define cur_height (cur_console_size.height)
+extern int saved_width, saved_height, fill_width, fill_height;
 extern int wnd_width, wnd_height, skinh;
 /* the cells, then (cur_width * cur_height later) the cells last drawn */
 extern u16 *console_data_ptr;
@@ -280,50 +306,14 @@ extern u8 edit_normal_color, edit_status_color;
 
 /* ---- dialogs (dialogs.inc) ---- */
 
-/* flags: 1 the dialog's colours, 2 the warning's colours, 4 no shadow */
-typedef struct dlgtemplate {
-	u32 flags;
-	int x, y, width, height;
-	int border_size_x, border_size_y;
-	const char *title;
-	u8 main_color, border_color, header_color, pad;
-	void *dataptr;          /* used internally */
-} dlgtemplate;
-
-/* int __stdcall DlgProc(DLGTEMPLATE* dlg, int msg, int param1, int param2):
- * msg 1 = draw, 2 = a key (param1 = the scan code) */
-typedef int (*DlgProc_t)(void *dlg, int msg, u32 param1, u32 param2);
-
-/* item types: 1 static text, 2 button, 3 edit box, 4 horizontal line,
- * 5 check box, 6 list; flags: 0/1/2 aligned left/centre/right, 4 the
- * focus, 8 can have the focus, 0x10 default button / modified edit box /
- * checked check box, 0x20 password edit box */
-typedef struct dlgitemtemplate {
-	u32 type;
-	int x1, y1, x2, y2;
-	void *data;
-	u32 flags;
-} dlgitemtemplate;
-
-/* DLGDATA: the template, then num_items items */
-typedef struct DLGDATA {
-	dlgtemplate dialog;
-	DlgProc_t DlgProc;
-	void *user_data;
-	u32 num_items;
-} DLGDATA;
-#define DLG_ITEMS(d) ((dlgitemtemplate *)((DLGDATA *)(d) + 1))
+/* the dialogs' templates, edit boxes and lists: kfar_api.h */
 
 #define quicksearch_maxlen 64
-/* an edit box's data: struct {unsigned maxlength; unsigned pos;
- * unsigned start; char data[maxlength+1];} */
-typedef struct editdata { u32 maxlength, pos, start; char data[]; } editdata;
 #define EDITBUF(n) struct { u32 maxlength, pos, start; char data[(n) + 1]; }
 typedef EDITBUF(512) editbuf512;
 typedef EDITBUF(253 + 1) searchbuf_t;
 typedef EDITBUF(quicksearch_maxlen) quicksearchbuf_t;   /* 12 + 64 bytes, and the original's byte beyond */
-/* a list's items and data */
-typedef struct listitem { struct listitem *next, *prev; char text[]; } listitem;
+/* a list's data */
 typedef struct listdata { listitem *curitemptr; u32 numitems; listitem *head; u32 curitem; } listdata;
 
 int GenericBox(void *dlg, DlgProc_t DlgProc);
@@ -646,7 +636,6 @@ void delete_last_name_from_end(char *esi);
 void delete_last_name(char *esi);
 
 /* filetool.c: the file layer (_FILE, open, read, ...) */
-enum { O_READ = 1, O_WRITE = 2, O_CREATE = 4, O_TRUNCATE = 8, O_SEQUENTIAL_ONLY = 0x10 };
 typedef struct _FILE _FILE;
 _FILE *open(const char *name, int mode);
 _FILE *open2(void *plugin_id, void *plugin_instance, const char *name, int mode);
@@ -655,6 +644,12 @@ void seek(_FILE *hFile, int method, s64 newpos);
 s64 tell(_FILE *hFile);
 s64 filesize(_FILE *hFile);
 void close(_FILE *hFile);
+/* the defaults of a plugin's missing getattr and setpos (filetool.inc) */
+int getattr_default(void *hPlugin, const char *name, void *info);
+void setpos_default(_FILE *hFile, s64 pos);
+/* a plugin's GetFiles calls them (filetool.inc: copy_AddDir, copy_AddFile) */
+bool copy_AddDir(const char *name, void *bdfe_info);
+bool copy_AddFile(const char *name, void *bdfe_info, HANDLE hFile);
 
 /* filesearch.c (filetool.inc): Alt+F7, the file search screen */
 void panels_OnKey_alt_f7(void *ebp, u32 eax);
@@ -665,6 +660,14 @@ void filesearch_OnKey(void *ebp, u32 al);
 void filesearch_getname(void *ebp, char *edi, int ecx);
 void filesearch_OnExit(void *ebp);
 bool filesearch_IsHandleUsed(void *ebp, void *hPlugin, void *hFile);
+
+/* tools.c (tools.inc): load_dll_and_import.do for a plugin (ebp = -1):
+ * the library's export table, or NULL (kfar has said why) */
+struct kos_export;
+const struct kos_export *load_dll_and_import_do(const char *eax);
+/* load_dll_and_import.find_exported_function: the export's value, or
+ * false (CF) when the table has no such name */
+bool find_exported_function(const struct kos_export *edx, const char *eax, void **value);
 
 /* settings (libini, linked in) */
 #include "libini.h"

@@ -78,6 +78,12 @@ extern system_colors sc;
 extern u8 procinfo[1024];
 extern char sys_path[4096], file_name[4096], syntax_path[4096], plugin_path[4096];
 extern char filename_area[256];
+/* the threads' stacks (t_edit.asm's thread: the message boxes', and
+ * thread_coords: the key words' window's; their tops are passed) */
+#define THREAD_STACK 16384
+extern u8 thread_stack[THREAD_STACK], thread_coords_stack[THREAD_STACK];
+#define thread ((void *)(thread_stack + THREAD_STACK))
+#define thread_coords ((void *)(thread_coords_stack + THREAD_STACK))
 
 /* t_data.c */
 extern const char *fn_col_option;
@@ -90,6 +96,7 @@ extern char synt_auto_open[64 * max_synt_auto_open + 1];
 extern scrollbar wScr, hScr, ws_dir_lbox;
 extern open_dialog OpenDialog_data;
 extern const char default_dir[];
+extern const char open_dialog_name[], communication_area_default_path[];
 extern text_editor tedit0;
 extern u8 conv_tabl[128];
 extern void *el_focus;
@@ -99,8 +106,8 @@ extern option_box *opt_gr1;
 extern option_box *opt_grlist1[];
 extern option_box opt1, opt2, opt3;
 extern check_box2 ch1;
-extern char msgbox_1[], msgbox_2[], msgbox_3[], msgbox_4[], msgbox_6[], msgbox_7[];
-extern char *msgbox_1_z, *msgbox_3_err, *msgbox_4_err, *msgbox_6_err;
+extern char msgbox_1[], msgbox_2[], msgbox_3[], msgbox_4[], msgbox_6[], msgbox_7[], msgbox_9[];
+extern char *msgbox_1_z, *msgbox_3_err, *msgbox_4_err, *msgbox_6_err, *msgbox_9_fdp;
 extern const char txtFindCapt[], txtFindNext[], txtRerlaceCapt[], txtRerlace[], txtRerlaceAll[];
 extern const char txtFormatCapt[], txtFormatApply[], txtGotoCapt[], txtGoto[], txt_Info[];
 extern const char ch_text_1[];
@@ -157,7 +164,7 @@ void EvSize(void);
 void img_to_gray(const u8 *buf_rgb, u8 *buf_g24, u32 pixels);
 
 /* wnd_k_words.c */
-extern u32 wnd_k_words_run;
+extern volatile u32 wnd_k_words_run;
 void prop_start(void);
 
 /* strlen.c */

@@ -46,7 +46,7 @@ char keybar_editor[8 * 12 * 6] =
 	"      " "      " "      " "      " "      " "      " "      " "      " "Config" "      " "      " "      "
 	BLANK12 BLANK12;
 
-int cur_width = 80, cur_height = 25;
+struct kfar_console_size cur_console_size = { 80, 25 };     /* cur_width, cur_height */
 int saved_width = -1, saved_height = -1;
 int fill_width, fill_height;   /* the remainders of the window's size by the font's */
 u16 *console_data_ptr;
@@ -508,10 +508,44 @@ const char *const errors1[12] = {
 };
 const char *const errors2[3] = { error30msg, error31msg, error32msg };
 
-/* plugins: none (see kfar.h) */
+/* kfar.asm: plugins, num_plugins, alloc_plugins: the loaded plugins */
 PluginInfo *plugins;
 int num_plugins;
+u32 alloc_plugins;
 int EditPlugInfo;
+
+/* kfar.asm: kfar_info, what plugin_load gets (kfar_api.h); the memory
+ * functions say so when there is none (xpgalloc ...), pgalloc2 ... are
+ * libini_alloc ... as in the original */
+void *libini_alloc(unsigned size);
+void *libini_realloc(void *p, unsigned size);
+void libini_free(void *p);
+kfar_info kfar_info_data = {
+	.StructSize = sizeof(kfar_info),
+	.kfar_ver = version_dword,
+	.open = (HANDLE (*)(const char *, int))open,
+	.open2 = (HANDLE (*)(void *, HANDLE, const char *, int))open2,
+	.read = (unsigned (*)(HANDLE, void *, unsigned))read,
+	.write = (void *)-1,            /* write: to be implemented */
+	.seek = (void (*)(HANDLE, int, long long))seek,
+	.tell = (long long (*)(HANDLE))tell,
+	.flush = (void *)-1,            /* flush: to be implemented */
+	.filesize = (long long (*)(HANDLE))filesize,
+	.close = (void (*)(HANDLE))close,
+	.pgalloc = xpgalloc,
+	.pgrealloc = xpgrealloc,
+	.pgfree = pgfree,
+	.getfreemem = getfreemem,
+	.pgalloc2 = libini_alloc,
+	.pgrealloc2 = libini_realloc,
+	.pgfree2 = libini_free,
+	.menu = (int (*)(void *, const char *, unsigned))menu,
+	.menu_centered_in = (int (*)(int, int, int, int, void *, const char *, unsigned))menu_centered_in,
+	.DialogBox = DialogBox,
+	.SayErr = SayErr,
+	.Message = Message,
+	.cur_console_size = &cur_console_size,
+};
 u8 EditEOLStyle = edit_eol_unix;
 
 /* kfar.asm: colmodes, the panels' view modes */

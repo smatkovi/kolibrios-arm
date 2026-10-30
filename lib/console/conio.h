@@ -31,6 +31,7 @@ typedef unsigned short word;
 /* the window was closed */
 #define CON_WINDOW_CLOSED 0x200
 
+int con_start(dword state);
 int con_init(void);
 int con_init_opt(dword wnd_width, dword wnd_height, dword scr_width, dword scr_height, const char *title);
 void con_exit(int bCloseWindow);

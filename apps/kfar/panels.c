@@ -10,8 +10,11 @@
  * panel (ebp) and the key (eax); the original's ecx (the index), edx
  * (start) and ebx (start + colst) are computed from the panel.
  *
- * Differences: plugin panels do not exist (kfar.h), their branches are
- * left out; PgUp to the first file scrolls the panel (the original
+ * Plugin panels (kfar.h: PANEL_PLUGIN) as the original's: Enter on a
+ * file asks the plugins (OpenFilePlugin), folders through SetFolder,
+ * ".." at the root closes the plugin, F5 copies out (GetFiles or the
+ * folders read), F3 and F4 open the plugin's files (viewer.c, editor.c).
+ * Differences: PgUp to the first file scrolls the panel (the original
  * compares unsigned there and leaves the cursor above the panel).
  *
  * Added: F6 and Shift+F6, rename or move (kfar 0.65 has only their
@@ -26,6 +29,7 @@ static bool quick_find(PanelData *ebp);
 static bool quick_find_next(PanelData *ebp);
 static bool quick_find_prev(PanelData *ebp);
 static void panels_OnKey_copydone(PanelData *ebp);
+static void panels_OnKey_copy_GetFiles(PanelData *ebp, u8 *e);
 static void panels_OnKey_bigfilename(void);
 static void panels_OnKey_l2(const char *eax);
 static void panels_OnKey_dotdot(PanelData *ebp);
@@ -340,7 +344,11 @@ static void panels_OnKey_enter_folder(PanelData *ebp, const u8 *ecx)
 		*edi++ = al;
 		if (!al) break;
 	}
-	/* (a plugin's SetFolder here) */
+	PluginInfo *eax = PANEL_PLUGIN(ebp);
+	if (eax && !eax->SetFolder(ebp->hFile, bdfe_name(ecx), ebp->dir)) {
+		strcpy(ebp->dir, prev_dir);
+		return;                         /* .retd */
+	}
 	panels_OnKey_reread(ebp);
 }
 
@@ -349,9 +357,10 @@ static void panels_OnKey_enter_folder(PanelData *ebp, const u8 *ecx)
 static void panels_OnKey_dotdot(PanelData *ebp)
 {
 	char *edi = ebp->dir;
-	if (edi[0] == '/' && edi[1] == 0) {
-		/* (the root of a plugin's panel: close_plugin_panel) */
-		return;                         /* .retd */
+	while (edi[0] == '/' && edi[1] == 0) {
+		if (!ebp->hPlugin) return;      /* .retd */
+		/* the plugin's root: back to its host file's folder */
+		close_plugin_panel(ebp);
 	}
 	/* .dotdot_noroot */
 	char *edx = edi;
@@ -361,6 +370,11 @@ static void panels_OnKey_dotdot(PanelData *ebp)
 	char saved[4];
 	memcpy(saved, edi, 4);
 	*edi = 0;
+	PluginInfo *eax = PANEL_PLUGIN(ebp);
+	if (eax && !eax->SetFolder(ebp->hFile, aDotDot, ebp->dir)) {
+		memcpy(edi, saved, 4);
+		return;
+	}
 	/* .dotdot_native */
 	read_folder(ebp);
 	memcpy(edi, saved, 4);
@@ -386,6 +400,44 @@ static void panels_OnKey_dotdot(PanelData *ebp)
 	panels_OnKey_done_redraw(ebp);
 }
 
+/* kfar.asm: panels_OnKey.pluginok: the plugin edx took the file
+ * (execdata) with the handle edi: the panel's state saved at the end of
+ * parents (hPlugin, hFile, 0, the host file's name), the plugin's root */
+static void panels_OnKey_pluginok(PanelData *ebp, PluginInfo *edx, HANDLE edi)
+{
+	u32 esi = strlen(execdata) + 1 + 9;
+	/* allocate esi bytes in buffer 'parents' */
+	u32 ecx = ebp->parents_sz + esi;
+	if (ecx > ebp->parents_alloc) {
+		u8 *eax = xpgrealloc(ebp->parents, ecx);
+		if (!eax) {
+			edx->ClosePlugin(edi);
+			return;
+		}
+		ebp->parents = eax;
+		ebp->parents_alloc = ecx;       /* (the original never sets it: a realloc each time) */
+	}
+	/* .enter.norealloc */
+	ebp->parents_sz = ecx;
+	/* save current state to the end of buffer */
+	u8 *rec = ebp->parents + ecx - esi;
+	*(void **)rec = ebp->hPlugin;
+	*(void **)(rec + 4) = ebp->hFile;
+	ebp->hPlugin = edx;
+	ebp->hFile = edi;
+	rec[8] = 0;
+	memcpy(rec + 9, execdata, esi - 9);
+	strcpy(ebp->dir, "/");
+	ebp->plugin_flags = 0;
+	PANEL_PLUGIN(ebp)->GetOpenPluginInfo(ebp->hFile, (OpenPluginInfo *)&ebp->plugin_flags);
+	/* the '..' entry: the host file's information, as a folder */
+	u8 *e = ebp == &panel1 ? left_dotdot_entry : right_dotdot_entry;
+	memcpy(e, get_curfile_folder_entry(ebp), 40);
+	e[0] = 0x10;                            /* attributes: folder */
+	memcpy(e + 40, "..\0", 4);
+	panels_OnKey_reread(ebp);
+}
+
 /* kfar.asm: panels_OnKey.enter */
 void panels_OnKey_enter(void *p, u32 al)
 {
@@ -408,13 +460,29 @@ void panels_OnKey_enter(void *p, u32 al)
 	_FILE *esi = open(execdata, O_READ);
 	if (esi) {
 		u32 edi = read(esi, filedata_buffer, filedata_buffer_size);
-		close(esi);
 		/* test for Kolibri executable (MENUET01, and MENUETA1 here) */
 		if (edi >= 0x24 && (!memcmp(filedata_buffer, "MENUET", 6) ||
 				    (!memcmp(filedata_buffer, "KPCK", 4) &&
-				     *(u32 *)(filedata_buffer + 12) == 0x26914601)))
+				     *(u32 *)(filedata_buffer + 12) == 0x26914601))) {
+			close(esi);             /* .close_run */
 			goto run_app;
-		/* .enter.noexec: the plugins' OpenFilePlugin (none) */
+		}
+		/* .enter.noexec */
+		PluginInfo *edx = plugins;
+		for (int n = num_plugins; n > 0; n--, edx++) {
+			/* .plugloop */
+			HANDLE eax = edx->OpenFilePlugin(esi, get_curfile_folder_entry(ebp), filedata_buffer, edi,
+							 ebp->hPlugin, ebp->hFile, execdata);
+			if (!eax) continue;
+			if (eax == (HANDLE)-1) {
+				close(esi);
+				return;
+			}
+			panels_OnKey_pluginok(ebp, edx, eax);
+			return;
+		}
+		/* .plugdone */
+		close(esi);
 	}
 	/* .noplugins: run program or association */
 	char *edi = find_extension(ecx);
@@ -503,8 +571,10 @@ void panels_OnKey_alt_f1_2(void *p, u32 eax)
 		edx[i].next = i + 1 < ecx ? (listitem *)&edx[i + 1] : 0;
 		edx[i].prev = i ? (listitem *)&edx[i - 1] : 0;
 	}
-	/* the current drive: its name begins the panel's folder */
-	const char *dir = ebp->dir;
+	/* the current drive: its name begins the panel's folder (on a
+	 * plugin's panel the first host file's: the original looks at
+	 * parents+8, the 0 byte before that name, and so finds none) */
+	const char *dir = ebp->hPlugin ? (const char *)ebp->parents + 9 : ebp->dir;
 	drive_item *cur = edx;
 	for (int i = 0; i < ecx; i++) {
 		const char *s = edx[i].text, *t = dir;
@@ -741,7 +811,10 @@ static void panels_OnKey_f5_common(PanelData *ebp, char *edi)
 	copy_bSkipAll = 0;
 	copy_bSkipAll2 = 0;
 	copy_bSkipAll3 = 0;
-	/* (plugin_flags & 2: a plugin's GetFiles) */
+	if (ebp->plugin_flags & 2) {
+		panels_OnKey_copy_GetFiles(ebp, e);
+		return;
+	}
 	if (!ebp->selected_num) {
 		if (bMove) move_file(ebp, e);
 		else copy_file(ebp, e);
@@ -765,6 +838,26 @@ static void panels_OnKey_copydone(PanelData *ebp)
 {
 	panels_OnKey_ctrl_r(ebp, 0);
 	panels_OnKey_ctrl_r(other_panel(ebp), 0);
+}
+
+/* kfar.asm: panels_OnKey.copy_GetFiles: the plugin copies (its GetFiles
+ * calls copy_AddFile and copy_AddDir) the selected entries, or the one
+ * under the cursor (e) */
+static void panels_OnKey_copy_GetFiles(PanelData *ebp, u8 *e)
+{
+	u32 ecx = ebp->selected_num ? ebp->selected_num : 1;
+	void **items = xpgalloc(ecx * 4);
+	if (!items) return;
+	items[0] = e;
+	if (ebp->selected_num) {
+		void **edi = items;
+		for (int i = 0; i < ebp->numfiles; i++)
+			if (bdfe_sel(ebp->files[i]) & 1) *edi++ = ebp->files[i];
+	}
+	/* .cgf1 */
+	PANEL_PLUGIN(ebp)->GetFiles(ebp->hFile, ecx, items, copy_AddFile, copy_AddDir);
+	pgfree(items);
+	panels_OnKey_copydone(ebp);
 }
 
 /* kfar.asm: panels_OnKey.f5_2: the destination: esi's folder and '/' */
@@ -1282,12 +1375,27 @@ void panels_OnKey(void *unused, u32 eax)
 }
 
 /* kfar.asm: close_plugin_panel: close the plugin and restore the old
- * folder (no plugins here: the panel is never a plugin's) */
+ * folder: the panel's last state in parents (its folder: the host file's
+ * full name, which ".." then leaves); the plugin is closed unless a
+ * screen still uses it (close_handle_if_unused) */
 void close_plugin_panel(PanelData *ebp)
 {
-	ebp->hPlugin = 0;
-	ebp->hFile = 0;
+	char *esi = panel_host_name(ebp);
+	strcpy(ebp->dir, esi);
+	u8 *rec = (u8 *)esi - 9;
+	void *edx = *(void **)rec;              /* hPlugin */
+	void *ebx = *(void **)(rec + 4);        /* hFile */
+	ebp->parents_sz = rec - ebp->parents;
+	void *t = ebp->hPlugin;
+	ebp->hPlugin = edx;
+	edx = t;
+	t = ebp->hFile;
+	ebp->hFile = ebx;
+	ebx = t;
 	ebp->plugin_flags = 0;
+	if (ebp->hPlugin)
+		PANEL_PLUGIN(ebp)->GetOpenPluginInfo(ebp->hFile, (OpenPluginInfo *)&ebp->plugin_flags);
+	close_handle_if_unused(edx, ebx);
 }
 
 /* kfar.asm: close_plugin_panels */
@@ -1296,19 +1404,36 @@ void close_plugin_panels(PanelData *ebp)
 	while (ebp->hPlugin) close_plugin_panel(ebp);
 }
 
-/* kfar.asm: close_handle_if_unused: edx = hPlugin, ebx = hFile (a
- * plugin's ClosePlugin when no screen uses them: no plugins here) */
+/* kfar.asm: close_handle_if_unused: edx = hPlugin, ebx = hFile: the
+ * plugin's ClosePlugin when no screen uses them */
 void close_handle_if_unused(void *hPlugin, void *hFile)
 {
 	for (int ecx = 0; ecx < num_screens; ecx++)
 		if (screens[ecx].vtable->IsHandleUsed(screens[ecx].data, hPlugin, hFile)) return;
+	((PluginInfo *)hPlugin)->ClosePlugin(hFile);
+}
+
+/* kfar.asm: panels_IsHandleUsed.1: the panel shows them, or keeps them
+ * in parents (the original compares the plugins there only, as here:
+ * its "mov ebx, [esi+4]; jz .ret" keeps the flags of the hPlugin's
+ * compare) */
+static bool panel_uses_handle(PanelData *ebp, void *hPlugin, void *hFile)
+{
+	if (hPlugin == ebp->hPlugin && hFile == ebp->hFile) return true;
+	if (!ebp->parents_sz) return false;
+	u8 *esi = ebp->parents + ebp->parents_sz;
+	for (;;) {
+		do esi--; while (esi[-1]);
+		esi -= 9;
+		if (*(void **)esi == hPlugin) return true;
+		if (esi == ebp->parents) return false;
+	}
 }
 
 /* kfar.asm: panels_IsHandleUsed */
 bool panels_IsHandleUsed(void *unused, void *hPlugin, void *hFile)
 {
-	return (hPlugin == panel1.hPlugin && hFile == panel1.hFile) ||
-	       (hPlugin == panel2.hPlugin && hFile == panel2.hFile);
+	return panel_uses_handle(&panel1, hPlugin, hFile) || panel_uses_handle(&panel2, hPlugin, hFile);
 }
 
 /* kfar.asm: panels_OnExit: close plugin panels */

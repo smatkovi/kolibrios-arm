@@ -631,7 +631,7 @@ static void close_app(int slot)
 }
 
 /* what the system did meanwhile: an application came, one ended */
-static u8 seen[64];
+static u8 seen[256];        /* by slot (the kernel has up to 255) */
 
 static void watch_modem(void)
 {
@@ -683,10 +683,10 @@ static void follow(void)
 	 * or the shell defined its window first) */
 	int fresh = 0;
 	for (int i = 0; i < napps; i++)
-		if (apps[i].slot < 64 && !seen[apps[i].slot]) fresh = apps[i].slot;
+		if (apps[i].slot < 256 && !seen[apps[i].slot]) fresh = apps[i].slot;
 	memset(seen, 0, sizeof(seen));
 	for (int i = 0; i < napps; i++)
-		if (apps[i].slot < 64) seen[apps[i].slot] = 1;
+		if (apps[i].slot < 256) seen[apps[i].slot] = 1;
 	if (fresh || (mode == APP && a != front && a != self_slot && app_index(a) >= 0)) {
 		front = fresh ? fresh : a;
 		mode = -1;
@@ -804,7 +804,7 @@ int main(const char *params)
 	cur_h = sh;
 	scan();
 	for (int i = 0; i < napps; i++)
-		if (apps[i].slot < 64) seen[apps[i].slot] = 1;
+		if (apps[i].slot < 256) seen[apps[i].slot] = 1;
 	draw();
 	kos_set_zpos(KOS_ZPOS_ALWAYS_TOP);
 	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_MOUSE);

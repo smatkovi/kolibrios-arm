@@ -35,7 +35,8 @@ LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 # storage (docs/storage.md): the block layer, the file systems, the
 # container; the drivers by kernel below
 STORAGE := storage/blk.c storage/ext4.c storage/fat.c storage/home.c storage/dev.c storage/mmc.c storage/sdhci.c
-KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c serial.c loader.c main.c $(STORAGE) \
+KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c serial.c loader.c main.c \
+	proc.c dll.c $(STORAGE) \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
 	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c modem/ce.c
@@ -184,19 +185,21 @@ $(A)/%.kex: $(A)/%.elf
 # the libraries of programs, lib/NAME/*.c into build/apps/lib/libNAME.a:
 # libc (a C library for the ported programs: lib/libc/include), console
 # (console.obj's functions: a console window), libini (libini.obj's:
-# settings files), boxlib (box_lib.obj's widgets). KolibriOS loads them
-# as shared libraries (function 68.19); here they are linked into each
-# program (docs/apps.md)
+# settings files), boxlib (box_lib.obj's widgets), msgbox, proc_lib,
+# kmenu. KolibriOS loads them as shared libraries (function 68.19): DLLS
+# below are built so too, and the programs load them (DLL=0: they are
+# linked into each program instead; docs/threads.md)
 LIBS := $(sort $(patsubst lib/%/,%,$(dir $(wildcard lib/*/*.c))))
 LIBC_INC := -nostdinc -isystem $(shell $(CC32) -print-file-name=include) -Ilib/libc/include -Ilib \
 	$(foreach l,$(LIBS),-Ilib/$(l)) -I$(A)/gen
-# a library's own rules (generated headers): lib/NAME/lib.mk
+# a library's own rules (generated headers; LIBCFLAGS_NAME, its flags
+# besides these): lib/NAME/lib.mk
 include $(sort $(wildcard lib/*/lib.mk))
 define CLIB
 $(1)_LOBJ := $$(patsubst lib/$(1)/%.c,$(A)/lib/$(1)/%.o,$$(wildcard lib/$(1)/*.c))
 $(A)/lib/$(1)/%.o: lib/$(1)/%.c | dirs
 	@mkdir -p $$(dir $$@)
-	$(CC32) $(ACFLAGS) $(LIBC_INC) -MMD -MP -c $$< -o $$@
+	$(CC32) $(ACFLAGS) $(LIBC_INC) $$(LIBCFLAGS_$(1)) -MMD -MP -c $$< -o $$@
 $(A)/lib/$(1).a: $$($(1)_LOBJ)
 	@rm -f $$@
 	$(CROSS)ar rcs $$@ $$^
@@ -205,6 +208,68 @@ endef
 $(foreach l,$(LIBS),$(eval $(call CLIB,$(l))))
 $(A)/lib/crt0-libc.o: lib/crt0.S | dirs
 	$(CC32) $(ACFLAGS) -DLIBC -c $< -o $@
+
+# the libraries as KolibriOS loads them (68.19, kernel/dll.c), NAME:FILE:
+# lib/NAME as /sys/lib/FILE, an ARM ELF shared object, position
+# independent, with the C library and libgcc in it, its export table
+# from lib/NAME/NAME.exp (tools/mkdll.py; docs/threads.md). A program
+# links lib/NAME's import table and stubs instead of lib/NAME itself
+# (lib/NAME/import/*.c with them: what KolibriOS's programs have
+# themselves, macros and the like); DLL=0 links the libraries in
+DLL ?= 1
+DLLS := console:console.obj boxlib:box_lib.obj libini:libini.obj kfar_arc:kfar_arc.obj
+DLL_NAMES := $(foreach d,$(DLLS),$(firstword $(subst :, ,$(d))))
+P := $(A)/pic
+PICFLAGS := -fPIC -fvisibility=hidden
+DLL_LDFLAGS := -shared -nostdlib -Wl,-Bsymbolic -Wl,--hash-style=sysv -Wl,-z,max-page-size=4096 \
+	-Wl,--no-undefined -Wl,-s -Wl,--no-warn-rwx-segments
+# a library of a program: its import side or the library itself
+libfile = $(if $(and $(filter 1,$(DLL)),$(filter $(1),$(DLL_NAMES))),$(A)/lib/$(1)-imp.a,$(A)/lib/$(1).a)
+LIBC_PIC_OBJ := $(patsubst lib/libc/%.c,$(P)/libc/%.o,$(filter-out lib/libc/start.c lib/libc/malloc.c \
+	lib/libc/dll.c,$(wildcard lib/libc/*.c)))
+$(P)/libc/%.o: lib/libc/%.c | dirs
+	@mkdir -p $(dir $@)
+	$(CC32) $(ACFLAGS) $(PICFLAGS) $(LIBC_INC) -MMD -MP -c $< -o $@
+$(P)/libc.a: $(LIBC_PIC_OBJ)
+	@rm -f $@
+	$(CROSS)ar rcs $@ $^
+$(P)/dllrt.o: lib/dllrt.c lib/kos_dll.h lib/kos.h | dirs
+	@mkdir -p $(dir $@)
+	$(CC32) $(ACFLAGS) $(PICFLAGS) $(LIBC_INC) -c $< -o $@
+-include $(LIBC_PIC_OBJ:.o=.d)
+define DLL_LIB
+$(1)_POBJ := $$(patsubst lib/$(1)/%.c,$(P)/$(1)/%.o,$$(wildcard lib/$(1)/*.c))
+$(P)/$(1)/%.o: lib/$(1)/%.c | dirs
+	@mkdir -p $$(dir $$@)
+	$(CC32) $(ACFLAGS) $(PICFLAGS) $(LIBC_INC) $$(LIBCFLAGS_$(1)) -MMD -MP -c $$< -o $$@
+$(P)/$(1)/exports.S: lib/$(1)/$(1).exp tools/mkdll.py | dirs
+	@mkdir -p $$(dir $$@)
+	python3 -I tools/mkdll.py exports $$< $$@
+$(P)/$(1)/exports.o: $(P)/$(1)/exports.S
+	$(CC32) $(ACFLAGS) -c $$< -o $$@
+$(A)/lib/$(2): $$($(1)_POBJ) $(P)/$(1)/exports.o $(P)/dllrt.o $(P)/libc.a tools/mkdll.py
+	$(CC32) $(ARCH32) $(DLL_LDFLAGS) $$($(1)_POBJ) $(P)/$(1)/exports.o $(P)/dllrt.o $(P)/libc.a $(LIBGCC) -o $$@
+	python3 -I tools/mkdll.py check $$@
+$(A)/lib/$(1)-imp.S: lib/$(1)/$(1).exp tools/mkdll.py | dirs
+	python3 -I tools/mkdll.py imports $$< $(2) $$@
+$(A)/lib/$(1)-imp.o: $(A)/lib/$(1)-imp.S
+	$(CC32) $(ACFLAGS) -c $$< -o $$@
+$(1)_IOBJ := $(A)/lib/$(1)-imp.o $$(patsubst lib/$(1)/import/%.c,$(A)/lib/$(1)/import/%.o,$$(wildcard lib/$(1)/import/*.c))
+$(A)/lib/$(1)/import/%.o: lib/$(1)/import/%.c | dirs
+	@mkdir -p $$(dir $$@)
+	$(CC32) $(ACFLAGS) $(LIBC_INC) -MMD -MP -c $$< -o $$@
+$(A)/lib/$(1)-imp.a: $$($(1)_IOBJ)
+	@rm -f $$@
+	$(CROSS)ar rcs $$@ $$^
+-include $$($(1)_POBJ:.o=.d)
+endef
+$(foreach d,$(DLLS),$(eval $(call DLL_LIB,$(firstword $(subst :, ,$(d))),$(lastword $(subst :, ,$(d))))))
+# DLL in a file, written when it changes: the programs follow it
+$(A)/dll-mode: FORCE | dirs
+	@[ "$$(cat $@ 2> /dev/null)" = "$(DLL)" ] || echo "$(DLL)" > $@
+# on the ramdisk in /sys/lib, as in KolibriOS
+DLL_FILES := $(foreach d,$(DLLS),$(A)/lib/$(lastword $(subst :, ,$(d))))
+RD_DLLS := $(foreach d,$(DLLS),lib/$(lastword $(subst :, ,$(d)))=$(A)/lib/$(lastword $(subst :, ,$(d))))
 
 # programs of several files, or with the C library: CAPPS, each with
 # SRC_name (its C files: apps/name/..., third_party/kolibrios/...),
@@ -216,10 +281,10 @@ $(1)_OBJ := $$(patsubst %.c,$(A)/$(1)/%.o,$$(SRC_$(1)))
 $(A)/$(1)/%.o: %.c | dirs
 	@mkdir -p $$(dir $$@)
 	$(CC32) $(ACFLAGS) $(LIBC_INC) $$(CFLAGS_$(1)) -MMD -MP -c $$< -o $$@
-$(A)/$(1).elf: $$($(1)_OBJ) $(A)/lib/crt0-libc.o $$(foreach l,$$(LIBS_$(1)) libc,$(A)/lib/$$(l).a) lib/app.ld
+$(A)/$(1).elf: $$($(1)_OBJ) $(A)/lib/crt0-libc.o $$(foreach l,$$(LIBS_$(1)) libc,$$(call libfile,$$(l))) lib/app.ld $(A)/dll-mode
 	$(CC32) $(LDFLAGS) $$(if $$(MEM_$(1)),-Wl$$(comma)--defsym$$(comma)MEMORY_SIZE=$$(MEM_$(1))) \
 		-T lib/app.ld $(A)/lib/crt0-libc.o $$($(1)_OBJ) \
-		-Wl,--start-group $$(foreach l,$$(LIBS_$(1)) libc,$(A)/lib/$$(l).a) -Wl,--end-group $(LIBGCC) -o $$@
+		-Wl,--start-group $$(foreach l,$$(LIBS_$(1)) libc,$$(call libfile,$$(l))) -Wl,--end-group $(LIBGCC) -o $$@
 -include $$($(1)_OBJ:.o=.d)
 endef
 $(foreach a,$(CAPPS),$(eval $(call CAPP,$(a))))
@@ -245,11 +310,11 @@ LINUX_DEPS := $(foreach f,$(LINUX_FILES),$(lastword $(subst =, ,$(f))))
 
 comma := ,
 $(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile $(LINUX_DEPS) $(A)/linux-files \
-		$(foreach f,$(RD_FILES),$(lastword $(subst =, ,$(f))))
+		$(foreach f,$(RD_FILES),$(lastword $(subst =, ,$(f)))) $(DLL_FILES)
 	python3 tools/mkrd.py $@ autorun=$(AUTORUN) \
 		autorun.classic=apps/autorun.classic autorun.hildon=apps/autorun \
 		$(foreach a,$(APPS) $(CAPPS) $(ASM_APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex) \
-		$(RD_FILES) \
+		$(RD_FILES) $(RD_DLLS) \
 		$(foreach f,$(LINUX_FILES),linux/$(f))
 
 # the list in a file, written when it changes: the ramdisk follows it

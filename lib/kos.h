@@ -197,6 +197,46 @@ static inline struct kos_r2 kos_read_folder(const char *path, void *buf, u32 fir
 	return kos_call2(70, (u32)&fi, 0, 0, 0, 0);
 }
 
+/* threads (51), IPC (60), named shared memory (68.22, 68.23), libraries
+ * (68.19): KolibriOS's functions (docs/threads.md) */
+enum { KOS_EV_IPC = 7 };
+#define EVM_IPC 0x40
+/* a thread in this program's address space: entry with the stack
+ * pointer stack (the top of memory of the program's own); its TID or -1.
+ * It starts with all registers 0 and ends with function -1 (kos_exit) */
+static inline int kos_thread_create(void (*entry)(void), void *stack)
+{
+	return kos_call(51, 1, (u32)entry, (u32)stack, 0, 0);
+}
+static inline int kos_thread_slot(void) { return kos_call(51, 2, 0, 0, 0, 0); }
+static inline int kos_kill_pid(u32 pid) { return kos_call(18, 18, pid, 0, 0, 0); }
+static inline int kos_slot_of_pid(u32 pid) { return kos_call(18, 21, pid, 0, 0, 0); }
+/* the IPC buffer: +0 locked (non-zero), +4 the bytes used (8 at first),
+ * then the messages: the sender's PID, the length, the data */
+static inline void kos_ipc_set_area(void *buf, u32 size) { kos_call(60, 1, (u32)buf, size, 0, 0); }
+/* 0 sent, 1 no buffer, 2 locked, 3 full, 4 no such PID */
+static inline int kos_ipc_send(u32 pid, const void *msg, u32 len) { return kos_call(60, 2, pid, (u32)msg, len, 0); }
+#define KOS_SHM_READ 0
+#define KOS_SHM_WRITE 1
+#define KOS_SHM_OPEN 0
+#define KOS_SHM_OPEN_ALWAYS 4
+#define KOS_SHM_CREATE 8
+/* the area's address or NULL; *edx: 0 created, else its size, or the error */
+static inline void *kos_shm_open(const char *name, u32 size, u32 flags, u32 *edx)
+{
+	register u32 r0 asm("r0") = 68;
+	register u32 r1 asm("r1") = 22;
+	register u32 r2 asm("r2") = (u32)name;
+	register u32 r3 asm("r3") = size;
+	register u32 r4 asm("r4") = flags;
+	asm volatile("svc #0x40" : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3), "+r"(r4) :: "memory");
+	if (edx) *edx = r3;
+	return (void *)r0;
+}
+static inline void kos_shm_close(const char *name) { kos_call(68, 23, (u32)name, 0, 0, 0); }
+/* a library's export table ({ name, value } pairs, 0-terminated) or NULL */
+static inline void *kos_load_dll(const char *path) { return (void *)kos_call(68, 19, (u32)path, 0, 0, 0); }
+
 /* klib.c */
 void *memset(void *d, int c, unsigned n);
 void *memcpy(void *d, const void *s, unsigned n);

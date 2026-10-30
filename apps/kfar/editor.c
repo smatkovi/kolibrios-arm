@@ -31,8 +31,9 @@
  *   empty text and cancelling a write error left the stack unbalanced;
  *   a block merged into the one before it keeps the screen's first line
  *   (the original's line start would point into the freed block);
- * - plugins are not supported (kfar.h): their branches are left out, the
- *   checks of hPlugin (always 0) are kept. */
+ * - a file on a plugin's panel is read through the plugin's open and
+ *   read, as in the original, and closed after it (the original leaves
+ *   it open); saving it is refused (aCannotSaveToPlugin), as there. */
 #include "kfar.h"
 
 /* when a file is loaded into the editor, this file is fragmented to
@@ -213,7 +214,12 @@ void edit_file(PanelData *panel, int idx)
 	ebp->memsize = eax;
 	ebp->eol = EditEOLStyle;
 	ebp->hPlugin = panel->hPlugin;
-	/* (on a plugin's panel the host's name went to hostname: no plugins) */
+	if (ebp->hPlugin) {
+		/* the host file's name, its last part */
+		const char *h = panel_host_name(panel), *t = strrchr(h, '/');
+		strcpy(ebp->hostname, t ? t + 1 : h);
+	}
+	/* .nocopyhostname */
 	ebp->hFile = panel->hFile;
 	ebp->encoding = encodings_cp866;
 	ebp->flags = 0;
@@ -232,13 +238,32 @@ void edit_file(PanelData *panel, int idx)
 	readinfo.first = readinfo.first_hi = 0;
 	readinfo.size = 16384;
 	readinfo.data = ebp->buf;
-	/* (plugins: their open) */
+	PluginInfo *plugin = PANEL_PLUGIN(ebp);
+	HANDLE hWork = 0;
+	if (plugin) {
+		hWork = plugin->open(ebp->hFile, readinfo.name, O_READ);
+		if (!hWork) {
+			/* ..openerr_in_screen */
+			SayErr(1, aCannotOpenFile_ptr, 1, ContinueBtn);
+			delete_active_screen();
+			return;
+		}
+	}
 	u32 rest = EditBlockSize;               /* bytes rest in the current block */
 	edi += EditBlockStart;
 	for (;;) {
-		/* .readloop, .readnative */
+		/* .readloop */
 		u32 nread, err;
-		for (;;) {
+		if (plugin) {
+			nread = plugin->read(hWork, readinfo.data, 16384);
+			if (nread == (u32)-1) {
+				/* let us hope that plugin says error itself */
+				plugin->close(hWork);
+				delete_active_screen();         /* .readfailed */
+				return;
+			}
+		} else for (;;) {
+			/* .readnative */
 			err = fs_call(&readinfo, &nread);
 			if (err == 0 || err == 6) break;
 			const char *s[3] = { get_error_msg(err), aCannotReadFile, readinfo.name };
@@ -277,6 +302,7 @@ void edit_file(PanelData *panel, int idx)
 					}
 					if (!n) {
 						/* .nomemory2 */
+						if (plugin) plugin->close(hWork);
 						edit_file_nomemory();
 						delete_active_screen();
 						return;
@@ -331,6 +357,7 @@ void edit_file(PanelData *panel, int idx)
 		} while (left);
 		if (nread != 16384) break;
 	}
+	if (plugin) plugin->close(hWork);
 	/* .readdone */
 	u8 *page = PAGE(ebp, edi);
 	HDR(page)->next = 0;
