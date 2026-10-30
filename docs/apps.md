@@ -217,6 +217,66 @@ this ramdisk (kfar says so).
 ![the volumes on the AArch64 kernel](img/kfar-arm64-drives.png)
 ![Alt+F7](img/kfar-filesearch.png)
 
+## t_edit
+
+KolibriOS's text editor (IgorA's TextEdit) with its editor component:
+`apps/t_edit` translates `t_edit.asm`, `t_data.inc`, `t_button.inc`,
+`t_menu.inc`, `t_draw.inc`, `wnd_k_words.inc` and `strlen.inc` file by
+file (about 2 800 lines of assembler, 1 500 of C); the editor itself is
+box_lib's TED component (`t_edit.asm` there, 4 500 lines, now
+`lib/boxlib/t_edit.c`, 1 900), with box_lib's edit box, check box,
+option box, scroll bars and tree list beside it (`lib/boxlib`, their
+structures field for field as box_lib.mac's, checked by
+`_Static_assert`). Its other libraries: `lib/msgbox` (KolibriOS's
+msgbox), `lib/proc_lib` (OpenDialog), `lib/kmenu` (the menu bar),
+libini.
+
+Its look and keys are the original's: the menu bar, the toolbar with
+`te_icon.png`'s icons (and their grey versions), line numbers, the
+scroll bars, the syntax colours of `info/*.syn`, the panels (find,
+replace, go to line, the syntax list as a tree list), the keyword
+window, `t_edit.ini`'s settings, the file given as its parameter.
+Tried in QEMU (both looks, both kernels): opening (an ini file,
+assembler, both coloured), typing, selecting with Shift, Ctrl+C/X/V,
+Ctrl+Z/Y, finding, replacing all, going to a line, choosing the syntax,
+the keyword search, the menus, the open and save dialogs, saving, the
+"Save changes?" question.
+
+What differs, and why:
+
+- OpenDialog in KolibriOS is a program of its own (`opendial`) talking
+  to the caller through shared memory; here `lib/proc_lib` shows it in
+  the caller's window, as a modal loop with opendial's list, path, file
+  name, filter and keys.
+- kmenu has no source in KolibriOS's repository (only `kmenu.obj`):
+  `lib/kmenu` is written anew with the API t_edit and `kolibri_kmenu.h`
+  use; its drop-downs are drawn in the window (what they cover kept
+  with function 36, put back with 7).
+- msgbox and the keyword window ran as threads; here they are modal in
+  the program's window. t_edit's messages to @notify ("not found", the
+  replacements made) are message boxes.
+- The syntax files are assembled at build time from their sources with
+  FASMARM, unpacked (`apps/t_edit/fasm2arm.py` turns FASM's `dw`/`dd`
+  into FASMARM's `dh`/`dw` first); a file packed by kpack is refused.
+  `t_edit_synt` (te_syntax) is the way back, from a .syn file to its
+  FASM source, for someone who edits them with FASM; it is not ported,
+  as there is no FASM on the devices.
+- Ctrl+Y redoes; "Save" in the "Save changes?" question saves under the
+  file's name when it has one; the window fits the work area. Bugs found
+  on the way are fixed as the code meant (CR LF files' doubled blank
+  lines, a scroll bar after appending, paste longer than an edit box,
+  the clipboard's text read to its size, tree_list's node functions).
+- Cyrillic shows in the kernel's cp437 glyphs (KolibriOS's system fonts
+  are cp866; the console library has its own cp866 font).
+- In the Hildon look, closing a changed file from the panel leaves the
+  question on the screen; the close button again ends t_edit.
+
+![t_edit](img/t_edit-classic.png)
+![t_edit in the Hildon look, finding](img/t_edit-hildon.png)
+![a menu](img/t_edit-menu.png)
+![the open dialog](img/t_edit-open.png)
+![replacing](img/t_edit-replace.png)
+
 ## Testing
 
 `apps/fstest` checks the file systems and the other new functions from
@@ -224,4 +284,12 @@ a program (`fstest: done 0 failed` on the debug board); `tests/apps`
 runs it on both kernels and drives the programs in QEMU through
 `scripts/qemu-shot.py` (`tests/apps/keys.py` turns text into its key
 steps): the shell's commands, the terminal against a socket, kfar's
-and t_edit's operations, with screenshots.
+and t_edit's operations (kfar copies, makes a folder and deletes; t_edit
+types, undoes, replaces, copies and pastes and saves through its dialog;
+fstest's `wait N expect PATH TEXT` in the autorun checks the files
+afterwards), with screenshots:
+
+```sh
+make -C tests/apps            # or: python3 tests/apps/run.py kfar t_edit
+make -C tests/apps IMG=docs/img
+```
