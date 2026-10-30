@@ -3,6 +3,7 @@
  * calls, page faults, interrupts) and back, waiting, ending. */
 #include "lx.h"
 #include "frame.h"
+#include "fpu.h"
 
 extern void lx_fp_save(u8 *area, u64 *fpcr);
 extern void lx_fp_load(const u8 *area, const u64 *fpcr);
@@ -273,7 +274,8 @@ void lx_thread_gone(struct task *t)
 	kprintf("%s (Linux, pid %u): ended, code %d\n", t->name, p->pid, p->exit_code);
 	lx_files_close_all(p);
 	if (p->starter) lx_bridge_ended(p);
-	if (SYSREG_R(ttbr0_el1) == (u64)p->root) mmu_switch(NULL);
+	if ((SYSREG_R(ttbr0_el1) & 0x0000fffffffff000ul) == (u64)p->root) mmu_switch(NULL);
+	mmu_asid_forget(p->root);
 	lx_proc_free_memory(p);
 }
 
@@ -336,6 +338,7 @@ void lx_restore(struct frame64 *f, struct task *t)
 	f->spsr = l->pstate;
 	SYSREG_W(sp_el0, l->sp);
 	SYSREG_W(tpidr_el0, l->tpidr);
+	fp_lx_enter();                     /* a program's FP registers saved, not trapped */
 	if (fp_owner != l) {
 		if (fp_owner) lx_fp_save(fp_owner->fp, &fp_owner->fpcr);
 		lx_fp_load(l->fp, &l->fpcr);

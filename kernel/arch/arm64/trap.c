@@ -7,6 +7,7 @@
 #include "powerdt.h"
 
 extern void arch_enter(struct frame64 *f) __attribute__((noreturn));
+#include "fpu.h"
 extern char stack_top[];
 
 /* to the task the dispatch chose, or the idle loop (EL1, interrupts on) */
@@ -15,6 +16,7 @@ static void back_to(struct frame64 *f, struct task *c)
 	if (c && c->lx) {
 		lx_restore(f, c);              /* a Linux program's thread */
 	} else if (c) {
+		fp_a32_enter(c);
 		for (int i = 0; i < 13; i++) f->x[i] = c->tf.r[i];
 		f->x[13] = c->tf.usr_sp;
 		f->x[14] = c->tf.usr_lr;
@@ -27,24 +29,51 @@ static void back_to(struct frame64 *f, struct task *c)
 	}
 }
 
+_Static_assert(__builtin_offsetof(struct task, tf) == 24, "start.S's TASK_TF");
+_Static_assert(__builtin_offsetof(struct trapframe, usr_sp) == 52 &&
+	       __builtin_offsetof(struct trapframe, pc) == 64, "start.S's frame");
+
+/* the way in from a program (AArch32) and from the idle loop's interrupt
+ * (start.S's A32 and IDLE_IRQ vectors): the program's registers are in
+ * its task's frame already. Returns the AArch32 task to go back to,
+ * whose frame start.S loads, or NULL after filling f for trap_return
+ * (a Linux thread, the idle loop). */
+struct task *trap32(int kind, u64 esr, u64 far, struct frame64 *f)
+{
+	struct task *t = current, *c;
+	if (kind == K_IRQ_EL1) {
+		struct trapframe none;
+		c = trap_dispatch(&none, TRAP_IRQ, false, 0, 0);
+	} else {
+		int tkind = TRAP_IRQ;
+		if (kind == K_SYNC_A32) {
+			u32 ec = esr >> 26;
+			if (ec == 0x11) tkind = TRAP_SVC;                    /* SVC from AArch32 */
+			else if (ec == 0x24) tkind = TRAP_DABT;              /* data abort, lower EL */
+			else if (ec == 0x20) tkind = TRAP_PABT;              /* instruction abort, lower EL */
+			else if (ec == 0x07 && fp_a32_trap(t)) return t;     /* FP/SIMD: now its own */
+			else { tkind = TRAP_UNDEF; far = t->tf.pc; }
+		}
+		c = trap_dispatch(&t->tf, tkind, true, far, (u32)esr);
+	}
+	if (c && !c->lx) {
+		fp_a32_enter(c);
+		return c;
+	}
+	back_to(f, c);
+	return NULL;
+}
+
+/* the rest of the exceptions, with all of x0-x30 in the frame: Linux
+ * programs' (kernel/linux), the kernel's own faults */
 void trap64(struct frame64 *f, int kind)
 {
-	struct trapframe tf;
 	u64 esr = SYSREG_R(esr_el1), far = SYSREG_R(far_el1);
-	int tkind;
-	bool from_user = kind == K_SYNC_A32 || kind == K_IRQ_A32;
 	switch (kind) {
-	case K_IRQ_EL1:
-	case K_IRQ_A32:
-		tkind = TRAP_IRQ;
-		break;
-	case K_SYNC_A32: {
-		u32 ec = esr >> 26;
-		if (ec == 0x11) tkind = TRAP_SVC;                    /* SVC from AArch32 */
-		else if (ec == 0x24) tkind = TRAP_DABT;              /* data abort, lower EL */
-		else if (ec == 0x20) tkind = TRAP_PABT;              /* instruction abort, lower EL */
-		else { tkind = TRAP_UNDEF; far = f->elr; }
-		break;
+	case K_IRQ_EL1: {
+		struct trapframe none;
+		back_to(f, trap_dispatch(&none, TRAP_IRQ, false, 0, 0));
+		return;
 	}
 	case K_SYNC_EL1:
 		panic("exception in the kernel: ESR %x (class %x) at %p, address %p",
@@ -58,17 +87,6 @@ void trap64(struct frame64 *f, int kind)
 	default:
 		panic("exception kind %d: ESR %x", kind, (u32)esr);
 	}
-	if (from_user) {
-		for (int i = 0; i < 13; i++) tf.r[i] = f->x[i];
-		tf.usr_sp = f->x[13];
-		tf.usr_lr = f->x[14];
-		tf.pad = 0;
-		tf.pc = f->elr;
-		tf.cpsr = f->spsr;
-	} else {
-		memset(&tf, 0, sizeof(tf));
-	}
-	back_to(f, trap_dispatch(&tf, tkind, from_user, far, (u32)esr));
 }
 
 /* kmain's way into the first task: a frame at the top of the kernel stack */

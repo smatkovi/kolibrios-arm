@@ -7,9 +7,15 @@
  * and position independent: the entry applies its own relative
  * relocations first.
  *
- * The programs run at EL0 in AArch32, as on ARMv7. Every exception saves
- * x0-x30, ELR and SPSR on the one kernel stack (SP_EL1); trap64() turns
- * that into the AArch32 view (struct trapframe) and back. */
+ * The programs run at EL0 in AArch32, as on ARMv7. An exception from a
+ * program stores its r0-r14, pc and cpsr straight into its task's frame
+ * (struct trapframe, current->tf) and comes back from a task's frame
+ * the same way (trap32() in trap.c, the A32 vectors and a32_entry
+ * below); the interrupt of the idle loop saves nothing (the loop has
+ * nothing to keep). The rest (Linux programs, AArch64 at EL0; the
+ * kernel's faults) saves x0-x30, ELR and SPSR on the one kernel stack
+ * (SP_EL1) for trap64(); a Linux thread, or the idle loop, after an
+ * AArch32 trap goes back through that frame too. */
 	.section .text.boot, "ax"
 	.global _start
 _start:
@@ -101,6 +107,47 @@ entry:
 	SAVE	\kind
 .endm
 
+/* offsetof(struct task, tf) (trap.c checks it); struct trapframe: r0-r12,
+ * usr_sp, usr_lr, a pad word, pc, cpsr (u32s) */
+#define TASK_TF 24
+#define K_IRQ_EL1 2
+#define K_SYNC_A32 3
+#define K_IRQ_A32 4
+
+/* from a program (AArch32 at EL0): its registers into current->tf. x15-x30
+ * are not the program's (AArch32's r0-r14 are x0-x14): free here, and
+ * nothing of them is kept */
+.macro A32 kind
+	.balign	0x80
+	adrp	x16, current
+	ldr	x16, [x16, :lo12:current]
+	add	x16, x16, #TASK_TF
+	stp	w0, w1, [x16]
+	stp	w2, w3, [x16, #8]
+	stp	w4, w5, [x16, #16]
+	stp	w6, w7, [x16, #24]
+	stp	w8, w9, [x16, #32]
+	stp	w10, w11, [x16, #40]
+	stp	w12, w13, [x16, #48]
+	stp	w14, wzr, [x16, #56]
+	mrs	x17, elr_el1
+	mrs	x18, spsr_el1
+	stp	w17, w18, [x16, #64]
+	mov	w0, #\kind
+	b	a32_entry
+.endm
+
+/* the idle loop's interrupt: its registers are not needed again (it is
+ * entered afresh, or a task is), its stack starts empty */
+.macro IDLE_IRQ
+	.balign	0x80
+	adrp	x16, stack_top
+	add	x16, x16, :lo12:stack_top
+	mov	sp, x16
+	mov	w0, #K_IRQ_EL1
+	b	a32_entry
+.endm
+
 	.balign	0x800
 vectors:
 	VECTOR	1	/* EL1, SP_EL0: sync (not used) */
@@ -108,17 +155,45 @@ vectors:
 	VECTOR	2	/* fiq */
 	VECTOR	5	/* serror */
 	VECTOR	1	/* EL1, SP_EL1: sync: a fault in the kernel */
-	VECTOR	2	/* irq: in the idle loop */
-	VECTOR	2	/* fiq */
+	IDLE_IRQ	/* irq: in the idle loop */
+	IDLE_IRQ	/* fiq */
 	VECTOR	5	/* serror */
 	VECTOR	6	/* EL0, AArch64 (Linux programs): sync: svc, aborts */
 	VECTOR	7	/* irq */
 	VECTOR	7	/* fiq */
 	VECTOR	5	/* serror */
-	VECTOR	3	/* EL0, AArch32: sync: svc, aborts, undefined */
-	VECTOR	4	/* irq */
-	VECTOR	4	/* fiq */
+	A32	K_SYNC_A32	/* EL0, AArch32: sync: svc, aborts, undefined */
+	A32	K_IRQ_A32	/* irq */
+	A32	K_IRQ_A32	/* fiq */
 	VECTOR	5	/* serror */
+
+/* trap32(kind, esr, far, frame): the task to go back to by its frame
+ * (an AArch32 one), or 0 after it filled the frame below the stack's
+ * top for trap_return (a Linux thread, the idle loop) */
+a32_entry:
+	sub	sp, sp, #FRAME
+	mrs	x1, esr_el1
+	mrs	x2, far_el1
+	mov	x3, sp
+	bl	trap32
+	cbz	x0, trap_return
+	add	sp, sp, #FRAME
+	/* into the program from its task's frame (x0) */
+	.global	a32_return
+a32_return:
+	add	x16, x0, #TASK_TF
+	ldp	w17, w18, [x16, #64]
+	msr	elr_el1, x17
+	msr	spsr_el1, x18
+	ldp	w0, w1, [x16]
+	ldp	w2, w3, [x16, #8]
+	ldp	w4, w5, [x16, #16]
+	ldp	w6, w7, [x16, #24]
+	ldp	w8, w9, [x16, #32]
+	ldp	w10, w11, [x16, #40]
+	ldp	w12, w13, [x16, #48]
+	ldr	w14, [x16, #56]
+	eret
 
 	.global trap_return
 trap_return:

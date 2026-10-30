@@ -110,6 +110,12 @@ void kmain(void)
 	lx_init();
 	if (boot_arg("kolibri.lxtrace")) lx_trace_on();
 #endif
+#if defined(__aarch64__) && !defined(SIMD_C)
+	/* kolibri.bench: the drawing and the string functions timed, C
+	 * against assembler (bench.c, docs/asm.md) */
+	extern void bench_run(void);
+	if (boot_arg("kolibri.bench")) bench_run();
+#endif
 	autorun();
 #ifdef __aarch64__
 	/* kolibri.run=/bin/x (a Linux program) or /sys/x: one more program

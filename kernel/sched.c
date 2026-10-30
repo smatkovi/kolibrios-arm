@@ -16,6 +16,9 @@
 
 struct task tasks[MAX_TASKS];
 struct task *current;
+/* the highest slot a task has had: the loops over the tasks on every
+ * trap (wake_waiters, schedule, sched_next_work) stop there */
+static int task_hi;
 volatile u32 ticks;
 static u32 next_pid = 1;
 static bool need_resched;
@@ -37,6 +40,7 @@ struct task *task_alloc(void)
 		memset(t, 0, sizeof(*t));
 		t->slot = i;
 		t->pid = next_pid++;
+		if (i > task_hi) task_hi = i;
 		t->event_mask = 7;   /* redraw, key, button */
 		return t;
 	}
@@ -48,6 +52,8 @@ void task_exit(struct task *t)
 	if (t->state == T_FREE) return;
 #ifdef __aarch64__
 	if (t->lx) lx_thread_gone(t);
+	extern void fp_task_gone(struct task *t);     /* arch/arm64/fpu.c */
+	fp_task_gone(t);
 #endif
 	wm_remove(t);
 	if (t->mem_pa) mm_free_mb(t->mem_pa, t->mem_size >> 20);
@@ -87,7 +93,7 @@ void task_post_event(struct task *t, int ev)
 
 void wake_waiters(void)
 {
-	for (int i = 1; i < MAX_TASKS; i++) {
+	for (int i = 1; i <= task_hi; i++) {
 		struct task *t = &tasks[i];
 		switch (t->state) {
 		case T_WAIT_EVENT:
@@ -128,10 +134,12 @@ void schedule(void)
 	wake_waiters();
 	if (current && current->state == T_READY && !need_resched) return;
 	need_resched = false;
-	int start = current ? current->slot : 0;
-	for (int i = 1; i <= MAX_TASKS; i++) {
-		int s = (start + i) % MAX_TASKS;
-		if (s && tasks[s].state == T_READY) {
+	/* round robin from the one after the current; slots above task_hi
+	 * are free */
+	int s = current ? current->slot : 0;
+	for (int i = 0; i < task_hi; i++) {
+		s = s >= task_hi ? 1 : s + 1;
+		if (tasks[s].state == T_READY) {
 			switch_to(&tasks[s]);
 			return;
 		}
@@ -183,7 +191,7 @@ u32 sched_next_work(void)
 {
 	u32 n = NEXT_NONE;
 	next_why = WHY_NONE;
-	for (int i = 1; i < MAX_TASKS; i++) {
+	for (int i = 1; i <= task_hi; i++) {
 		struct task *t = &tasks[i];
 		u32 v = NEXT_NONE;
 		switch (t->state) {
@@ -256,7 +264,7 @@ struct task *trap_dispatch(struct trapframe *tf, int kind, bool from_user, addr_
 	struct task *t = current;
 	if (from_user) {
 		if (!t) panic("user trap without a task");
-		t->tf = *tf;
+		if (tf != &t->tf) t->tf = *tf;  /* AArch64: saved there already */
 	} else if (kind == TRAP_SVC) {
 		/* kmain's start: the first switch to a task */
 	} else if (kind != TRAP_IRQ && kind != TRAP_FIQ) {

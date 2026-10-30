@@ -35,3 +35,22 @@ bench: $(B)/test
 		grep -E "_c |_neon |k_mem|c_mem|^instructions"
 
 .PHONY: test bench
+
+# the kernel's side in QEMU (virt): the programs' FP/SIMD registers kept
+# across switches and the kernel's NEON (apps/fptest), the system call
+# and the switch counted (tools/qemu-prof/sysbench.sh), the kernel with
+# the C drawing (kolibri.simd=c) and with NEON showing the same screen
+qemu:
+	$(MAKE) -C $(TOP) PLATFORM=arm64
+	cd $(TOP) && T=$$(mktemp -d /tmp/kos-asm.XXXXXX) && \
+	QEMU_MACHINE=virt QEMU_APPEND="kolibri.run=/sys/fptest" python3 scripts/qemu-shot.py \
+		build/arm64/kernel.bin $$T/fp wait:15 && grep "^fptest" $$T/fp/serial.log && \
+	[ "$$(grep -c 'fptest.*: ok' $$T/fp/serial.log)" = 2 ] && \
+	QEMU_MACHINE=virt QEMU_APPEND="kolibri.simd=c" python3 scripts/qemu-shot.py \
+		build/arm64/kernel.bin $$T/c wait:8 shot:home && \
+	QEMU_MACHINE=virt python3 scripts/qemu-shot.py build/arm64/kernel.bin $$T/neon wait:8 shot:home && \
+	grep -q "drawing: C" $$T/c/serial.log && grep -q "drawing: NEON" $$T/neon/serial.log && \
+	[ "$$(magick compare -metric AE $$T/c/home.png $$T/neon/home.png /dev/null 2>&1)" = "0 (0)" ] && \
+	echo "the screens of C and NEON: the same" && tools/qemu-prof/sysbench.sh
+
+.PHONY: qemu

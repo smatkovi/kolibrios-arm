@@ -2,8 +2,16 @@
 #include <stdarg.h>
 #include "kernel.h"
 
-/* AArch64: arch/arm64/string.S (unless built with SIMD=c) */
-#if !defined(__aarch64__) || defined(SIMD_C)
+/* AArch64: arch/arm64/string.S's (unless built with SIMD=c); these then
+ * as memset_c, memcpy_c, memmove_c for kolibri.bench (bench.c) */
+#if defined(__aarch64__) && !defined(SIMD_C)
+#define memset memset_c
+#define memcpy memcpy_c
+#define memmove memmove_c
+void *memset_c(void *d, int c, size_t n);
+void *memcpy_c(void *d, const void *s, size_t n);
+void *memmove_c(void *d, const void *s, size_t n);
+#endif
 void *memset(void *d, int c, size_t n)
 {
 	u8 *p = d;
@@ -44,7 +52,9 @@ void *memmove(void *d, const void *s, size_t n)
 	while (n--) dp[n] = sp[n];
 	return d;
 }
-#endif
+#undef memset
+#undef memcpy
+#undef memmove
 
 int memcmp(const void *a, const void *b, size_t n)
 {

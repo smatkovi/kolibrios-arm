@@ -126,6 +126,7 @@ void *mmu_new_user_table(void);
 void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size);
 void mmu_switch(void *root);
 void mmu_free_user_table(void *root);
+void mmu_asid_forget(const void *root);  /* AArch64: a tree made anew (ASIDs) */
 addr_t mmu_io_va(addr_t pa);
 void mmu_set_uncached(addr_t pa, u32 size);
 void cache_sync_code(addr_t va, u32 len);

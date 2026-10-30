@@ -13,6 +13,7 @@
 #define PTE_RO (1ul << 7)
 #define PTE_SH (3ul << 8)
 #define PTE_AF (1ul << 10)
+#define PTE_NG (1ul << 11)                /* not global: the process's ASID (mmu.c) */
 #define PTE_PXN (1ul << 53)
 #define PTE_UXN (1ul << 54)
 #define PTE_ADDR 0x0000fffffffff000ul
@@ -80,6 +81,7 @@ struct lx_proc *lx_proc_new(void)
 	const u64 *k = mmu_kernel_table();
 	for (int i = 0; i < 512; i++)
 		if (!user_l1(i)) p->root[i] = k[i];
+	mmu_asid_forget(p->root);
 	p->map_next = LX_MAP_START;
 	strncpy0(p->cwd, "/", sizeof(p->cwd));
 	return p;
@@ -104,7 +106,7 @@ static u64 *pte_of(struct lx_proc *p, u64 va, bool make)
 
 static u64 pte_bits(u32 prot)
 {
-	u64 b = PTE_PAGE | PTE_NORMAL | PTE_SH | PTE_AF | PTE_USER | PTE_PXN;
+	u64 b = PTE_PAGE | PTE_NORMAL | PTE_SH | PTE_AF | PTE_NG | PTE_USER | PTE_PXN;
 	if (!(prot & PROT_WRITE)) b |= PTE_RO;
 	if (!(prot & PROT_EXEC)) b |= PTE_UXN;
 	return b;

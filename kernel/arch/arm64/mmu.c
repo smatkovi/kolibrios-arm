@@ -6,7 +6,14 @@
  * rest the kernel's, shared by all: the RAM, mapped 1:1 (it lies above
  * 1 GiB on both platforms; the platform's banks), and the devices, whose
  * addresses lie below 1 GiB, moved up to DEV_ALIAS. Only what is used is
- * mapped (on the Pro1X, firmware's memory must not even be speculated). */
+ * mapped (on the Pro1X, firmware's memory must not even be speculated).
+ *
+ * The programs' mappings are not global (nG): each tree has an address
+ * space number (ASID, from the root's address; 0 is the kernel's own
+ * tree), so that a task switch only loads TTBR0 and the TLB keeps the
+ * kernel's entries and other programs'. An ASID's entries are thrown
+ * away when it serves another tree than before, or its tree was made
+ * anew (mmu_asid_forget). */
 #include "kernel.h"
 
 #define DEV_ALIAS 0x4000000000ul        /* 256 GiB */
@@ -23,6 +30,7 @@
 #define AP_EL0 (1ul << 6)
 #define SH_INNER (3ul << 8)
 #define AF (1ul << 10)
+#define NG (1ul << 11)
 #define PXN (1ul << 53)
 #define UXN (1ul << 54)
 
@@ -57,6 +65,22 @@ static u64 normal(void) { return ATTR_NORMAL | SH_INNER | AP_EL1 | UXN; }
 static void tlb_flush(void)
 {
 	asm volatile("dsb ishst\ntlbi vmalle1\ndsb ish\nisb" ::: "memory");
+}
+
+/* the tree each ASID last served (1-255; 0: the kernel's, no entries
+ * of its own) */
+static void *asid_tree[256];
+
+static u64 asid_of(const void *root)
+{
+	return ((addr_t)root >> 12) % 255 + 1;
+}
+
+/* a tree made anew or given up: what the TLB holds for its ASID goes at
+ * its next switch */
+void mmu_asid_forget(const void *root)
+{
+	if (asid_tree[asid_of(root)] == root) asid_tree[asid_of(root)] = NULL;
 }
 
 /* by address, to the point of coherency: what was written with the MMU
@@ -132,6 +156,7 @@ void *mmu_new_user_table(void)
 	u64 *l2 = (u64 *)(root[0] & 0xfffffffff000ul);
 	memset(l2, 0, 4096);
 	for (int i = 1; i < 512; i++) root[i] = kroot[i];
+	mmu_asid_forget(root);
 	return root;
 }
 
@@ -143,6 +168,7 @@ const u64 *mmu_kernel_table(void)
 
 void mmu_free_user_table(void *root)
 {
+	mmu_asid_forget(root);
 	if (nfree < (int)ARRAY_SIZE(free_roots))
 		free_roots[nfree++] = root;
 }
@@ -152,14 +178,25 @@ void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
 	u64 *l2 = (u64 *)(((u64 *)root)[0] & 0xfffffffff000ul);
 	for (u64 o = 0; o < size; o += BLOCK)
 		l2[((va + o) >> 21) & 511] = ((pa + o) & ~(BLOCK - 1)) | ATTR_NORMAL | SH_INNER |
-					     AP_EL0 | PXN | AF | D_BLOCK;
+					     AP_EL0 | PXN | AF | NG | D_BLOCK;
+	mmu_asid_forget(root);
 }
 
 void mmu_switch(void *root)
 {
-	SYSREG_W(ttbr0_el1, (u64)(root ? root : kroot));
+	if (!root) {
+		SYSREG_W(ttbr0_el1, (u64)kroot);
+		asm volatile("isb");
+		return;
+	}
+	u64 asid = asid_of(root);
+	if (asid_tree[asid] != root) {
+		/* its entries of another tree away first, then the switch */
+		asm volatile("dsb ishst\ntlbi aside1, %0\ndsb ish" :: "r"(asid << 48) : "memory");
+		asid_tree[asid] = root;
+	}
+	SYSREG_W(ttbr0_el1, (u64)root | asid << 48);
 	asm volatile("isb");
-	tlb_flush();
 }
 
 void cache_sync_code(addr_t va, u32 len)

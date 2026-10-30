@@ -81,13 +81,12 @@ psci_suspend:
 	str	x10, [x9, #C_CVAL]
 	mrs	x10, cntv_ctl_el0
 	str	x10, [x9, #C_CTL]
-	/* the FP/SIMD registers, if the Linux personality has them on (a
-	 * thread's may still be in them: lx.c saves them lazily) */
+	/* the FP/SIMD registers, if the kernel may use them (FPEN 01 or 11:
+	 * a Linux thread's or a program's may still be in them: lx.c and
+	 * fpu.c save them lazily) */
 	str	xzr, [x9, #C_FLAGS]
 	mrs	x10, cpacr_el1
-	ubfx	x10, x10, #20, #2
-	cmp	x10, #3
-	b.ne	1f
+	tbz	x10, #20, 1f
 	add	x11, x9, #C_Q
 	stp	q0, q1, [x11], #32
 	stp	q2, q3, [x11], #32

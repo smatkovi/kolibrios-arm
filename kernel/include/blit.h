@@ -54,15 +54,19 @@ extern struct blit_ops blit;             /* the ones in use */
 void blit_init(void);                    /* the choice, after mmu_init */
 
 /* before the kernel's own use of the FP/SIMD registers: a Linux
- * thread's, if the CPU still holds them, saved (kernel/linux/lx.c keeps
- * them in the registers until another Linux thread runs) */
-#if defined(__aarch64__) && !defined(BLIT_HOST)
+ * thread's or a program's, if the CPU still holds them, saved (lx.c and
+ * arch/arm64/fpu.c keep them in the registers until someone else needs
+ * them) */
+#if defined(__aarch64__) && !defined(BLIT_HOST) && !defined(SIMD_C)
 struct lx_thread;
+struct task;
 extern struct lx_thread *lx_fp_owner;
+extern struct task *a32_fp_owner;        /* a program's (arch/arm64/fpu.c) */
 void lx_fp_release(void);
+void fp_release_all(void);
 static inline void blit_begin(void)
 {
-	if (lx_fp_owner) lx_fp_release();
+	if (lx_fp_owner || a32_fp_owner) fp_release_all();
 }
 #else
 static inline void blit_begin(void) {}
