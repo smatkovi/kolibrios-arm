@@ -115,6 +115,11 @@ long lx_file_write_kernel(struct lx_file *f, const void *buf, u64 len);
 void lx_file_put(struct lx_file *f);
 struct lx_file *lx_file_get(struct lx_file *f);
 u64 lx_file_size(struct lx_file *f);
+/* function 70 of KolibriOS programs on the Linux tree (by absolute path) */
+long lx_kfs_read(const char *path, void *buf, u64 len, u64 off, u64 *size);
+long lx_kfs_write(const char *path, const void *buf, u64 len, u64 off, bool rewrite);
+long lx_kfs_mkdir(const char *path);
+long lx_kfs_info(const char *path, u64 *size, bool *dir);
 long lx_file_pread(struct lx_file *f, void *buf, u64 len, u64 off);
 
 /* the errors */

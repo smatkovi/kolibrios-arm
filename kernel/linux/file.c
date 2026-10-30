@@ -1252,3 +1252,95 @@ bool lx_fd_nonblock(struct lx_proc *p, int fd)
 	struct lx_file *f = lx_fd_file(p, fd);
 	return f && (f->flags & O_NONBLOCK);
 }
+
+/* --- function 70 of KolibriOS programs on this tree (kernel/syscall.c) ----
+ * by absolute path, the RAM file system writable, the ramdisk's files
+ * readable; 0 (or bytes) or a negative errno */
+
+static int kfs_path(const char *path, char *out)
+{
+	if (path[0] != '/') return -ENOENT;
+	return normalize("/", path, out);
+}
+
+long lx_kfs_read(const char *path, void *buf, u64 len, u64 off, u64 *size)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	struct look lk;
+	look_up(p, &lk);
+	if (lk.node && !lk.node->dir) {
+		*size = lk.node->size;
+		return node_read(lk.node, buf, len, off);
+	}
+	if (lk.rd) {
+		*size = lk.rd->size;
+		if (off >= lk.rd->size) return 0;
+		len = MIN(len, lk.rd->size - off);
+		memcpy(buf, lk.rd->data + off, len);
+		return len;
+	}
+	return lk.node || lk.rd_dir ? -EISDIR : -ENOENT;
+}
+
+/* rewrite: the file created or emptied first (KolibriOS's 70.2), else
+ * written at off (70.3, the file must be there) */
+long lx_kfs_write(const char *path, const void *buf, u64 len, u64 off, bool rewrite)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	struct look lk;
+	look_up(p, &lk);
+	if (!look_exists(&lk)) {
+		if (!rewrite) return -ENOENT;
+		if (!lk.parent) return no_parent(p);
+		if (!node_new(lk.parent, lk.last, false)) return -ENOSPC;
+		look_up(p, &lk);
+	}
+	if (lk.rd || lk.rd_dir || lk.special) return -EROFS;
+	if (!lk.node || lk.node->dir) return -EISDIR;
+	if (rewrite) node_truncate(lk.node, 0), off = 0;
+	return node_write(lk.node, buf, len, off);
+}
+
+/* a folder with the folders above it that are missing */
+long lx_kfs_mkdir(const char *path)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	for (char *s = p + 1;; s++) {
+		if (*s && *s != '/') continue;
+		char c = *s;
+		*s = 0;
+		struct look lk;
+		look_up(p, &lk);
+		if (!look_exists(&lk)) {
+			if (!lk.parent) return no_parent(p);
+			if (!node_new(lk.parent, lk.last, true)) return -ENOSPC;
+		} else if (lk.node && !lk.node->dir) {
+			return -ENOTDIR;
+		} else if (!lk.node) {
+			if (!c) return -EEXIST;
+			return -EROFS;                 /* below the ramdisk's folders */
+		}
+		*s = c;
+		if (!c) return 0;
+	}
+}
+
+long lx_kfs_info(const char *path, u64 *size, bool *dir)
+{
+	char p[PATH_MAX];
+	int e = kfs_path(path, p);
+	if (e) return e;
+	struct look lk;
+	look_up(p, &lk);
+	if (lk.node) *size = lk.node->dir ? 0 : lk.node->size, *dir = lk.node->dir;
+	else if (lk.rd) *size = lk.rd->size, *dir = false;
+	else if (lk.rd_dir) *size = 0, *dir = true;
+	else return -ENOENT;
+	return 0;
+}

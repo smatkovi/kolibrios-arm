@@ -217,6 +217,77 @@ static u32 read_bdfe(u8 *e, const struct rd_file *f, bool with_name)
 	return 0;
 }
 
+#ifdef __aarch64__
+/* function 70 on the Linux personality's tree (kernel/linux/file.c): an
+ * absolute path that is not /sys or /rd/1, its RAM file system writable
+ * (/home/user, /tmp, ...: lost when KolibriOS ends). Subfunctions 0 read,
+ * 2 create or rewrite, 3 write, 5 information, 9 create a folder (with
+ * the missing folders above it) */
+long lx_kfs_read(const char *path, void *buf, u64 len, u64 off, u64 *size);
+long lx_kfs_write(const char *path, const void *buf, u64 len, u64 off, bool rewrite);
+long lx_kfs_mkdir(const char *path);
+long lx_kfs_info(const char *path, u64 *size, bool *dir);
+const char *fs_rd_name(const char *);
+
+static u32 kfs_error(long e)
+{
+	switch (-e) {
+	case 2: return 5;                      /* ENOENT: not found */
+	case 28: return 8;                     /* ENOSPC: the disk full */
+	case 12: return 12;                    /* ENOMEM */
+	default: return 10;                    /* access denied (EROFS, EISDIR, ...) */
+	}
+}
+
+static bool linux_tree(struct task *t, u32 *r, u32 sub, u32 off, u32 size, u32 buf, const char *path)
+{
+	if (*path >= 1 && *path <= 3) path++;  /* an encoding byte */
+	if (*path != '/' || fs_rd_name(path)) return false;
+	switch (sub) {
+	case 0: {
+		u8 *d = uptr(t, buf, size);
+		u64 total = 0;
+		if (!d) { EAX = 7; return true; }
+		long n = lx_kfs_read(path, d, size, off, &total);
+		if (n < 0) { EAX = kfs_error(n); EBX = -1; return true; }
+		EAX = (u32)n < size ? 6 : 0;
+		EBX = n;
+		return true;
+	}
+	case 2:
+	case 3: {
+		const u8 *d = size ? uptr(t, buf, size) : (const u8 *)"";
+		if (!d) { EAX = 7; return true; }
+		long n = lx_kfs_write(path, d, size, off, sub == 2);
+		if (n < 0) { EAX = kfs_error(n); EBX = 0; return true; }
+		EAX = 0;
+		EBX = n;
+		return true;
+	}
+	case 5: {
+		u8 *d = uptr(t, buf, 40);
+		u64 sz;
+		bool dir;
+		if (!d) { EAX = 7; return true; }
+		long e = lx_kfs_info(path, &sz, &dir);
+		if (e < 0) { EAX = kfs_error(e); return true; }
+		memset(d, 0, 40);
+		*(u32 *)d = dir ? 0x10 : 0;
+		*(u32 *)(d + 32) = (u32)sz;
+		*(u32 *)(d + 36) = (u32)(sz >> 32);
+		EAX = 0;
+		return true;
+	}
+	case 9: {
+		long e = lx_kfs_mkdir(path);
+		EAX = e < 0 ? kfs_error(e) : 0;
+		return true;
+	}
+	}
+	return false;
+}
+#endif
+
 static void file_system(struct task *t, u32 *r)
 {
 	u8 *info = uptr(t, EBX, 21);
@@ -225,6 +296,9 @@ static void file_system(struct task *t, u32 *r)
 	u32 size = *(u32 *)(info + 12), buf = *(u32 *)(info + 16);
 	const char *path = info[20] ? ustr(t, EBX + 20) : (uptr(t, EBX + 21, 4) ? ustr(t, *(u32 *)(info + 21)) : NULL);
 	if (!path) { EAX = 3; return; }
+#ifdef __aarch64__
+	if (linux_tree(t, r, sub, off, size, buf, path)) return;
+#endif
 	switch (sub) {
 	case 0: {                              /* read file */
 		const struct rd_file *f = fs_find(path);

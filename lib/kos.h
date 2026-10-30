@@ -175,6 +175,21 @@ static inline struct kos_r2 kos_read_file(const char *path, void *buf, u32 size,
 	return kos_call2(70, (u32)&fi, 0, 0, 0, 0);
 }
 
+/* function 70.2: a file created or rewritten; 70.9: a folder (with the
+ * folders above it). Writable on the AArch64 kernel: the Linux
+ * personality's tree (/home/user/..., /tmp/...), kept in RAM */
+static inline struct kos_r2 kos_write_file(const char *path, const void *buf, u32 size)
+{
+	struct kos_fileinfo fi = { 2, 0, 0, size, (u32)buf, 0, path };
+	return kos_call2(70, (u32)&fi, 0, 0, 0, 0);
+}
+
+static inline int kos_create_folder(const char *path)
+{
+	struct kos_fileinfo fi = { 9, 0, 0, 0, 0, 0, path };
+	return kos_call(70, (u32)&fi, 0, 0, 0, 0);
+}
+
 /* folder: entries of 304 bytes (the name at +40) after a 32-byte header */
 static inline struct kos_r2 kos_read_folder(const char *path, void *buf, u32 first, u32 count)
 {

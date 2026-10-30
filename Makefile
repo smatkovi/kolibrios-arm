@@ -40,7 +40,7 @@ KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgenera
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
 	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S power.c \
-	fdt.c platform/virt.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
+	fdt.c platform/virt.c platform/virtio_input.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
 	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
@@ -76,7 +76,7 @@ RDNAME_hstatus := @hstatus
 # memory beyond the default 1 MiB (the shell keeps the task switcher's pictures)
 MEM_hildon := 0x400000
 MEM_phone := 0x400000
-MEM_messenger := 0x200000
+MEM_messenger := 0x800000
 # the look the kernel starts with: hildon (the Hildon shell) or classic
 # (KolibriOS's panel and menu): apps/autorun or apps/autorun.classic
 LOOK ?= hildon
@@ -116,7 +116,7 @@ $(A)/lib/%.o: lib/%.c lib/kos.h | dirs
 	$(CC32) $(ACFLAGS) -c $< -o $@
 $(A)/lib/%.o: lib/%.S | dirs
 	$(CC32) $(ACFLAGS) -c $< -o $@
-$(A)/%.o: apps/%/*.c lib/kos.h lib/kos_modem.h lib/qr.h | dirs
+$(A)/%.o: apps/%/*.c lib/kos.h lib/kos_modem.h lib/qr.h lib/json.h | dirs
 	$(CC32) $(ACFLAGS) -c apps/$*/$*.c -o $@
 $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
 	$(CC32) $(LDFLAGS) $(if $(MEM_$*),-Wl$(comma)--defsym$(comma)MEMORY_SIZE=$(MEM_$*)) \
@@ -158,7 +158,7 @@ run: all
 # answered by a small HTTP server on the host (NETTEST_PORT)
 QEMU64 := qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -m 1024 -device ramfb \
 	-global virtio-mmio.force-legacy=false -device virtio-net-device,netdev=n0 -netdev user,id=n0 \
-	-device virtio-rng-device \
+	-device virtio-rng-device -device virtio-keyboard-device -device virtio-tablet-device \
 	-serial stdio
 NETTEST_PORT ?= 18765
 run-net: all
@@ -201,8 +201,32 @@ run-signal:
 	$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/signal-host=$(SIGNAL_HOST)" all
 	$(QEMU64) -kernel build/arm64/kernel.bin -append "kolibri.run=/sys/messenger kolibri.args=signal"
 
+# the messenger's chats against a fake backend (tests/messenger/fakepeer:
+# fixtures, no network, no account) as all three services' programs;
+# MESSENGER_SERVICE: whatsapp, telegram or signal (none: it asks)
+FAKEPEER := tests/messenger/fakepeer/fakepeer
+FAKEPEER_FILES := bin/yappari-wa=$(FAKEPEER) bin/purple-host=$(FAKEPEER) bin/signal-host=$(FAKEPEER)
+MESSENGER_SERVICE ?= whatsapp
+$(FAKEPEER): tests/messenger/fakepeer/main.go
+	cd tests/messenger/fakepeer && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags=-s -o fakepeer .
+run-chats: $(FAKEPEER)
+	$(MAKE) PLATFORM=arm64 LINUX_FILES="$(FAKEPEER_FILES)" all
+	$(QEMU64) -kernel build/arm64/kernel.bin \
+		-append "kolibri.run=/sys/messenger$(if $(MESSENGER_SERVICE), kolibri.args=$(MESSENGER_SERVICE))"
+# the same, checked by screenshots (tests/messenger/chatcheck.py), and the
+# JSON reader and the real backends' protocol on the PC (tests/messenger/Makefile)
+# (PURPLE_HOST=...: also the real purple-host with its test protocol)
+test-chats: $(FAKEPEER)
+	$(MAKE) -C tests/messenger PURPLE_HOST=$(PURPLE_HOST) SIGNAL_HOST=$(SIGNAL_HOST) YAPPARI_WA=$(YAPPARI_WA)
+	$(MAKE) PLATFORM=arm64 LINUX_FILES="$(FAKEPEER_FILES)" all
+	python3 tests/messenger/chatcheck.py build/arm64/kernel.bin whatsapp
+	python3 tests/messenger/chatcheck.py build/arm64/kernel.bin telegram
+	python3 tests/messenger/chatcheck.py build/arm64/kernel.bin signal
+	$(if $(PURPLE_HOST),$(MAKE) PLATFORM=arm64 LINUX_FILES="bin/purple-host=$(PURPLE_HOST) etc/purple-host-test=tests/messenger/purple-host-test" all)
+	$(if $(PURPLE_HOST),python3 tests/messenger/chatcheck.py build/arm64/kernel.bin telegram-purple)
+
 clean:
 	rm -rf build
 
-.PHONY: all run run-net run-linux run-messenger run-telegram run-signal clean dirs FORCE
+.PHONY: all run run-net run-linux run-messenger run-telegram run-signal run-chats test-chats clean dirs FORCE
 .SECONDARY:
