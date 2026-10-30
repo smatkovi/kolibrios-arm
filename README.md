@@ -90,7 +90,8 @@ input there).
 | files (function 70, all subfunctions; 30, the current folder): `/sys` = `/rd/1` the ramdisk as folders, writable (copy on write), `/tmp0/1` a RAM disk, on AArch64 the Linux tree; all in RAM (`docs/apps.md`) | runs (QEMU) |
 | function 68 heap | allocates; programs' C library frees and reuses (`lib/libc`) |
 | keyboard in scan codes (66), layouts (26.2), images with a palette (65), the clipboard (54), the wheel, serial ports (68.16 SERIAL) | runs (QEMU) |
-| threads (function 51), IPC (60), shared memory, loadable drivers and libraries (68.19), storage (eMMC, UFS, SD) | not yet |
+| storage: the Pro1X's UFS, the N950's eMMC, QEMU's virtio-blk, UFS and eMMC; GPT and MBR; ext2/3/4 read only, FAT12/16/32 read and write; a container from Linux as `/hd0/1`, the only thing written, behind a fence in the block layer (`docs/storage.md`) | runs (QEMU, `tests/storage`), **not tried on the devices** |
+| threads (function 51), IPC (60), shared memory, loadable drivers and libraries (68.19) | not yet |
 | N950: UART3, interrupts, timer, the display as the boot loader left it | written, **not tried on the device** |
 | N950: I2C, keyboard (TWL4030 keypad), touch screen (maXTouch) | written, **not tried on the device** |
 | N950: clock (TWL4030), battery | not yet |

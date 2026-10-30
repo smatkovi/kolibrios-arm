@@ -92,10 +92,12 @@ KolibriOS's file systems, as function 70 knows them (`kernel/kfs.c`):
 
 | Path | What | Writable | Kept |
 | --- | --- | --- | --- |
-| `/` | the devices: `rd`, `tmp0` (and `linux` on AArch64) | no | |
+| `/` | the devices: `rd`, `tmp0`, the disks (and `linux` on AArch64) | no | |
 | `/rd/1` = `/sys` | the ramdisk: the files built into the kernel image (programs, settings, icons, syntax files), as folders and files | yes: copy on write over the kernel's bytes | until the next reset |
 | `/tmp0/1` | an empty RAM disk (KolibriOS's tmpdisk) | yes | until the next reset |
 | `/linux/...`, `/home/user/...`, `/tmp/...` (AArch64) | the Linux personality's tree (Yappari's and the messengers' data) | yes, in RAM; its ramdisk files read-only | until the next reset |
+| `/ufs0/13`, `/mmc0/1`, ... | the phones' partitions: the Pro1X's UFS (userdata), the N950's eMMC (MyDocs, Harmattan's and Leste's roots); ext2/3/4, FAT | no, never | on the storage |
+| `/hd0/1` | the container on one of them (`docs/storage.md`): FAT | with `kolibri.home=rw` | across resets |
 
 All of function 70's subfunctions 0-10 work on them (read, folder,
 create/rewrite, write, set the size, information, attributes, start,
@@ -104,12 +106,17 @@ function 30 gives every program a current folder (`/sys` at first,
 inherited by the programs it starts). The RAM disks take their memory
 in 4 KiB pages from blocks of 1 MiB and leave 16 MiB free for programs.
 
-On the phones nothing is kept: the kernel has no driver for the Pro1X's
-UFS or the N950's eMMC (nor their SD cards), so Leste's or Android's
-`userdata`, the N950's MyDocs and any FAT partition are out of reach.
-Everything written lives in RAM until the next reset; a file system on
-storage (FAT on an SD card's partition, say) would be the next step for
-keeping files. The same holds in QEMU.
+The phones' storage (`docs/storage.md`): the Pro1X's UFS and the N950's
+eMMC are read, their partitions with ext2/3/4 and FAT shown as
+KolibriOS's partitions (`/ufs0/13` is the Pro1X's userdata, `/mmc0/1` the
+N950's MyDocs), and never written. What is kept across resets goes into
+a container file made from Linux (`tools/kolibri-home`), checked by the
+kernel against the file system it is on, and shown as `/hd0/1`, written
+with `kolibri.home=rw` only: the ramdisk's settings (`*.ini`,
+`settings/`) are kept in its `sys/` folder, the messenger's chats in
+`messenger/`, kfar's right panel starts there (the original's `/hd0/1`).
+Everything else lives in RAM until the next reset. In QEMU the same with
+emulated disks (`tests/storage`).
 
 ## Kernel functions added for them
 

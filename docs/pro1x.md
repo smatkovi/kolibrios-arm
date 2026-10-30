@@ -48,6 +48,8 @@ The command line:
 | `kolibri.psci=off` | the CPU idles with `wfi` only, no PSCI power-down states (`core`: no cluster state; `docs/power.md`) |
 | `kolibri.bench` | the drawing loops and the string functions timed at the start, C against assembler (NEON), the flush to the panel too (`docs/asm.md`) |
 | `kolibri.simd=c` | the drawing in C instead of the NEON assembler |
+| `kolibri.storage=off` | the UFS left alone (`docs/storage.md`) |
+| `kolibri.home=rw` | the container on userdata (`tools/kolibri-home`) written; without it nothing on the UFS is written |
 
 Without a lifetime the kernel feeds the watchdog for as long as it runs;
 a hang, or a panic, resets the phone about 32 s later.
@@ -96,6 +98,7 @@ tools/pro1x-read.py --shot /tmp/kolibri.ppm     # as root; --clear wipes it afte
 | keyboard | an 8x8 matrix behind an AW9523B on the GENI I2C engine at 0x4a84000, polled through its FIFOs; scanned when the expander's INT (TLMM GPIO 107) is low and every 30 ms while keys are held, two scans in a row agreeing; INT, the modifier keys and the touch screen's INT as TLMM interrupts (the summary interrupt, SPI 227), so that an idle kernel sleeps until a key; the key map from the device tree; Shift, Ctrl, Alt, Fn and Home as TLMM GPIOs (gpio-keys). Fn with 1-0 gives F1-F10, with the arrows Page Up/Down, Home, End |
 | touch screen | a Goodix GT9286 on bit-banged I2C (TLMM GPIOs 6 and 7), its interrupt pulses latched by the TLMM, as the mouse (a touch is the left button) |
 | clock | not driven (the PMIC's RTC is behind SPMI): the time starts at 0 |
+| UFS | the controller as Linux left it (kexec, its link up), its SMMU context's translation off; the LUNs as `/ufs0`...`/ufs5`, userdata as `/ufs0/13` (ext4, read only); the container on it as `/hd0/1` (`docs/storage.md`) |
 
 ## In QEMU
 
