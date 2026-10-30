@@ -1,0 +1,3 @@
+/sys/@hildon
+/sys/t_edit /sys/t_edit.ini
+/sys/fstest wait 7500 expect /tmp0/1/t.ini ab[Fenster]ab

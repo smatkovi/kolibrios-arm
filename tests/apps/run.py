@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tests/apps: KolibriOS's ported programs in QEMU (make -C tests/apps).
 
-    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar (all: none given)
+    run.py [--img DIR] TEST...     TEST: fstest, shell, terminal, kfar, t_edit (all: none given)
 
 Each builds the kernel with an autorun of its own (tests/apps/autorun.*),
 runs it through scripts/qemu-shot.py, types with keys.py's steps and
@@ -143,12 +143,56 @@ def test_kfar(img):
         shutil.copy(f'{OUT}/kfar/kfar-delete.png', os.path.join(img, 'kfar-delete.png'))
 
 
+class Mouse:
+    """qemu-shot.py's relative mouse steps to screen positions (realview's
+    PS/2 mouse: steps of at most 100 pixels, the first move to the corner)"""
+
+    def __init__(self):
+        self.x = self.y = None
+
+    def at(self, x, y):
+        out = []
+        if self.x is None:
+            out += ['mouse:-200,-200'] * 6
+            self.x = self.y = 0
+        dx, dy = x - self.x, y - self.y
+        while dx or dy:
+            sx, sy = max(-100, min(100, dx)), max(-100, min(100, dy))
+            out.append(f'mouse:{sx},{sy}')
+            dx, dy = dx - sx, dy - sy
+        self.x, self.y = x, y
+        return out
+
+
+def test_t_edit(img):
+    # t_edit with t_edit.ini (Hildon's look: the window from y 56): typed
+    # text, undo, replace all in the replace panel, a word selected,
+    # copied and pasted, saved as /tmp0/1/t.ini through the save dialog;
+    # fstest (autorun.t_edit) looks at the file at 75 s
+    make('realview', 'autorun.t_edit')
+    m = Mouse()
+    steps = (keys('wait:5', 'ab', 'xyz', 'ctrl-z', 'ctrl-z', 'ctrl-z', 'ctrl-h', 'wait:1') +
+             m.at(60, 133) + ['click'] + keys('Window') + m.at(60, 226) + ['click'] + keys('Fenster') +
+             m.at(11, 188) + ['click'] +          # the option "At first": the cursor is after the undone text
+             m.at(40, 275) + ['click', 'wait:2', 'shot:t_edit-replace'] + keys('ret', 'wait:1') +
+             m.at(182, 139) + ['click', 'wait:0.5'] +
+             keys('shift-right', 'shift-right', 'ctrl-c', 'end', 'ctrl-v', 'wait:1', 'shot:t_edit-pasted',
+                  'ctrl-shift-s', 'wait:2', 'tab', 'ctrl-a', '/tmp0/1', 'ret', 'wait:1', 'tab', 'ctrl-a', 't.ini',
+                  'wait:0.5', 'shot:t_edit-save', 'ret', 'wait:2', 'shot:t_edit-saved', 'wait:40'))
+    log = qemu('realview', f'{OUT}/t_edit', steps)
+    check('fstest: expect ok' in log and 'expect FAIL' not in log,
+          't_edit: typing, undo, replace all, copy and paste, save as /tmp0/1/t.ini')
+    if img:
+        shutil.copy(f'{OUT}/t_edit/t_edit-replace.png', os.path.join(img, 't_edit-replace.png'))
+
+
 args = sys.argv[1:]
 img = None
 if args[:1] == ['--img']:
     img = os.path.join(TOP, args[1])
     args = args[2:]
-tests = {'fstest': test_fstest, 'shell': test_shell, 'terminal': test_terminal, 'kfar': test_kfar}
+tests = {'fstest': test_fstest, 'shell': test_shell, 'terminal': test_terminal, 'kfar': test_kfar,
+         't_edit': test_t_edit}
 for name in args or tests:
     tests[name](img)
 make('realview', '../../apps/autorun')
