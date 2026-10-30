@@ -16,6 +16,7 @@
 # The programs in assembler need FASMARM (fetched: tools/fetch-fasmarm.sh).
 
 PLATFORM ?= realview
+.DEFAULT_GOAL := all
 B := build/$(PLATFORM)
 A := build/apps
 CROSS ?= arm-none-eabi-
@@ -29,7 +30,7 @@ ACFLAGS := $(CFLAGS) -Ilib -fno-strict-aliasing
 LDFLAGS := -nostdlib -Wl,--no-warn-rwx-segments
 LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 
-KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c loader.c main.c \
+KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c kfs.c serial.c loader.c main.c \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
 	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c modem/ce.c
@@ -84,6 +85,8 @@ APPS := taskbar menu example clock board cpu hildon hstatus phone messenger sysb
 # programs of several files or with the C library (below: SRC_name ...),
 # each described by its apps/NAME/app.mk
 CAPPS :=
+# KolibriOS's sources of the ported programs (tools/fetch-kolibrios.sh)
+KOS := third_party/kolibrios
 include $(sort $(wildcard apps/*/app.mk))
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
@@ -155,7 +158,9 @@ $(A)/%.kex: $(A)/%.elf
 # program (docs/apps.md)
 LIBS := $(sort $(patsubst lib/%/,%,$(dir $(wildcard lib/*/*.c))))
 LIBC_INC := -nostdinc -isystem $(shell $(CC32) -print-file-name=include) -Ilib/libc/include -Ilib \
-	$(foreach l,$(LIBS),-Ilib/$(l))
+	$(foreach l,$(LIBS),-Ilib/$(l)) -I$(A)/gen
+# a library's own rules (generated headers): lib/NAME/lib.mk
+include $(sort $(wildcard lib/*/lib.mk))
 define CLIB
 $(1)_LOBJ := $$(patsubst lib/$(1)/%.c,$(A)/lib/$(1)/%.o,$$(wildcard lib/$(1)/*.c))
 $(A)/lib/$(1)/%.o: lib/$(1)/%.c | dirs
@@ -189,7 +194,6 @@ endef
 $(foreach a,$(CAPPS),$(eval $(call CAPP,$(a))))
 
 # KolibriOS's sources (tools/fetch-kolibrios.sh): the ported programs'
-KOS := third_party/kolibrios
 $(KOS)/%:
 	tools/fetch-kolibrios.sh
 
