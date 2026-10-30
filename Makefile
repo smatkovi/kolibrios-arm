@@ -52,7 +52,7 @@ SIMD ?= neon
 ifeq ($(SIMD),c)
 KCFLAGS += -DSIMD_C
 else
-KSRC += arch/arm64/blit.S arch/arm64/string.S
+KSRC += arch/arm64/blit.S arch/arm64/string.S bench.c
 endif
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
 LWIP := third_party/lwip/src
@@ -79,7 +79,7 @@ KLINK = $(CC32) $(LDFLAGS) -T kernel/arch/armv7/kernel.ld -Wl,--defsym,KERNEL_BA
 endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
-APPS := taskbar menu example clock board cpu hildon hstatus phone messenger
+APPS := taskbar menu example clock board cpu hildon hstatus phone messenger sysbench
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
 RDNAME_hildon := @hildon
@@ -152,9 +152,10 @@ $(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd
 $(A)/linux-files: FORCE | dirs
 	@[ "$$(cat $@ 2> /dev/null)" = "$(LINUX_FILES)" ] || echo "$(LINUX_FILES)" > $@
 
-# the look in a file, written when it changes: the ramdisk follows it
+# the look (and the autorun file, AUTORUN=... for tests) in a file,
+# written when it changes: the ramdisk follows it
 $(A)/look: FORCE | dirs
-	@[ "$$(cat $@ 2> /dev/null)" = "$(LOOK)" ] || echo "$(LOOK)" > $@
+	@[ "$$(cat $@ 2> /dev/null)" = "$(LOOK) $(AUTORUN)" ] || echo "$(LOOK) $(AUTORUN)" > $@
 FORCE:
 
 dirs:
