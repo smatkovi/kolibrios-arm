@@ -593,6 +593,9 @@ static void join(void)
 	own_rsnx_len = wpa_own_rsnx(own_rsnx, &choice);
 	if (choice.akm != WPA_AKM_SAE) mcopy(pmk, psk_pmk, WPA_PMK_LEN);
 	pmf_on = choice.mfp;
+	stats.akm = choice.akm;
+	stats.pmf = choice.mfp;
+	stats.h2e = choice.h2e;
 	mgmt_tx_pn = mgmt_rx_pn = 0;
 	saq_on = false;
 	comeback_at = 0;
@@ -826,7 +829,13 @@ static void associated(u16 aid, u16 cap, const u8 *f, u32 len)
 	     a.phymode == MODE_11A ? "11a" : "11n", a.nss, a.nss == 1 ? "" : "s", a.n_ht, lk.qos ? "on" : "off");
 	stats.ht = lk.ht && lk.peer_ht ? (bw40 ? 40 : 20) : 0;
 	stats.qos = lk.qos;
-	wpa_init(&wpa, pmk, &choice, mac, bss.bssid, own_ie, own_ie_len, bss.rsn, bss.rsn_len, bss.rsnx, bss.rsnx_len, hw.random);
+	/* message 2's key data: the association's RSN element and its RSNX
+	 * element (wpa_supplicant_process_1_of_4: assoc_rsnxe) */
+	u8 m2ie[WPA_MAX_IE];
+	mcopy(m2ie, own_ie, own_ie_len);
+	mcopy(m2ie + own_ie_len, own_rsnx, own_rsnx_len);
+	wpa_init(&wpa, pmk, &choice, mac, bss.bssid, m2ie, own_ie_len + own_rsnx_len, bss.rsn, bss.rsn_len, bss.rsnx,
+		 bss.rsnx_len, hw.random);
 	go(WIFI_4WAY, 10000);                   /* the AP sends message 1 right away */
 	if (eapol_pending_len) {
 		u32 n = eapol_pending_len;
@@ -1031,6 +1040,7 @@ static void send_sa_query(u8 action, const u8 id[2])
 	u8 *f = slot_alloc(&pa);
 	if (!f) return;
 	if (mgmt_tx(f, wlan_sa_query(f, bss.bssid, mac, action, id, ++mgmt_tx_pn))) slot_free(f);
+	if (action == 0) stats.saq_sent++;
 }
 
 static void saq_begin(void)
@@ -1052,6 +1062,7 @@ static int pmf_disconnect(const u8 *f, u32 len, u16 *reason)
 		/* group addressed: BIP with the IGTK */
 		if (wpa_bip_check(&wpa, f, len)) {
 			mlog("wifi: a group disconnection without a valid BIP MIC: dropped\n");
+			stats.bip_dropped++;
 			return 1;
 		}
 		*reason = get16(f + WLAN_HDR);
@@ -1061,6 +1072,7 @@ static int pmf_disconnect(const u8 *f, u32 len, u16 *reason)
 	const u8 *b;
 	u32 bl;
 	if (wlan_ccmp_mgmt(f, len, &pn, &b, &bl)) {
+		stats.unprot_dropped++;
 		saq_begin();
 		return 1;
 	}

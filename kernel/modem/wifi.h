@@ -88,6 +88,9 @@ struct wifi_stats {
 	u8 ht;                              /* the peer: 0 legacy, 20 or 40 MHz HT */
 	bool qos, ps;                       /* QoS data, the firmware's power save */
 	u32 saq_answered;                   /* the AP's SA Queries answered */
+	u8 akm;                             /* the association's AKM (00-0f-ac:N) */
+	bool pmf, h2e;                      /* management frame protection, SAE by hash-to-element */
+	u32 saq_sent, unprot_dropped, bip_dropped;  /* our SA Queries, disconnections dropped (unprotected, bad BIP) */
 };
 const struct wifi_stats *wifi_stats(void);
 

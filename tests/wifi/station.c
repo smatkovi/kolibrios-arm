@@ -29,6 +29,10 @@
 #include <stdlib.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/ec.h>
+#include <openssl/bn.h>
+#include <openssl/obj_mac.h>
+#include <openssl/core_names.h>
 #include "../../kernel/modem/ce.h"
 #include "../../kernel/modem/htc.h"
 #include "../../kernel/modem/wmi.h"
@@ -212,13 +216,14 @@ static int ccmp(bool enc, const u8 tk[16], const u8 *hdr, u64 pn, const u8 *in, 
 {
 	u8 nonce[13], aad[22];
 	u16 fc = get16(hdr);
-	nonce[0] = 0;                           /* priority: no QoS */
+	bool mgmt = (fc & 0x000c) == 0;
+	nonce[0] = mgmt ? 0x10 : 0;             /* priority 0 (no QoS); management frames: their bit (802.11w) */
 	memcpy(nonce + 1, hdr + 10, 6);         /* A2 */
 	for (int i = 0; i < 6; i++) nonce[7 + i] = (u8)(pn >> (40 - 8 * i));
 	/* the AAD: FC masked (subtype bits 4-6, retry, power management,
 	 * more data off; Protected on), A1-A3, the sequence control's
 	 * fragment number */
-	put16(aad, (u16)((fc & ~0x3870u) | 0x4000u));
+	put16(aad, (u16)((fc & ~(mgmt ? 0x3800u : 0x3870u)) | 0x4000u));
 	memcpy(aad + 2, hdr + 4, 18);
 	put16(aad + 20, get16(hdr + 22) & 0x000f);
 	EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
@@ -289,6 +294,37 @@ static const u8 rsn_tkip[] = { 48, 20, 1, 0, 0x00, 0x0f, 0xac, 2, 1, 0, 0x00, 0x
  * or none), WMM with hostapd's default parameters, U-APSD, admission
  * control on VO */
 static struct { bool ht, ht40, wmm, uapsd, acm_vo; } apc;
+
+/* the AP's security: its AKMs (1 << 2 PSK, 6 PSK-SHA256, 8 SAE), MFP
+ * capable/required, H2E in an RSNX element, H2E only (the BSS membership
+ * selector 123), the anti-clogging token asked for, PMF's behaviours */
+static struct { u32 akms; bool mfpc, mfpr, h2e, h2e_only, anticlog; } aps;
+static u8 ap_rsn[48], ap_rsnx[3];
+static u32 ap_rsn_len, ap_rsnx_len;
+
+static void ap_build_rsn(void)
+{
+	u32 n = 0;
+	u8 *o = ap_rsn;
+	o[n++] = 48, o[n++] = 0, o[n++] = 1, o[n++] = 0;
+	o[n++] = 0, o[n++] = 0x0f, o[n++] = 0xac, o[n++] = 4;
+	o[n++] = 1, o[n++] = 0, o[n++] = 0, o[n++] = 0x0f, o[n++] = 0xac, o[n++] = 4;
+	u32 cnt = 0, at = n;
+	n += 2;
+	for (u32 a = 0; a < 32; a++)
+		if (aps.akms & (1u << a)) o[n++] = 0, o[n++] = 0x0f, o[n++] = 0xac, o[n++] = (u8)a, cnt++;
+	put16(o + at, (u16)cnt);
+	put16(o + n, (u16)(0x000c | (aps.mfpc ? 0x80 : 0) | (aps.mfpr ? 0x40 : 0)));
+	n += 2;
+	if (aps.mfpc) {
+		o[n++] = 0, o[n++] = 0;                 /* no PMKIDs */
+		o[n++] = 0, o[n++] = 0x0f, o[n++] = 0xac, o[n++] = 6;   /* BIP-CMAC-128 */
+	}
+	o[1] = (u8)(n - 2);
+	ap_rsn_len = n;
+	ap_rsnx_len = 0;
+	if (aps.h2e) ap_rsnx[0] = 244, ap_rsnx[1] = 1, ap_rsnx[2] = 0x20, ap_rsnx_len = 3;
+}
 #define AP_HT_CAP 0x116f                /* LDPC, 20/40, SM PS off, short GI 20/40, RX STBC 1, DSSS/CCK in 40 */
 
 static u32 ap_ies(u8 *f)
@@ -330,6 +366,16 @@ static struct {
 	u8 assoc_ht[28], assoc_wmm[9];
 	bool assoc_had_ht, assoc_had_wmm;
 	u32 assoc_rates;
+	/* the association's security: the AKM, PMF, BIP's key, the PNs of
+	 * protected management frames, SA Query */
+	u8 akm, assoc_rsnx[8];
+	bool mfp, assoc_had_rsnx;
+	u8 igtk[16];
+	u64 ipn, mgmt_pn, sta_mgmt_pn;
+	bool saq_silent;                    /* (the AP does not answer the station's SA Queries) */
+	u32 saq_requests, saq_responses, mgmt_replays, comebacks, assocs;
+	u8 saq_id[2];
+	bool comeback_armed;
 	u32 arp_requests, bad_mic, m2, m4, group2, dhcp_discover, dhcp_request, arp_replies, echo_replies, decrypt_fail, frames;
 	bool rekey_sent, rekey_done, arp_after_rekey, deauth_sent;
 	u32 eapol_at;
@@ -352,8 +398,46 @@ static void ap_prf(const u8 *key, const char *label, const u8 *data, u32 dl, u8 
 	}
 }
 
+static void ap_cmac(const u8 *key, const u8 *d, u32 len, u8 *mac)
+{
+	size_t ml = 16;
+	EVP_MAC *m = EVP_MAC_fetch(NULL, "CMAC", NULL);
+	EVP_MAC_CTX *mc = EVP_MAC_CTX_new(m);
+	OSSL_PARAM prm[2] = { OSSL_PARAM_construct_utf8_string("cipher", "AES-128-CBC", 0), OSSL_PARAM_construct_end() };
+	EVP_MAC_init(mc, key, 16, prm);
+	EVP_MAC_update(mc, d, len);
+	EVP_MAC_final(mc, mac, &ml, 16);
+	EVP_MAC_CTX_free(mc);
+	EVP_MAC_free(m);
+}
+
+/* IEEE 802.11's SHA-256 KDF, by OpenSSL's HMAC */
+static void ap_kdf(const u8 *key, u32 kl, const char *label, const u8 *data, u32 dl, u8 *out, u32 bits)
+{
+	u8 buf[512], h[32];
+	u32 ll = strlen(label), n = bits / 8;
+	for (u32 pos = 0, i = 1; pos < n; i++) {
+		buf[0] = (u8)i, buf[1] = 0;
+		memcpy(buf + 2, label, ll);
+		memcpy(buf + 2 + ll, data, dl);
+		buf[2 + ll + dl] = (u8)bits, buf[3 + ll + dl] = (u8)(bits >> 8);
+		unsigned hl = 32;
+		HMAC(EVP_sha256(), key, (int)kl, buf, 4 + ll + dl, h, &hl);
+		u32 k = n - pos < 32 ? n - pos : 32;
+		memcpy(out + pos, h, k);
+		pos += k;
+	}
+}
+
+static bool ap_sha256(void) { return ap.akm == 6 || ap.akm == 8; }
+static u16 ap_ver(void) { return ap.akm == 8 ? 0 : ap.akm == 6 ? 3 : 2; }
+
 static void ap_mic(const u8 *kck, u8 *frame, u32 len, u8 *mic)
 {
+	if (ap_sha256()) {
+		ap_cmac(kck, frame, len, mic);
+		return;
+	}
 	u8 h[20];
 	unsigned hl = 20;
 	HMAC(EVP_sha1(), kck, 16, frame, len, h, &hl);
@@ -425,7 +509,7 @@ static void ap_msg1(void)
 {
 	u8 m[128];
 	for (int i = 0; i < 32; i++) ap.anonce[i] = (u8)rand();
-	eapol_hdr(m, 0x008a, ++ap.replay, ap.anonce, 0);   /* pairwise, ack, version 2 */
+	eapol_hdr(m, 0x0088 | ap_ver(), ++ap.replay, ap.anonce, 0);   /* pairwise, ack, the AKM's version */
 	ap.m1_tries++;
 	ap_data(ap.sta, ap_mac, 0x888e, m, 99);
 	ap.msg = 2;
@@ -435,16 +519,27 @@ static void ap_msg1(void)
 /* the GTK KDE and the AP's RSN element, wrapped with the KEK */
 static u32 ap_key_data(u8 *o, const u8 *gtk, int id, bool with_ie)
 {
-	u8 plain[128];
+	u8 plain[192];
 	u32 n = 0;
 	if (with_ie) {
-		memcpy(plain, rsn_ccmp, sizeof(rsn_ccmp));
-		n = sizeof(rsn_ccmp);
+		/* the beacon's RSN and RSNX elements */
+		memcpy(plain, ap_rsn, ap_rsn_len);
+		n = ap_rsn_len;
+		memcpy(plain + n, ap_rsnx, ap_rsnx_len);
+		n += ap_rsnx_len;
 	}
 	u8 kde[] = { 0xdd, 22, 0x00, 0x0f, 0xac, 1, (u8)id, 0 };
 	memcpy(plain + n, kde, sizeof(kde));
 	memcpy(plain + n + 8, gtk, 16);
 	n += 24;
+	if (ap.mfp) {
+		/* the IGTK KDE: key id 4, IPN, the key */
+		u8 ik[] = { 0xdd, 28, 0x00, 0x0f, 0xac, 9, 4, 0 };
+		memcpy(plain + n, ik, 8);
+		for (int i = 0; i < 6; i++) plain[n + 8 + i] = (u8)(ap.ipn >> (8 * i));
+		memcpy(plain + n + 14, ap.igtk, 16);
+		n += 30;
+	}
 	if (n % 8) {
 		plain[n++] = 0xdd;
 		while (n % 8) plain[n++] = 0;
@@ -462,6 +557,7 @@ static void ap_eapol(const u8 *p, u32 len)
 	if (len < 99) return;
 	u16 info = (u16)(p[5] << 8 | p[6]);
 	u8 f[512], mic[16];
+	if (len > sizeof(f)) return;
 	memcpy(f, p, len);
 	memset(f + 81, 0, 16);
 	if (info & 0x0008) {
@@ -474,18 +570,21 @@ static void ap_eapol(const u8 *p, u32 len)
 			memcpy(d + 6, alo ? ap.sta : ap_mac, 6);
 			memcpy(d + 12, nlo ? ap.anonce : ap.snonce, 32);
 			memcpy(d + 44, nlo ? ap.snonce : ap.anonce, 32);
-			ap_prf(ap.pmk, "Pairwise key expansion", d, 76, ap.ptk, 48);
+			if (ap_sha256()) ap_kdf(ap.pmk, 32, "Pairwise key expansion", d, 76, ap.ptk, 384);
+			else ap_prf(ap.pmk, "Pairwise key expansion", d, 76, ap.ptk, 48);
 			ap_mic(ap.ptk, f, len, mic);
 			if (memcmp(mic, p + 81, 16)) {
 				ap.bad_mic++;
 				return;
 			}
 			u32 dl = (u32)(p[97] << 8 | p[98]);
-			CHECK(dl == ap.sta_ie_len && !memcmp(p + 99, ap.sta_ie, dl), "message 2's RSN element is the association's");
+			CHECK(dl == ap.sta_ie_len + (ap.assoc_had_rsnx ? 3u : 0) && !memcmp(p + 99, ap.sta_ie, ap.sta_ie_len) &&
+			      (!ap.assoc_had_rsnx || !memcmp(p + 99 + ap.sta_ie_len, ap.assoc_rsnx, 3)) && (info & 7) == ap_ver(),
+			      "message 2: the association's RSN (and RSNX) element, the AKM's version");
 			ap.m2++;
 			u8 m[256], wrapped[160];
 			u32 wl = ap_key_data(wrapped, ap.gtk, 1, true);
-			eapol_hdr(m, 0x13ca, ++ap.replay, ap.anonce, wl);  /* encr, secure, MIC, ack, install, pairwise, v2 */
+			eapol_hdr(m, 0x13c8 | ap_ver(), ++ap.replay, ap.anonce, wl);  /* encr, secure, MIC, ack, install, pairwise */
 			memcpy(m + 99, wrapped, wl);
 			ap_mic(ap.ptk, m, 99 + wl, m + 81);
 			ap_data(ap.sta, ap_mac, 0x888e, m, 99 + wl);
@@ -507,6 +606,332 @@ static void ap_eapol(const u8 *p, u32 len)
 		ap.group2++;
 		ap.rekey_done = true;
 	}
+}
+
+/* --- the AP's SAE, with OpenSSL's EC and BN (independent of sae.c): IEEE
+ * 802.11-2020 12.4 as hostapd's sae.c does it, without its side-channel
+ * care ------------------------------------------------------------------ */
+
+static struct {
+	EC_GROUP *g;
+	BN_CTX *ctx;
+	BIGNUM *p, *a, *b, *n;
+	EC_POINT *pwe, *elem, *peer_elem;
+	BIGNUM *rand, *scalar, *peer_scalar;
+	u8 kck[32], pmk[32], token[32];
+	bool h2e, token_sent, token_done, committed;
+	u32 commits, confirms, tokens, h2e_commits;
+} as;
+
+static void bn32(u8 o[32], const BIGNUM *x) { BN_bn2binpad(x, o, 32); }
+
+static void as_init(void)
+{
+	as.g = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+	as.ctx = BN_CTX_new();
+	as.p = BN_new(), as.a = BN_new(), as.b = BN_new(), as.n = BN_new();
+	EC_GROUP_get_curve(as.g, as.p, as.a, as.b, as.ctx);
+	EC_GROUP_get_order(as.g, as.n, as.ctx);
+	as.pwe = EC_POINT_new(as.g), as.elem = EC_POINT_new(as.g), as.peer_elem = EC_POINT_new(as.g);
+	as.rand = BN_new(), as.scalar = BN_new(), as.peer_scalar = BN_new();
+}
+
+static void as_free(void)
+{
+	EC_POINT_free(as.pwe), EC_POINT_free(as.elem), EC_POINT_free(as.peer_elem);
+	BN_free(as.rand), BN_free(as.scalar), BN_free(as.peer_scalar);
+	BN_free(as.p), BN_free(as.a), BN_free(as.b), BN_free(as.n);
+	BN_CTX_free(as.ctx);
+	EC_GROUP_free(as.g);
+}
+
+static void max_min(u8 o[12], const u8 *x, const u8 *y)
+{
+	bool hi = memcmp(x, y, 6) > 0;
+	memcpy(o, hi ? x : y, 6);
+	memcpy(o + 6, hi ? y : x, 6);
+}
+
+/* y^2 = x^3 + ax + b */
+static void as_y2(BIGNUM *r, const BIGNUM *x)
+{
+	BIGNUM *t = BN_new();
+	BN_mod_sqr(r, x, as.p, as.ctx);
+	BN_mod_mul(r, r, x, as.p, as.ctx);
+	BN_mod_mul(t, as.a, x, as.p, as.ctx);
+	BN_mod_add(r, r, t, as.p, as.ctx);
+	BN_mod_add(r, r, as.b, as.p, as.ctx);
+	BN_free(t);
+}
+
+/* hunting and pecking: the first pwd-value below p with a square y^2 */
+static void as_pwe_hnp(void)
+{
+	u8 key[12], pb[32];
+	max_min(key, ap_mac, ap.sta);
+	bn32(pb, as.p);
+	BIGNUM *x = BN_new(), *y2 = BN_new(), *y = BN_new();
+	for (u32 c = 1; c < 100; c++) {
+		u8 buf[80], seed[32], val[32];
+		u32 pl = strlen(passphrase);
+		memcpy(buf, passphrase, pl);
+		buf[pl] = (u8)c;
+		unsigned hl = 32;
+		HMAC(EVP_sha256(), key, 12, buf, pl + 1, seed, &hl);
+		ap_kdf(seed, 32, "SAE Hunting and Pecking", pb, 32, val, 256);
+		BN_bin2bn(val, 32, x);
+		if (BN_cmp(x, as.p) >= 0) continue;
+		as_y2(y2, x);
+		if (BN_kronecker(y2, as.p, as.ctx) != 1) continue;
+		BN_mod_sqrt(y, y2, as.p, as.ctx);
+		if (BN_is_odd(y) != (seed[31] & 1)) BN_sub(y, as.p, y);
+		EC_POINT_set_affine_coordinates(as.g, as.pwe, x, y, as.ctx);
+		break;
+	}
+	BN_free(x), BN_free(y2), BN_free(y);
+}
+
+/* simplified SWU, z = -10 (IEEE 802.11-2020 12.4.4.2.3) */
+static void as_sswu(EC_POINT *P, const BIGNUM *u)
+{
+	BIGNUM *z = BN_new(), *u2 = BN_new(), *t1 = BN_new(), *m = BN_new(), *x1 = BN_new(), *x2 = BN_new(), *gx = BN_new(),
+	       *y = BN_new(), *t2 = BN_new();
+	BN_set_word(z, 10);
+	BN_sub(z, as.p, z);
+	BN_mod_sqr(u2, u, as.p, as.ctx);
+	BN_mod_mul(t1, z, u2, as.p, as.ctx);    /* z u^2 */
+	BN_mod_sqr(m, t1, as.p, as.ctx);
+	BN_mod_add(m, m, t1, as.p, as.ctx);     /* z^2 u^4 + z u^2 */
+	if (BN_is_zero(m)) {
+		BN_mod_mul(t2, z, as.a, as.p, as.ctx);
+		BN_mod_inverse(t2, t2, as.p, as.ctx);
+		BN_mod_mul(x1, as.b, t2, as.p, as.ctx);
+	} else {
+		BN_mod_inverse(t2, m, as.p, as.ctx);
+		BN_add_word(t2, 1);
+		BN_mod_inverse(x1, as.a, as.p, as.ctx);
+		BN_mod_mul(x1, x1, as.b, as.p, as.ctx);
+		BN_sub(x1, as.p, x1);               /* -b/a */
+		BN_mod_mul(x1, x1, t2, as.p, as.ctx);
+	}
+	as_y2(gx, x1);
+	const BIGNUM *x = x1;
+	if (BN_kronecker(gx, as.p, as.ctx) < 0) {
+		BN_mod_mul(x2, t1, x1, as.p, as.ctx);
+		as_y2(gx, x2);
+		x = x2;
+	}
+	BN_mod_sqrt(y, gx, as.p, as.ctx);
+	if (BN_is_odd(y) != BN_is_odd(u)) BN_sub(y, as.p, y);
+	EC_POINT_set_affine_coordinates(as.g, P, x, y, as.ctx);
+	BN_free(z), BN_free(u2), BN_free(t1), BN_free(m), BN_free(x1), BN_free(x2), BN_free(gx), BN_free(y), BN_free(t2);
+}
+
+static void as_pwe_h2e(void)
+{
+	u8 seed[32], val[48];
+	unsigned hl = 32;
+	HMAC(EVP_sha256(), ssid, (int)strlen(ssid), (const u8 *)passphrase, strlen(passphrase), seed, &hl);
+	EC_POINT *p1 = EC_POINT_new(as.g), *p2 = EC_POINT_new(as.g), *pt = EC_POINT_new(as.g);
+	BIGNUM *u = BN_new(), *v = BN_new(), *nm1 = BN_new();
+	static const char *const info[2] = { "SAE Hash to Element u1 P1", "SAE Hash to Element u2 P2" };
+	for (int i = 0; i < 2; i++) {
+		/* HKDF-Expand(seed, info, 48) = T(1) || T(2)[0..15] */
+		u8 t[64], in[64];
+		u32 il = strlen(info[i]);
+		memcpy(in, info[i], il);
+		in[il] = 1;
+		HMAC(EVP_sha256(), seed, 32, in, il + 1, t, &hl);
+		memcpy(in, t, 32);
+		memcpy(in + 32, info[i], il);
+		in[32 + il] = 2;
+		HMAC(EVP_sha256(), seed, 32, in, 33 + il, t + 32, &hl);
+		memcpy(val, t, 48);
+		BN_bin2bn(val, 48, u);
+		BN_mod(u, u, as.p, as.ctx);
+		as_sswu(i ? p2 : p1, u);
+	}
+	EC_POINT_add(as.g, pt, p1, p2, as.ctx);
+	/* val = H(0^32, MAX || MIN) mod (n - 1) + 1; PWE = val PT */
+	u8 key[12], zero[32] = { 0 }, h[32];
+	max_min(key, ap_mac, ap.sta);
+	HMAC(EVP_sha256(), zero, 32, key, 12, h, &hl);
+	BN_bin2bn(h, 32, v);
+	BN_copy(nm1, as.n);
+	BN_sub_word(nm1, 1);
+	BN_mod(v, v, nm1, as.ctx);
+	BN_add_word(v, 1);
+	EC_POINT_mul(as.g, as.pwe, NULL, pt, v, as.ctx);
+	EC_POINT_free(p1), EC_POINT_free(p2), EC_POINT_free(pt);
+	BN_free(u), BN_free(v), BN_free(nm1);
+}
+
+static void as_point_bin(u8 o[64], const EC_POINT *P)
+{
+	BIGNUM *x = BN_new(), *y = BN_new();
+	EC_POINT_get_affine_coordinates(as.g, P, x, y, as.ctx);
+	bn32(o, x), bn32(o + 32, y);
+	BN_free(x), BN_free(y);
+}
+
+/* the AP's commit: rand, mask, scalar = rand + mask mod n, element =
+ * -(mask PWE) */
+static void as_commit(void)
+{
+	BIGNUM *mask = BN_new();
+	do {
+		BN_rand_range(as.rand, as.n);
+		BN_rand_range(mask, as.n);
+		BN_mod_add(as.scalar, as.rand, mask, as.n, as.ctx);
+	} while (BN_is_zero(as.rand) || BN_is_one(as.rand) || BN_is_zero(mask) || BN_is_one(mask) || BN_is_zero(as.scalar) ||
+		 BN_is_one(as.scalar));
+	EC_POINT_mul(as.g, as.elem, NULL, as.pwe, mask, as.ctx);
+	EC_POINT_invert(as.g, as.elem, as.ctx);
+	BN_free(mask);
+}
+
+static void ap_auth(u16 alg, u16 seq, u16 status, const u8 *body, u32 len)
+{
+	u8 b[200];
+	put16(b, alg), put16(b + 2, seq), put16(b + 4, status);
+	memcpy(b + 6, body, len);
+	ap_mgmt(0x00b0, b, 6 + len);
+}
+
+/* a station's SAE frame (its body after algorithm, transaction, status) */
+static void ap_sae(u16 seq, u16 status, const u8 *b, u32 len)
+{
+	if (seq == 1) {
+		as.commits++;
+		as.h2e = status == 126;
+		if (as.h2e) as.h2e_commits++;
+		CHECK(len >= 98 && get16(b) == 19, "SAE commit: group 19");
+		if (aps.h2e_only) CHECK(as.h2e, "an H2E-only AP: the station's commit with status 126");
+		/* the anti-clogging token first (hostapd's sae_check_big_sync /
+		 * anti-clogging when busy): as it is (hunting and pecking) or in
+		 * its container (hash-to-element) */
+		const u8 *sc = b + 2;
+		bool has_token = false;
+		if (aps.anticlog && !as.token_done) {
+			if (!as.h2e && len == 2 + 32 + 96 && !memcmp(b + 2, as.token, 32)) has_token = true, sc = b + 34;
+			if (as.h2e && len == 98 + 35 && b[98] == 255 && b[99] == 33 && b[100] == 93 && !memcmp(b + 101, as.token, 32))
+				has_token = true;
+			as.token_done = has_token;
+			if (!has_token) {
+				CHECK(!as.token_sent, "the anti-clogging token back with the second commit");
+				for (int i = 0; i < 32; i++) as.token[i] = (u8)rand();
+				u8 r[40];
+				put16(r, 19);
+				u32 n = 2;
+				if (as.h2e) r[n++] = 255, r[n++] = 33, r[n++] = 93;
+				memcpy(r + n, as.token, 32);
+				n += 32;
+				as.token_sent = true;
+				as.tokens++;
+				ap_auth(3, 1, 76, r, n);
+				return;
+			}
+		}
+		/* the station's scalar and element; our PWE, commit, K, the keys */
+		BIGNUM *x = BN_new(), *y = BN_new();
+		BN_bin2bn(sc, 32, as.peer_scalar);
+		BN_bin2bn(sc + 32, 32, x);
+		BN_bin2bn(sc + 64, 32, y);
+		CHECK(EC_POINT_set_affine_coordinates(as.g, as.peer_elem, x, y, as.ctx) == 1 &&
+		      EC_POINT_is_on_curve(as.g, as.peer_elem, as.ctx) == 1 && BN_cmp(as.peer_scalar, as.n) < 0,
+		      "SAE: the station's element on the curve, its scalar below n");
+		if (as.h2e) as_pwe_h2e();
+		else as_pwe_hnp();
+		as_commit();
+		EC_POINT *K = EC_POINT_new(as.g);
+		EC_POINT_mul(as.g, K, NULL, as.pwe, as.peer_scalar, as.ctx);
+		EC_POINT_add(as.g, K, K, as.peer_elem, as.ctx);
+		EC_POINT_mul(as.g, K, NULL, K, as.rand, as.ctx);
+		u8 k[64], zero[32] = { 0 }, keyseed[32], val[32], keys[64];
+		as_point_bin(k, K);
+		unsigned hl = 32;
+		HMAC(EVP_sha256(), zero, 32, k, 32, keyseed, &hl);
+		BIGNUM *sum = BN_new();
+		BN_mod_add(sum, as.scalar, as.peer_scalar, as.n, as.ctx);
+		bn32(val, sum);
+		ap_kdf(keyseed, 32, "SAE KCK and PMK", val, 32, keys, 512);
+		memcpy(as.kck, keys, 32);
+		memcpy(as.pmk, keys + 32, 32);
+		EC_POINT_free(K), BN_free(x), BN_free(y), BN_free(sum);
+		u8 r[100];
+		put16(r, 19);
+		bn32(r + 2, as.scalar);
+		as_point_bin(r + 34, as.elem);
+		as.committed = true;
+		ap_auth(3, 1, as.h2e ? 126 : 0, r, 98);
+		return;
+	}
+	if (seq == 2 && as.committed && len >= 34) {
+		as.confirms++;
+		/* verifier = CN(KCK, the station's send-confirm, its scalar and
+		 * element, ours) */
+		u8 d[194], v[32], ps[32], pe[64], os[32], oe[64];
+		bn32(ps, as.peer_scalar), as_point_bin(pe, as.peer_elem), bn32(os, as.scalar), as_point_bin(oe, as.elem);
+		memcpy(d, b, 2), memcpy(d + 2, ps, 32), memcpy(d + 34, pe, 64), memcpy(d + 98, os, 32), memcpy(d + 130, oe, 64);
+		unsigned hl = 32;
+		HMAC(EVP_sha256(), as.kck, 32, d, 194, v, &hl);
+		if (memcmp(v, b + 2, 32)) {
+			ap.bad_mic++;
+			return;
+		}
+		u8 r[34];
+		put16(r, 1);
+		memcpy(d, r, 2), memcpy(d + 2, os, 32), memcpy(d + 34, oe, 64), memcpy(d + 98, ps, 32), memcpy(d + 130, pe, 64);
+		HMAC(EVP_sha256(), as.kck, 32, d, 194, r + 2, &hl);
+		memcpy(ap.pmk, as.pmk, 32);
+		ap.authed = true;
+		as.committed = false;
+		ap_auth(3, 2, 0, r, 34);
+	}
+}
+
+/* protected management frames: unicast ones by CCMP with the TK (the
+ * management nonce), group ones with BIP's MMIE (the IGTK) */
+static void ap_mgmt_protected(u16 fc, const u8 *body, u32 len)
+{
+	u8 f[512], e[600];
+	put16(f, fc);
+	put16(f + 2, 0);
+	memcpy(f + 4, ap.sta, 6), memcpy(f + 10, ap_mac, 6), memcpy(f + 16, ap_mac, 6);
+	put16(f + 22, 0);
+	memcpy(f + 24, body, len);
+	u32 n = ccmp_encrypt(ap.ptk + 32, 0, ++ap.mgmt_pn, f, 24 + len, e);
+	fw_from_air(e, n);
+}
+
+static void ap_mgmt_bip(u16 fc, const u8 *body, u32 len, bool good)
+{
+	u8 f[512];
+	put16(f, fc);
+	put16(f + 2, 0);
+	memcpy(f + 4, bcast, 6), memcpy(f + 10, ap_mac, 6), memcpy(f + 16, ap_mac, 6);
+	put16(f + 22, 0);
+	memcpy(f + 24, body, len);
+	u8 *mm = f + 24 + len;
+	mm[0] = 76, mm[1] = 16, mm[2] = 4, mm[3] = 0;
+	ap.ipn++;
+	for (int i = 0; i < 6; i++) mm[4 + i] = (u8)(ap.ipn >> (8 * i));
+	memset(mm + 10, 0, 8);
+	u8 d[512], mic[16];
+	put16(d, fc & ~0x3800);
+	memcpy(d + 2, f + 4, 18);
+	memcpy(d + 20, f + 24, len + 18);
+	ap_cmac(ap.igtk, d, 20 + len + 18, mic);
+	memcpy(mm + 10, mic, 8);
+	if (!good) mm[10] ^= 1;
+	fw_from_air(f, 24 + len + 18);
+}
+
+static void ap_sa_query_req(void)
+{
+	for (int i = 0; i < 2; i++) ap.saq_id[i] = (u8)rand();
+	u8 b[4] = { 8, 0, ap.saq_id[0], ap.saq_id[1] };
+	ap_mgmt_protected(0x00d0, b, 4);
 }
 
 /* the router: IPv4 checksums, DHCP, ARP, ICMP */
@@ -616,17 +1041,47 @@ static void ap_rx(const u8 *f, u32 len)
 	u16 fc = get16(f);
 	if ((fc & 0x000c) == 0) {               /* management */
 		u16 sub = fc & 0x00f0;
-		if (sub == 0x00b0 && len >= 30) {
+		if (sub == 0x00b0 && len >= 30 && get16(f + 24) == 3) {
+			memcpy(ap.sta, f + 10, 6);
+			CHECK(aps.akms & (1u << 8), "SAE only with an SAE AP");
+			ap_sae(get16(f + 26), get16(f + 28), f + 30, len - 30);
+		} else if (sub == 0x00b0 && len >= 30) {
 			memcpy(ap.sta, f + 10, 6);
 			CHECK(!memcmp(f + 4, ap_mac, 6) && get16(f + 24) == 0 && get16(f + 26) == 1, "authentication: open system, 1");
 			ap.authed = true;
 			u8 b[6] = { 0, 0, 2, 0, 0, 0 };
 			ap_mgmt(0x00b0, b, 6);
+		} else if (sub == 0x00d0 && (fc & 0x4000) && len >= 24 + 8 + 4 + 8) {
+			/* a protected action frame: decrypted with the TK, the PN
+			 * above the last */
+			u8 pl[512];
+			int kid;
+			const u8 *h = f + 24;
+			u64 pn = h[0] | (u64)h[1] << 8 | (u64)h[4] << 16 | (u64)h[5] << 24 | (u64)h[6] << 32 | (u64)h[7] << 40;
+			if (!ap.keys || ccmp_decrypt(ap.ptk + 32, f, len, pl, &kid) < 0) {
+				ap.decrypt_fail++;
+				return;
+			}
+			if (pn <= ap.sta_mgmt_pn) {
+				ap.mgmt_replays++;
+				return;
+			}
+			ap.sta_mgmt_pn = pn;
+			if (pl[24] == 8 && pl[25] == 0) {
+				ap.saq_requests++;
+				if (!ap.saq_silent) {
+					u8 b[4] = { 8, 1, pl[26], pl[27] };
+					ap_mgmt_protected(0x00d0, b, 4);
+				}
+			} else if (pl[24] == 8 && pl[25] == 1 && !memcmp(pl + 26, ap.saq_id, 2)) {
+				ap.saq_responses++;
+			}
 		} else if (sub == 0x0000 && ap.authed && len >= 28) {
 			/* the association request's elements: the SSID, the RSN */
 			const u8 *e = f + 28;
 			bool ssid_ok = false;
 			ap.sta_ie_len = 0;
+			ap.assoc_had_rsnx = false;
 			while (e + 2 <= f + len) {
 				if (e[0] == 0) ssid_ok = e[1] == strlen(ssid) && !memcmp(e + 2, ssid, e[1]);
 				if (e[0] == 48 && e[1] + 2u <= sizeof(ap.sta_ie)) {
@@ -634,6 +1089,7 @@ static void ap_rx(const u8 *f, u32 len)
 					ap.sta_ie_len = e[1] + 2u;
 				}
 				if (e[0] == 45 && e[1] == 26) memcpy(ap.assoc_ht, e, 28), ap.assoc_had_ht = true;
+				if (e[0] == 244 && e[1] == 1) memcpy(ap.assoc_rsnx, e, 3), ap.assoc_had_rsnx = true;
 				if (e[0] == 221 && e[1] == 7 && !memcmp(e + 2, "\x00\x50\xf2\x02\x00\x01", 6))
 					memcpy(ap.assoc_wmm, e, 9), ap.assoc_had_wmm = true;
 				if (e[0] == 1 || e[0] == 50) {
@@ -642,13 +1098,35 @@ static void ap_rx(const u8 *f, u32 len)
 				}
 				e += 2 + e[1];
 			}
-			CHECK(ssid_ok && ap.sta_ie_len == 22, "the association: the SSID, an RSN element");
+			CHECK(ssid_ok && ap.sta_ie_len >= 22, "the association: the SSID, an RSN element");
 			CHECK((get16(f + 24) & 0x0011) == 0x0011, "the association's capabilities: ESS, privacy (%x)", get16(f + 24));
-			u8 b[128] = { 0x11, 0x04, 0, 0, 0x01, 0xc0 };  /* capabilities, status 0, AID 1 */
+			/* the station's choice: the AKM, MFPC */
+			ap.akm = ap.sta_ie[19];
+			ap.mfp = aps.mfpc && (ap.sta_ie[20] & 0x80);
+			CHECK(aps.akms & (1u << ap.akm), "the association's AKM one of the AP's (%u)", ap.akm);
+			if (aps.mfpr) CHECK(ap.mfp, "an AP that requires PMF: the station's MFPC");
+			if (ap.mfp) CHECK(ap.sta_ie_len == 28 && ap.sta_ie[27] == 6, "PMF: PMKID count 0, BIP-CMAC-128");
+			ap.assocs++;
+			if (ap.comeback_armed && ap.mfp) {
+				/* the AP still has the old association (PMF): rejected
+				 * for now, a comeback of 1000 TUs (its SA Query runs) */
+				ap.comeback_armed = false;
+				ap.comebacks++;
+				u8 b[16] = { 0x11, 0x04, 30, 0, 0, 0, 56, 5, 3 };
+				put32(b + 9, 1000);
+				ap_mgmt(0x0010, b, 13);
+				return;
+			}
+			u8 b[160] = { 0x11, 0x04, 0, 0, 0x01, 0xc0 };  /* capabilities, status 0, AID 1 */
 			ap_mgmt(0x0010, b, 6 + ap_ies(b + 6));
 			ap.assoced = true;
 			ap.keys = false;
 			ap.m1_tries = 0;
+			ap.mgmt_pn = ap.sta_mgmt_pn = 0;
+			ap.ipn = 0;
+			for (int i = 0; i < 16; i++) ap.igtk[i] = (u8)(0xc0 + i);
+			if (ap.akm != 8) PKCS5_PBKDF2_HMAC_SHA1(passphrase, (int)strlen(passphrase), (const u8 *)ssid, (int)strlen(ssid), 4096,
+							       32, ap.pmk);
 			ap_msg1();
 		}
 		return;
@@ -715,7 +1193,7 @@ static struct {
 	/* power save as the radio does it: with PS on and nothing sent for the
 	 * inactivity time it dozes; the AP keeps unicast frames for it, they
 	 * come with the next beacon's TIM (every 100 TU here) */
-	u32 last_tx, tim_held, tim_delivered;
+	u32 last_tx, tim_held, tim_delivered, protected_mgmt;
 	struct { u8 f[2048]; u32 len; } tim_q[8];
 	u32 ntim;
 } fw;
@@ -814,9 +1292,15 @@ static void fw_beacon(const u8 *bssid, const char *s, u32 chan, const u8 *rsn, u
 	memcpy(f + n, rates, sizeof(rates));
 	f[n + 12] = (u8)chan;                   /* the DS element's channel */
 	n += sizeof(rates);
+	if (!memcmp(bssid, ap_mac, 6)) rsn = ap_rsn, rsn_len = ap_rsn_len;
 	memcpy(f + n, rsn, rsn_len);
 	n += rsn_len;
-	if (!memcmp(bssid, ap_mac, 6)) n += ap_ies(f + n);
+	if (!memcmp(bssid, ap_mac, 6)) {
+		memcpy(f + n, ap_rsnx, ap_rsnx_len);
+		n += ap_rsnx_len;
+		if (aps.h2e_only) f[n++] = 50, f[n++] = 1, f[n++] = 0x80 | 123;   /* the BSS membership selector */
+		n += ap_ies(f + n);
+	}
 	u8 m[768], *p = m;
 	wmi_put_tlv(p, WMI_TLV_TAG_STRUCT_MGMT_RX_HDR, WMI_MGMT_RX_LEN);
 	memset(p + 4, 0, WMI_MGMT_RX_LEN);
@@ -920,6 +1404,24 @@ static void fw_data_rx(const u8 *f, u32 len)
 
 static void fw_from_air(const u8 *f, u32 len)
 {
+	if ((get16(f) & 0x000c) == 0 && (get16(f) & 0x4000) && (get16(f) & 0x00f0) != 0x00b0) {
+		/* a protected unicast management frame (PMF): decrypted with the
+		 * pairwise key, handed over with its Protected bit, the CCMP header
+		 * and the MIC (ath10k's wmi.c: "in case of PMF it delivers
+		 * decrypted frames with Protected Bit set") */
+		u8 pl[600], o[600];
+		int kid;
+		int n = fw.tk_set ? ccmp_decrypt(fw.tk, f, len, pl, &kid) : -1;
+		if (n < 0) {
+			fw.decrypt_fail++;
+			return;
+		}
+		memcpy(o, f, 32);
+		memcpy(o + 32, pl + 24, (u32)n - 24);
+		memcpy(o + 32 + n - 24, f + len - 8, 8);
+		fw_mgmt_rx(o, (u32)n + 16);
+		return;
+	}
 	if ((get16(f) & 0x000c) == 0) fw_mgmt_rx(f, len);
 	else if (fw_dozing() && !(f[4] & 1) && fw.ntim < 8) {
 		/* buffered at the AP for the dozing station */
@@ -945,6 +1447,21 @@ static void fw_to_air(const u8 *f, u32 len)
 		f = e;
 	} else if ((get16(f) & 0x000c) == 0x0008) {
 		fw.eapol_unencrypted++;
+	} else if ((get16(f) & 0x000c) == 0 && (get16(f) & 0x4000)) {
+		/* a protected management frame from the host: its CCMP header
+		 * (the host's PN: GENERATE_IV_MGMT) and the MIC's room; encrypted
+		 * here with the pairwise key */
+		CHECK(fw.tk_set && len >= 24 + 8 + 8, "a protected management frame only with the pairwise key installed");
+		if (!fw.tk_set) return;
+		const u8 *h = f + 24;
+		u64 pn = h[0] | (u64)h[1] << 8 | (u64)h[4] << 16 | (u64)h[5] << 24 | (u64)h[6] << 32 | (u64)h[7] << 40;
+		u8 c[2048];
+		memcpy(c, f, 24);
+		put16(c, get16(c) & ~0x4000);
+		memcpy(c + 24, f + 32, len - 32 - 8);
+		len = ccmp_encrypt(fw.tk, 0, pn, c, len - 16, e);
+		f = e;
+		fw.protected_mgmt++;
 	}
 	ap_rx(f, len);
 }
@@ -1406,6 +1923,20 @@ int main(int argc, char **argv)
 	apc.wmm = !IS("legacy");
 	apc.uapsd = !IS("legacy");
 	apc.acm_vo = IS("uapsd");
+	/* the AP's security: WPA2-PSK (normal and the others), WPA3-SAE only
+	 * with PMF required and the anti-clogging token (sae), SAE by
+	 * hash-to-element only (h2e), the transition mode: PSK and SAE, PMF
+	 * capable, H2E offered (mixed), PSK and PSK-SHA256 with PMF required
+	 * (psk256) */
+	bool wpa3 = IS("sae") || IS("h2e") || IS("mixed") || IS("psk256");
+	aps.akms = IS("sae") || IS("h2e") ? 1u << 8 : IS("mixed") ? (1u << 2 | 1u << 8) : IS("psk256") ? (1u << 2 | 1u << 6) : 1u << 2;
+	aps.mfpc = wpa3;
+	aps.mfpr = IS("sae") || IS("h2e") || IS("psk256");
+	aps.h2e = IS("h2e") || IS("mixed");
+	aps.h2e_only = IS("h2e");
+	aps.anticlog = IS("sae") || IS("h2e");
+	ap_build_rsn();
+	as_init();
 	PKCS5_PBKDF2_HMAC_SHA1(passphrase, (int)strlen(passphrase), (const u8 *)ssid, (int)strlen(ssid), 4096, 32, ap.pmk);
 	for (int i = 0; i < 16; i++) ap.gtk[i] = (u8)(0x40 + i), ap.gtk2[i] = (u8)(0x80 + i);
 	/* the engines as Linux left them (indices at 5, swaps on) */
@@ -1468,7 +1999,7 @@ int main(int argc, char **argv)
 	run_until(now + 20000, is_up);
 	CHECK(is_up(), "up (%s)", wifi_state_name(wifi_state()));
 	run_until(now + 100, NULL);             /* the commands of the way up through the firmware */
-	CHECK(fw.inits == 1 && fw.pdev_params == 5 && fw.vdev_freq == 2437 && fw.mgmt_tx == 2 && fw.regdomain,
+	CHECK(fw.inits == 1 && fw.pdev_params == 5 && fw.vdev_freq == 2437 && fw.mgmt_tx == (wpa3 ? fw.mgmt_tx : 2) && fw.regdomain,
 	      "INIT, 5 parameters, the regulatory domain, 2437 MHz, auth and assoc by WMI");
 	CHECK(!memcmp(wifi_stats()->bssid, ap_mac, 6), "the CCMP AP: not the TKIP one with more SNR, nor the other SSID, "
 	      "nor a beacon with a CRC error; one with EXT_INFO taken");
@@ -1514,6 +2045,21 @@ int main(int argc, char **argv)
 		static const u32 want[4] = { 15, 1023, 3, 0 };
 		CHECK(fw.wmm[0][0] == want[0] && fw.wmm[0][1] == want[1] && fw.wmm[0][2] == want[2] && fw.wmm[2][0] == 7,
 		      "legacy: the defaults with QoS (mac80211: still enable QoS)");
+	} else if (wpa3) {
+		/* WPA3 and PMF: what the station chose, how SAE went */
+		const struct wifi_stats *ws = wifi_stats();
+		u8 want_akm = IS("psk256") ? 6 : 8;
+		CHECK(ws->akm == want_akm && ap.akm == want_akm && ws->pmf && ap.mfp, "%s: AKM %u, PMF (%u)", scenario, want_akm, ws->akm);
+		CHECK(ws->h2e == (IS("h2e") || IS("mixed")) && (!ap.assoc_had_rsnx || ap.assoc_rsnx[2] == 0x20) &&
+		      ap.assoc_had_rsnx == (want_akm == 8), "%s: hash-to-element as the AP offers it; our RSNX element with SAE", scenario);
+		if (want_akm == 8) {
+			CHECK(as.commits == (aps.anticlog ? 2u : 1u) && as.tokens == (aps.anticlog ? 1u : 0u) && as.confirms == 1 &&
+			      as.h2e_commits == (ws->h2e ? as.commits : 0), "%s: SAE: %u commits (%u with the token), one confirm",
+			      scenario, as.commits, as.tokens);
+		} else {
+			CHECK(as.commits == 0, "psk256: open authentication, no SAE");
+		}
+		CHECK(!(fw.peer_flags & WMI_TLV_PEER_PMF), "PEER_ASSOC without the firmware's PMF flag (pmf=on: as ath10k without MFP_SUPPORT)");
 	} else {
 		CHECK(fw.vdev_mode == MODE_11NG_HT20 && fw.peer_phymode == MODE_11NG_HT20 && !(fw.peer_flags & WMI_TLV_PEER_40MHZ),
 		      "uapsd: HT20 (no secondary channel)");
@@ -1563,10 +2109,64 @@ int main(int argc, char **argv)
 		      "a ping to the dozing station: kept by the AP, fetched at the beacon, answered (%u kept)", fw.tim_held - held);
 		CHECK(wifi_busy() && wifi_poll_ms() == 20, "busy again after it");
 	}
+	if (wpa3) {
+		/* PMF: the AP's SA Query answered (protected, our PN); an
+		 * unprotected deauthentication ignored, an SA Query to the AP
+		 * answered; a group one with a bad BIP MIC ignored */
+		const struct wifi_stats *ws = wifi_stats();
+		u32 restarts = ws->restarts;
+		ap_sa_query_req();
+		run_until(now + 300, NULL);
+		CHECK(ap.saq_responses == 1 && ws->saq_answered == 1 && fw.protected_mgmt >= 1 && ap.mgmt_replays == 0,
+		      "the AP's SA Query answered, protected (%u)", ap.saq_responses);
+		u8 rs[2] = { 7, 0 };
+		ap_mgmt(0x00c0, rs, 2);
+		run_until(now + 1500, NULL);
+		CHECK(is_up() && ws->unprot_dropped == 1 && ap.saq_requests >= 1 && ws->restarts == restarts,
+		      "an unprotected deauthentication ignored; our SA Query answered: still up (%u queries)", ap.saq_requests);
+		ap_mgmt_bip(0x00c0, rs, 2, false);
+		run_until(now + 300, NULL);
+		CHECK(is_up() && ws->bip_dropped == 1, "a group deauthentication with a bad BIP MIC ignored");
+		if (IS("sae")) {
+			/* the SA Query unanswered while the AP keeps the association:
+			 * down after a second, then SAE again and the association's
+			 * comeback (status 30, 1000 TUs) */
+			ap.saq_silent = true;
+			ap.comeback_armed = true;
+			u32 q = ap.saq_requests;
+			ap_mgmt(0x00c0, rs, 2);
+			run_until(now + 1500, NULL);
+			CHECK(!is_up() && ws->restarts == restarts + 1 && ap.saq_requests >= q + 4,
+			      "no answer to our SA Queries (%u tries): down after a second", ap.saq_requests - q);
+			ap.saq_silent = false;
+			run_until(now + 20000, is_up);
+			CHECK(is_up() && ap.comebacks == 1 && as.confirms == 2, "up again: SAE, the association's comeback after 1000 TUs");
+			restarts = ws->restarts;
+		}
+		/* a valid group deauthentication (BIP), then a protected unicast
+		 * one: down, and up again each time */
+		u32 a0 = ap.assocs;
+		ap_mgmt_bip(0x00c0, rs, 2, true);
+		run_until(now + 300, NULL);
+		CHECK(!is_up() && ws->restarts == restarts + 1, "a group deauthentication with a valid BIP MIC (the IGTK): down");
+		run_until(now + 20000, is_up);
+		CHECK(is_up() && ap.assocs > a0, "up again");
+		u32 m4b = ap.m4;
+		ap_mgmt_protected(0x00c0, rs, 2);
+		run_until(now + 300, NULL);
+		CHECK(!is_up() && ws->restarts == restarts + 2, "a protected deauthentication (CCMP, the PN): down");
+		run_until(now + 20000, is_up);
+		CHECK(is_up() && ap.m4 == m4b + 1, "up again (4-way handshakes %u)", ap.m4);
+		ap.echo_replies = 0;
+		ping_out(0);
+		run_until(now + 3000, echoed);
+		CHECK(ap.echo_replies == 1 && fw.decrypt_fail == 0, "a ping after it all");
+	}
 	if (!IS("normal")) {
 		const struct wifi_stats *s = wifi_stats();
 		CHECK(s->tx_done == s->tx_frames && bad_access == 0, "every TX_FRM completed, no access outside the memory");
 		printf("%d passed, %d failed (%s)\n", passed, failed, scenario);
+		as_free();
 		return failed != 0;
 	}
 
@@ -1575,7 +2175,7 @@ int main(int argc, char **argv)
 	{
 		u8 m[256], w[160];
 		u32 wl = ap_key_data(w, ap.gtk2, 2, false);
-		eapol_hdr(m, 0x1382, ++ap.replay, NULL, wl);      /* encr, secure, MIC, ack, group, v2 */
+		eapol_hdr(m, 0x1380 | ap_ver(), ++ap.replay, NULL, wl);   /* encr, secure, MIC, ack, group */
 		memcpy(m + 99, w, wl);
 		ap_mic(ap.ptk, m, 99 + wl, m + 81);
 		ap.rekey_sent = true;
