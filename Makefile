@@ -13,6 +13,7 @@
 #
 # Needs the Arm GNU toolchain (arm-none-eabi-gcc, its libgcc: the Cortex-A8
 # divides in software) and python3; QEMU's qemu-system-arm to run it.
+# The programs in assembler need FASMARM (fetched: tools/fetch-fasmarm.sh).
 
 PLATFORM ?= realview
 B := build/$(PLATFORM)
@@ -41,7 +42,7 @@ KCC := clang --target=aarch64-none-elf -mcpu=cortex-a53
 KCFLAGS := -O2 -std=gnu11 -ffreestanding -fno-builtin -fpie -fno-common -mgeneral-regs-only -mstrict-align \
 	$(WARN) -g -Ikernel/include -Ikernel/arch/arm64
 KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/arm64/gic3.c \
-	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S power.c \
+	arch/arm64/timer.c arch/arm64/psci.c arch/arm64/powerdt.c arch/arm64/suspend.S arch/arm64/fpu.c power.c \
 	fdt.c platform/virt.c platform/virtio_input.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
 	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
@@ -79,7 +80,7 @@ KLINK = $(CC32) $(LDFLAGS) -T kernel/arch/armv7/kernel.ld -Wl,--defsym,KERNEL_BA
 endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
-APPS := taskbar menu example clock board cpu hildon hstatus phone messenger sysbench
+APPS := taskbar menu example clock board cpu hildon hstatus phone messenger sysbench fptest
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
 RDNAME_hildon := @hildon
@@ -88,11 +89,16 @@ RDNAME_hstatus := @hstatus
 MEM_hildon := 0x400000
 MEM_phone := 0x400000
 MEM_messenger := 0x800000
+# programs in assembler (FASMARM, the flat assembler for ARM, with
+# lib/kos.inc: docs/asm.md); tools/fetch-fasmarm.sh puts it in
+# third_party/fasmarm (x86 Linux hosts); make ASM_APPS= leaves them out
+ASM_APPS ?= hello asmclock
+FASMARM := third_party/fasmarm/$(if $(filter x86_64,$(shell uname -m)),fasmarm.x64,fasmarm)
 # the look the kernel starts with: hildon (the Hildon shell) or classic
 # (KolibriOS's panel and menu): apps/autorun or apps/autorun.classic
 LOOK ?= hildon
 AUTORUN := $(if $(filter classic,$(LOOK)),apps/autorun.classic,apps/autorun)
-KEX := $(foreach a,$(APPS),$(A)/$(a).kex)
+KEX := $(foreach a,$(APPS) $(ASM_APPS),$(A)/$(a).kex)
 
 all: $(B)/kernel.elf $(B)/kernel.bin
 
@@ -135,6 +141,15 @@ $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
 $(A)/%.kex: $(A)/%.elf
 	$(OBJCOPY) -O binary $< $@
 
+# programs in assembler: apps/NAME/NAME.asm, FASMARM straight to the .kex
+$(FASMARM):
+	tools/fetch-fasmarm.sh
+define ASM_APP
+$(A)/$(1).kex: apps/$(1)/$(1).asm lib/kos.inc | $(FASMARM) dirs
+	INCLUDE=$(CURDIR)/lib $(FASMARM) $$< $$@
+endef
+$(foreach a,$(ASM_APPS),$(eval $(call ASM_APP,$(a))))
+
 # Linux programs and files for the AArch64 kernel's Linux personality,
 # NAME=FILE with NAME the path under / (bin/hello=tests/linux/hello/hello):
 # on the ramdisk as linux/NAME
@@ -145,7 +160,7 @@ comma := ,
 $(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile $(LINUX_DEPS) $(A)/linux-files
 	python3 tools/mkrd.py $@ autorun=$(AUTORUN) \
 		autorun.classic=apps/autorun.classic autorun.hildon=apps/autorun \
-		$(foreach a,$(APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex) \
+		$(foreach a,$(APPS) $(ASM_APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex) \
 		$(foreach f,$(LINUX_FILES),linux/$(f))
 
 # the list in a file, written when it changes: the ramdisk follows it
