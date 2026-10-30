@@ -576,6 +576,14 @@ int con_init_opt(dword wnd_width, dword wnd_height, dword scr_width, dword scr_h
 	return 0;
 }
 
+/* START, console.obj's entry for its C callers (con_start(1) after
+ * loading it): there is nothing to set up before con_init */
+int con_start(dword state)
+{
+	(void)state;
+	return 1;
+}
+
 int con_init(void)
 {
 	return con_init_opt(-1, -1, -1, -1, "Console");

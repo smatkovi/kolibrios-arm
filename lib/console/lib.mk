@@ -6,4 +6,4 @@ $(A)/gen/console_font.h: $(CONSOLE_SRC)/font8x16.bmp tools/kos-bmp.py | dirs
 $(A)/gen/console_scroll.h: $(CONSOLE_SRC)/conscrlv.bmp tools/kos-bmp.py | dirs
 	@mkdir -p $(dir $@)
 	python3 -I tools/kos-bmp.py image $< $@ console_scroll
-$(A)/lib/console/console.o: $(A)/gen/console_font.h $(A)/gen/console_scroll.h
+$(A)/lib/console/console.o $(A)/pic/console/console.o: $(A)/gen/console_font.h $(A)/gen/console_scroll.h

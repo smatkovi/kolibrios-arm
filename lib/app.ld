@@ -8,6 +8,8 @@ SECTIONS
 	.text : { *(.text .text.*) }
 	.rodata : { *(.rodata .rodata.*) }
 	.data : { *(.data .data.*) }
+	/* the libraries the program uses (lib/libc/dll.c): { table, name } pairs */
+	.kos_import : { __import_start = .; KEEP(*(.kos_import)) LONG(0) LONG(0) }
 	. = ALIGN(16);
 	__image_end = .;
 	.bss (NOLOAD) : { *(.bss .bss.*) *(COMMON) }
