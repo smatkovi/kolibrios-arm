@@ -7,6 +7,7 @@
 #include "box_lib.h"
 
 typedef short s16;
+typedef signed char s8;
 
 #define SF_DRAW_TEXT 4
 #define SF_PUT_IMAGE 7

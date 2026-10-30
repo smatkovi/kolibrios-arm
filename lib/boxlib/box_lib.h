@@ -207,10 +207,168 @@ static inline void option_boxes_set_sys_color(const system_colors *sc, option_bo
 	}
 }
 
+
+/* ------------------------------------------------------------------ */
+/* ScrollBar (scrollbar.asm)                                           */
+
+typedef struct scrollbar {
+	bl_u16 x_size;             /* +0  */
+	bl_u16 x_pos;              /* +2  */
+	bl_u16 y_size;             /* +4  */
+	bl_u16 y_pos;              /* +6  */
+	bl_u32 btn_height;         /* +8  the buttons' size along the bar */
+	bl_u32 type;               /* +12 0 plain, 1 framed, 2 arrows of lines */
+	bl_u32 max_area;           /* +16 the whole */
+	bl_u32 cur_area;           /* +20 the part seen */
+	bl_u32 position;           /* +24 the first seen, 0 .. max - cur */
+	bl_u32 bg_color;           /* +28 */
+	bl_u32 front_color;        /* +32 */
+	bl_u32 line_color;         /* +36 */
+	bl_u32 redraw;             /* +40 set when the mouse moved the position */
+	bl_u16 delta;              /* +44 */
+	bl_u16 delta2;             /* +46 the runner dragged */
+	bl_u16 r_size_x;           /* +48 the runner's rectangle */
+	bl_u16 r_start_x;          /* +50 */
+	bl_u16 r_size_y;           /* +52 */
+	bl_u16 r_start_y;          /* +54 */
+	bl_u32 m_pos;              /* +56 */
+	bl_u32 m_pos_2;            /* +60 */
+	bl_u32 m_keys;             /* +64 */
+	bl_u32 run_size;           /* +68 */
+	bl_u32 position2;          /* +72 the runner's position in pixels */
+	bl_u32 work_size;          /* +76 */
+	bl_u32 all_redraw;         /* +80 1: the buttons and the frame too */
+	bl_u32 ar_offset;          /* +84 the step of the buttons */
+} scrollbar;
+
+#define sb_offs_size_x   0
+#define sb_offs_start_x  2
+#define sb_offs_size_y   4
+#define sb_offs_start_y  6
+#define sb_offs_max_area 16
+#define sb_offs_cur_area 20
+#define sb_offs_position 24
+#define sb_offs_bckg_col 28
+#define sb_offs_frnt_col 32
+#define sb_offs_line_col 36
+#define sb_offs_redraw   40
+#define sb_offs_delta2   46
+#define sb_offs_all_redraw 80
+
+/* box_lib.mac's struc scrollbar as an initializer */
+#define SCROLLBAR(xsize, xpos, ysize, ypos, btn_height, max, cur, pos, bgcol, frcol, linecol, ar_offset) \
+	{ xsize, xpos, ysize, ypos, btn_height, 0, max, cur, pos, bgcol, frcol, linecol, \
+	  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ar_offset }
+
+void scrollbar_v_draw(scrollbar *sb);
+void scrollbar_v_mouse(scrollbar *sb);
+void scrollbar_h_draw(scrollbar *sb);
+void scrollbar_h_mouse(scrollbar *sb);
+
+/* box_lib.asm's draw_edge: a raised frame, the colours mixed inwards */
+void draw_edge(bl_u32 box_l, bl_u32 box_t, bl_u32 box_w, bl_u32 box_h, bl_u32 col_0, bl_u32 col_1, bl_u32 col_2);
+
+
+/* ------------------------------------------------------------------ */
+/* TreeList (tree_list.asm): a tree, or a list box (tl_list_box_mode)  */
+
+/* a node; 0 and 1 are the list's head and end */
+typedef struct TreeNode {
+	bl_u16 type;               /* +0  the node's icon */
+	bl_u8 level;               /* +2  */
+	bl_u8 close;               /* +3  1: closed (a parent node) */
+	bl_u32 perv;               /* +4  the previous node's index */
+	bl_u32 next;               /* +8  the next node's index */
+	bl_u32 t_create;           /* +12 the time of creation (for undo) */
+	bl_u32 t_delete;           /* +16 the time of deletion */
+} TreeNode;
+
+typedef struct tree_list {
+	bl_u32 box_left;           /* +0  */
+	bl_u32 box_top;            /* +4  */
+	bl_u32 box_width;          /* +8  */
+	bl_u32 box_height;         /* +12 */
+	bl_u8 *data_info;          /* +16 the nodes' data (info_size each) */
+	bl_u16 info_size;          /* +20 a node's data: the program's and the caption */
+	bl_u32 info_max_count;     /* +22 nodes at most (2 of them the head and end) */
+	bl_u32 style;              /* +26 tl_* below */
+	TreeNode *data_nodes;      /* +30 */
+	bl_u8 *data_img;           /* +34 the nodes' icons, BGR, img_cx x img_cy each */
+	bl_u16 img_cx;             /* +38 */
+	bl_u16 img_cy;             /* +40 */
+	bl_u8 *data_img_sys;       /* +42 the cursor, lines, plus and minus */
+	bl_u32 ch_tim;             /* +46 changes */
+	bl_u32 tim_undo;           /* +50 changes undone */
+	bl_u32 cur_pos;            /* +54 the cursor's position */
+	bl_u32 col_bkg;            /* +58 */
+	bl_u32 col_zag;            /* +62 the caption's colour */
+	bl_u32 col_txt;            /* +66 */
+	bl_u16 capt_cy;            /* +70 the caption's height */
+	bl_u16 info_capt_offs;     /* +72 the caption's offset in a node's data */
+	bl_u16 info_capt_len;      /* +74 its length (0: to the data's end) */
+	void **el_focus;           /* +76 the variable of the element in focus */
+	scrollbar *p_scroll;       /* +80 the list's vertical scroll bar, or NULL */
+	void (*on_press)(struct tree_list *tl);   /* +84 Enter or a double click */
+} __attribute__((packed)) tree_list;
+
+/* box_lib.mac's struc tree_list as an initializer */
+#define TREE_LIST(info_size, info_max_count, style, img_cx, img_cy, col_bkg, col_zag, col_txt, \
+		  box_l, box_t, box_w, box_h, capt_cy, info_capt_offs, info_capt_len, el_focus, p_scroll, on_press) \
+	{ box_l, box_t, box_w, box_h, 0, info_size, info_max_count, style, 0, 0, img_cx, img_cy, 0, 0, 0, 0, \
+	  col_bkg, col_zag, col_txt, capt_cy, info_capt_offs, info_capt_len, el_focus, p_scroll, on_press }
+
+/* style */
+#define tl_key_no_edit        1  /* not edited by the keyboard (levels, deleting) */
+#define tl_draw_par_line      2  /* lines to the parent nodes */
+#define tl_list_box_mode      4  /* no levels (a list box) */
+#define tl_cursor_pos_limited 8  /* the cursor only on nodes */
+/* the functions' errors and options */
+#define tl_err_save_memory_size 2
+#define tl_err_load_caption     1
+#define tl_err_load_info_size   4
+#define tl_load_mode_add        0x20000
+#define tl_save_load_heder_size 26
+#define tl_offs_box             0
+
+void tl_data_init(tree_list *tl);
+void tl_data_clear(tree_list *tl);
+void tl_info_clear(tree_list *tl);
+void tl_key(tree_list *tl, bl_u32 key);    /* key: function 2's result (eax there) */
+void tl_mouse(tree_list *tl);
+void tl_draw(tree_list *tl);
+void tl_info_undo(tree_list *tl);
+void tl_info_redo(tree_list *tl);
+/* n_opt: the icon << 16 | closed << 8 | level */
+void tl_node_add(tree_list *tl, bl_u32 n_opt, const void *n_info);
+void tl_node_set_data(tree_list *tl, const void *n_info);
+void *tl_node_get_data(tree_list *tl);
+void tl_node_delete(tree_list *tl);
+void tl_cur_beg(tree_list *tl);
+void tl_cur_next(tree_list *tl);
+void tl_cur_perv(tree_list *tl);
+void tl_cur_page_up(tree_list *tl);
+void tl_cur_page_down(tree_list *tl);
+void tl_node_close_open(tree_list *tl);
+void tl_node_lev_inc(tree_list *tl);
+void tl_node_lev_dec(tree_list *tl);
+void tl_node_move_up(tree_list *tl);
+void tl_node_move_down(tree_list *tl);
+TreeNode *tl_node_poi_get_info(tree_list *tl, bl_u32 node_ind);
+TreeNode *tl_node_poi_get_next_info(tree_list *tl, TreeNode *node_p);
+void *tl_node_poi_get_data(tree_list *tl, TreeNode *node_p);
+int tl_save_mem(tree_list *tl, bl_u32 opt, void *h_mem, bl_u32 mem_size);
+int tl_load_mem(tree_list *tl, bl_u32 opt, const void *h_mem, bl_u32 mem_size);
+bl_u32 tl_get_mem_size(tree_list *tl, const void *h_mem);
+
 /* the layouts, as box_lib.mac's offsets have them */
 _Static_assert(sizeof(edit_box) == ed_struc_size, "edit_box");
 _Static_assert(offsetof(edit_box, cl_curs_x) == 60 && offsetof(edit_box, char_width) == 72, "edit_box");
 _Static_assert(sizeof(check_box2) == ch_struc_size, "check_box2");
 _Static_assert(sizeof(option_box) == 40 && offsetof(option_box, ch_text_margin) == 8, "option_box");
+_Static_assert(sizeof(TreeNode) == 20, "TreeNode");
+_Static_assert(sizeof(tree_list) == 88 && offsetof(tree_list, info_size) == 20 && offsetof(tree_list, info_max_count) == 22 &&
+	       offsetof(tree_list, style) == 26 && offsetof(tree_list, data_img_sys) == 42 && offsetof(tree_list, el_focus) == 76 &&
+	       offsetof(tree_list, p_scroll) == 80, "tree_list");
+_Static_assert(sizeof(scrollbar) == 88 && offsetof(scrollbar, redraw) == 40 && offsetof(scrollbar, all_redraw) == 80, "scrollbar");
 
 #endif
