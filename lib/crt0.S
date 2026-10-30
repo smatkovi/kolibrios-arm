@@ -18,7 +18,11 @@ __header:
 _start:
 	mov	fp, #0
 	ldr	r0, =__params
+#ifdef LIBC
+	bl	__libc_start_main	/* lib/libc/start.c: main(argc, argv) */
+#else
 	bl	main
+#endif
 	mvn	r0, #0			/* function -1: end */
 	svc	#0x40
 1:	b	1b

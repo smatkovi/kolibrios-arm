@@ -81,6 +81,10 @@ endif
 KOBJ := $(addprefix $(B)/,$(addsuffix .o,$(basename $(KSRC))))
 
 APPS := taskbar menu example clock board cpu hildon hstatus phone messenger sysbench fptest
+# programs of several files or with the C library (below: SRC_name ...),
+# each described by its apps/NAME/app.mk
+CAPPS :=
+include $(sort $(wildcard apps/*/app.mk))
 # names on the ramdisk (KolibriOS's system programs start with @)
 RDNAME_taskbar := @taskbar
 RDNAME_hildon := @hildon
@@ -98,7 +102,9 @@ FASMARM := third_party/fasmarm/$(if $(filter x86_64,$(shell uname -m)),fasmarm.x
 # (KolibriOS's panel and menu): apps/autorun or apps/autorun.classic
 LOOK ?= hildon
 AUTORUN := $(if $(filter classic,$(LOOK)),apps/autorun.classic,apps/autorun)
-KEX := $(foreach a,$(APPS) $(ASM_APPS),$(A)/$(a).kex)
+KEX := $(foreach a,$(APPS) $(CAPPS) $(ASM_APPS),$(A)/$(a).kex)
+# the programs' data files on the ramdisk (PATH=FILE)
+RD_FILES := $(foreach a,$(APPS) $(CAPPS),$(RD_$(a)))
 
 all: $(B)/kernel.elf $(B)/kernel.bin
 
@@ -141,6 +147,52 @@ $(A)/%.elf: $(A)/%.o $(A)/lib/crt0.o $(A)/lib/klib.o lib/app.ld
 $(A)/%.kex: $(A)/%.elf
 	$(OBJCOPY) -O binary $< $@
 
+# the libraries of programs, lib/NAME/*.c into build/apps/lib/libNAME.a:
+# libc (a C library for the ported programs: lib/libc/include), console
+# (console.obj's functions: a console window), libini (libini.obj's:
+# settings files), boxlib (box_lib.obj's widgets). KolibriOS loads them
+# as shared libraries (function 68.19); here they are linked into each
+# program (docs/apps.md)
+LIBS := $(sort $(patsubst lib/%/,%,$(dir $(wildcard lib/*/*.c))))
+LIBC_INC := -nostdinc -isystem $(shell $(CC32) -print-file-name=include) -Ilib/libc/include -Ilib \
+	$(foreach l,$(LIBS),-Ilib/$(l))
+define CLIB
+$(1)_LOBJ := $$(patsubst lib/$(1)/%.c,$(A)/lib/$(1)/%.o,$$(wildcard lib/$(1)/*.c))
+$(A)/lib/$(1)/%.o: lib/$(1)/%.c | dirs
+	@mkdir -p $$(dir $$@)
+	$(CC32) $(ACFLAGS) $(LIBC_INC) -MMD -MP -c $$< -o $$@
+$(A)/lib/$(1).a: $$($(1)_LOBJ)
+	@rm -f $$@
+	$(CROSS)ar rcs $$@ $$^
+-include $$($(1)_LOBJ:.o=.d)
+endef
+$(foreach l,$(LIBS),$(eval $(call CLIB,$(l))))
+$(A)/lib/crt0-libc.o: lib/crt0.S | dirs
+	$(CC32) $(ACFLAGS) -DLIBC -c $< -o $@
+
+# programs of several files, or with the C library: CAPPS, each with
+# SRC_name (its C files: apps/name/..., third_party/kolibrios/...),
+# CFLAGS_name, LIBS_name (besides libc), MEM_name, and RD_name, its data
+# files on the ramdisk (PATH=FILE, PATH under /sys). They start with
+# main(argc, argv) (lib/libc/start.c)
+define CAPP
+$(1)_OBJ := $$(patsubst %.c,$(A)/$(1)/%.o,$$(SRC_$(1)))
+$(A)/$(1)/%.o: %.c | dirs
+	@mkdir -p $$(dir $$@)
+	$(CC32) $(ACFLAGS) $(LIBC_INC) $$(CFLAGS_$(1)) -MMD -MP -c $$< -o $$@
+$(A)/$(1).elf: $$($(1)_OBJ) $(A)/lib/crt0-libc.o $$(foreach l,$$(LIBS_$(1)) libc,$(A)/lib/$$(l).a) lib/app.ld
+	$(CC32) $(LDFLAGS) $$(if $$(MEM_$(1)),-Wl$$(comma)--defsym$$(comma)MEMORY_SIZE=$$(MEM_$(1))) \
+		-T lib/app.ld $(A)/lib/crt0-libc.o $$($(1)_OBJ) \
+		-Wl,--start-group $$(foreach l,$$(LIBS_$(1)) libc,$(A)/lib/$$(l).a) -Wl,--end-group $(LIBGCC) -o $$@
+-include $$($(1)_OBJ:.o=.d)
+endef
+$(foreach a,$(CAPPS),$(eval $(call CAPP,$(a))))
+
+# KolibriOS's sources (tools/fetch-kolibrios.sh): the ported programs'
+KOS := third_party/kolibrios
+$(KOS)/%:
+	tools/fetch-kolibrios.sh
+
 # programs in assembler: apps/NAME/NAME.asm, FASMARM straight to the .kex
 $(FASMARM):
 	tools/fetch-fasmarm.sh
@@ -157,10 +209,12 @@ LINUX_FILES ?=
 LINUX_DEPS := $(foreach f,$(LINUX_FILES),$(lastword $(subst =, ,$(f))))
 
 comma := ,
-$(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile $(LINUX_DEPS) $(A)/linux-files
+$(A)/ramdisk.img: $(KEX) $(AUTORUN) apps/autorun apps/autorun.classic tools/mkrd.py $(A)/look Makefile $(LINUX_DEPS) $(A)/linux-files \
+		$(foreach f,$(RD_FILES),$(lastword $(subst =, ,$(f))))
 	python3 tools/mkrd.py $@ autorun=$(AUTORUN) \
 		autorun.classic=apps/autorun.classic autorun.hildon=apps/autorun \
-		$(foreach a,$(APPS) $(ASM_APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex) \
+		$(foreach a,$(APPS) $(CAPPS) $(ASM_APPS),$(or $(RDNAME_$(a)),$(a))=$(A)/$(a).kex) \
+		$(RD_FILES) \
 		$(foreach f,$(LINUX_FILES),linux/$(f))
 
 # the list in a file, written when it changes: the ramdisk follows it
