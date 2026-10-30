@@ -45,7 +45,7 @@ static struct glink_chan *ipcrtr;
 static bool adopted;
 
 static int st = ST_OFF;
-static u32 now, st_at, next_poll;
+static u32 now, st_at, next_poll, poll_ms = POLL_MS;
 static char status[64];
 
 struct client { bool have; u32 node, port; u16 txn; };
@@ -691,7 +691,7 @@ void modem_poll(u32 ms)
 	case ST_READY:
 		if ((s32)(now - next_poll) >= 0) {
 			poll_network();
-			next_poll = now + POLL_MS;
+			next_poll = now + poll_ms;
 		}
 		break;
 	default:
@@ -709,6 +709,15 @@ void modem_poll(u32 ms)
 		call_seq++;
 	}
 	glink_poll(&glink);
+}
+
+/* the network's poll (registration, signal) every ms: 5 s, slower while
+ * nobody looks (the display off); faster again at once */
+void modem_poll_interval(u32 ms)
+{
+	if (ms == poll_ms) return;
+	if (ms < poll_ms && (s32)(next_poll - (now + ms)) > 0) next_poll = now + ms;
+	poll_ms = ms;
 }
 
 /* tickless idle: milliseconds from ms until modem_poll has work of its

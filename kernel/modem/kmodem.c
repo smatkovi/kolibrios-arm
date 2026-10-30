@@ -92,6 +92,12 @@ void kmodem_tick(void)
 {
 	if (!modem_present()) return;
 	u32 ms = ticks * 10;
+#ifdef __aarch64__
+	/* the display off: the signal's and registration's poll once a
+	 * minute instead of every 5 s (what changes comes as indications) */
+	extern bool power_standby;
+	modem_poll_interval(power_standby ? 60000 : 5000);
+#endif
 	if (fake) fake_poll(ms);
 	modem_poll(ms);
 	u32 id;
