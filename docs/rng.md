@@ -217,9 +217,12 @@ In QEMU, `make -C tests/rng qemu` (`tests/rng/qemu.py`; logs kept):
 ## On the devices (2026-10-31)
 
 **The Pro1X**, first under Leste, the PRNG through Linux's driver (as
-root; `modprobe algif_rng` if the bind fails):
+root; the Pro1X kernel has both as modules, `CONFIG_CRYPTO_DEV_QCOM_RNG=m`,
+`CONFIG_CRYPTO_USER_API_RNG=m`):
 
 ```
+modprobe qcom_rng; modprobe algif_rng
+grep -A4 'driver       : qcom-rng' /proc/crypto
 python3 tools/qcom-rng-check.py 200000
 ```
 

@@ -38,6 +38,10 @@ import sys
 import tempfile
 import time
 
+# FIPS 140-2 fails a truly random block about once in 1250: one failed
+# block of 8 (of 4 for getrandom's) is allowed
+FIPS8 = r'[78] of 8 blocks pass FIPS 140-2'
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TMP = tempfile.mkdtemp(prefix='kos-rng-')
 fails = 0
@@ -71,15 +75,20 @@ def qemu64(name, append, seconds, machine='virt,gic-version=3', extra=(), until=
 
 
 def expect(name, text, wanted, unwanted=()):
-    """every line of wanted in text in that order, none of unwanted"""
+    """every line of wanted in text in that order (re.compile()d ones as
+    patterns), none of unwanted"""
     global fails
     pos, missing = 0, []
     for w in wanted:
-        i = text.find(w, pos)
-        if i < 0:
-            missing.append(w)
+        if isinstance(w, re.Pattern):
+            m = w.search(text, pos)
+            i, n = (m.start(), m.end() - m.start()) if m else (-1, 0)
         else:
-            pos = i + len(w)
+            i, n = text.find(w, pos), len(w)
+        if i < 0:
+            missing.append(w if isinstance(w, str) else w.pattern)
+        else:
+            pos = i + n
     bad = [u for u in unwanted if u in text]
     for l in text.splitlines():
         if l.startswith(('rng:', 'rngtest:', 'lx:', 'pro1x: the PRNG', 'n950: the secure')):
@@ -98,10 +107,10 @@ def virt():
     expect('virt', t, [
         'rng: virtio-rng',
         'rng: seeded from virtio-rng (64 bytes), the boot loader\'s seed (32 bytes)',
-        'rngtest: virtio-rng: 8 of 8 blocks pass FIPS 140-2',
-        'rngtest: the generator: 8 of 8 blocks pass FIPS 140-2',
+        re.compile('rngtest: virtio-rng: ' + FIPS8),
+        re.compile('rngtest: the generator: ' + FIPS8),
         'lx: rngtest: getrandom from the kernel\'s generator, seeded from virtio-rng (64 bytes)',
-        'rngtest: ok FIPS 140-2: 4 of 4 blocks from getrandom pass',
+        re.compile(r'rngtest: ok FIPS 140-2: [34] of 4 blocks from getrandom pass'),
         'rngtest: done, 0 failures'], ['WEAK', 'FAIL', 'NOT seeded'])
 
 
@@ -140,13 +149,13 @@ def realview():
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(60):
         time.sleep(0.5)
-        if 'rngtest: the generator: 8' in open(log, errors='replace').read():
+        if re.search('rngtest: the generator: [0-8] of 8', open(log, errors='replace').read()):
             break
     q.terminate()
     q.wait()
     expect('realview', open(log, errors='replace').read(),
            ['rng: seeded from timing jitter (', 'rng: WEAK', 'rngtest: timing jitter: 4096 samples',
-            'rngtest: the generator: 8 of 8 blocks pass FIPS 140-2'], ['NOT seeded'])
+            re.compile('rngtest: the generator: ' + FIPS8)], ['NOT seeded'])
 
 
 # --- the Pro1X's code paths ------------------------------------------------------------

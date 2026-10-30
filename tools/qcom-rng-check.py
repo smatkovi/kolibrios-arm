@@ -8,7 +8,8 @@ Linux registers the SoC's PRNG (qcom,prng-ee) only with the crypto API,
 as the "stdrng" driver "qcom-rng" (drivers/crypto/qcom-rng.c), not as a
 hwrng: no /dev/hwrng. This reads BYTES (default 200000) from it through
 an AF_ALG socket (algif_rng: at most 128 bytes a read; "modprobe
-algif_rng" if the bind fails), and runs on them what KolibriOS's
+qcom_rng algif_rng" first: both are modules in the Pro1X kernel), and
+runs on them what KolibriOS's
 kolibri.rngtest runs: FIPS 140-2's tests (4.9.1) on each block of 20000
 bits, the continuous test (no 32-bit word as the one before) and SP
 800-90B's most common value estimate. --alg: another driver of the crypto
@@ -87,7 +88,7 @@ def main():
     try:
         s.bind(('rng', alg))
     except OSError as e:
-        sys.exit('qcom-rng-check: AF_ALG rng %s: %s (modprobe algif_rng?)' % (alg, e))
+        sys.exit('qcom-rng-check: AF_ALG rng %s: %s (modprobe qcom_rng; modprobe algif_rng?)' % (alg, e))
     op, _ = s.accept()
     data, errors = bytearray(), 0
     while len(data) < want:
