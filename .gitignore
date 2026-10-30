@@ -7,3 +7,5 @@ tests/linux/nettest/nettest
 tests/wifi/test
 tests/messenger/fakepeer/fakepeer
 tests/messenger/json_test
+tests/wifi/crypto
+tests/wifi/station
