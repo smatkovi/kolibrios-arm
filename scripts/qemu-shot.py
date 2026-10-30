@@ -38,10 +38,11 @@ else:
     machine = ['qemu-system-arm', '-M', 'realview-pb-a8', '-m', '256']
 if os.environ.get('QEMU_APPEND'):
     machine += ['-append', os.environ['QEMU_APPEND']]
-machine += shlex.split(os.environ.get('QEMU_EXTRA', ''))
+# QEMU_EXTRA after the console's -serial: another -serial is the second UART
 q = subprocess.Popen(machine + ['-rtc', 'base=localtime',
                       '-display', 'none', '-serial', 'file:' + os.path.join(out, 'serial.log'),
-                      '-monitor', 'unix:' + sock + ',server,nowait', '-kernel', kernel])
+                      '-monitor', 'unix:' + sock + ',server,nowait', '-kernel', kernel] +
+                     shlex.split(os.environ.get('QEMU_EXTRA', '')))
 for _ in range(50):
     if os.path.exists(sock):
         break

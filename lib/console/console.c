@@ -236,6 +236,10 @@ static void con_draw_window(void)
 	int h = con.wnd_height * font_height + con.skin_h + 5 - 1;
 	if (with_scrollbar()) w += vscroll_width;
 	kos_call(0, (u32)def_wnd_x << 16 | w, (u32)def_wnd_y << 16 | h, 0x74000000, 0, (u32)con.title);
+	/* the window is the program's own one here (console.obj makes one in
+	 * its thread): one the program had (terminal's settings, hidden by
+	 * 67 0,0,0,0) gets the console's place and size at the start */
+	if (!con.drawn) kos_move_window(def_wnd_x, def_wnd_y, w, h);
 	con_fit();
 	u8 info[1024];
 	kos_thread_info(info, -1);
