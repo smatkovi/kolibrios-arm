@@ -303,30 +303,33 @@ void crypto_tests(void)
 	struct wpa_ap ap;
 	struct wpa_choice ch = { WPA_AKM_PSK, false, false }, cc;
 	u32 il = wpa_own_ie(ie, &ch);
-	CHECK(il == 22 && wpa_parse_ap(ie, il, NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, &cc, &why) == 0 &&
+	CHECK(il == 22 && wpa_parse_ap(ie, il, NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, false, &cc, &why) == 0 &&
 	      cc.akm == WPA_AKM_PSK && !cc.mfp, "our WPA2 RSN element: PSK, no PMF");
 	u8 t[64];
 	memcpy(t, ie, il);
 	t[7] = 2;
-	CHECK(wpa_parse_ap(t, il, NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, &cc, &why) == -1, "a TKIP group cipher refused: %s",
+	CHECK(wpa_parse_ap(t, il, NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, false, &cc, &why) == -1, "a TKIP group cipher refused: %s",
 	      why);
 	/* a transition AP: PSK and SAE, MFP capable, H2E in its RSNX element */
 	static const u8 mixed[] = { 48, 28, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 3, 0, 0, 0x0f, 0xac, 2, 0, 0x0f, 0xac, 6,
 				    0, 0x0f, 0xac, 8, 0x80, 0 };
 	static const u8 rsnx_h2e[] = { 244, 1, 0x20 };
-	CHECK(wpa_parse_ap(mixed, sizeof(mixed), rsnx_h2e, 3, &ap, &why) == 0 && wpa_choose(&ap, false, &cc, &why) == 0 &&
+	CHECK(wpa_parse_ap(mixed, sizeof(mixed), rsnx_h2e, 3, &ap, &why) == 0 && wpa_choose(&ap, false, false, &cc, &why) == 0 &&
 	      cc.akm == WPA_AKM_SAE && cc.mfp && cc.h2e, "transition mode: SAE (before PSK-SHA256 and PSK), PMF, hash-to-element");
 	il = wpa_own_ie(ie, &cc);
 	u32 xl = wpa_own_rsnx(rx, &cc);
 	CHECK(il == 28 && ie[19] == 8 && ie[20] == 0x80 && ie[21] == 0 && ie[22] == 0 && ie[23] == 0 && ie[27] == 6 && xl == 3 &&
 	      rx[2] == 0x20, "our WPA3 elements: SAE, MFPC, no PMKID, BIP-CMAC-128; RSNX with H2E");
-	CHECK(wpa_parse_ap(mixed, sizeof(mixed), NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, &cc, &why) == 0 &&
-	      cc.akm == WPA_AKM_SAE && !cc.h2e && wpa_choose(&ap, true, &cc, &why) == -1,
+	CHECK(wpa_parse_ap(mixed, sizeof(mixed), NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, false, &cc, &why) == 0 &&
+	      cc.akm == WPA_AKM_SAE && !cc.h2e && wpa_choose(&ap, true, false, &cc, &why) == -1,
 	      "no RSNX element: hunting and pecking; an H2E-only BSS without it refused (%s)", why);
 	static const u8 sha[] = { 48, 24, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 2, 0, 0, 0x0f, 0xac, 2, 0, 0x0f, 0xac, 6,
 				  0xc0, 0 };   /* PSK, PSK-SHA256; MFP required */
-	CHECK(wpa_parse_ap(sha, sizeof(sha), NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, &cc, &why) == 0 &&
+	CHECK(wpa_parse_ap(sha, sizeof(sha), NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, false, &cc, &why) == 0 &&
 	      cc.akm == WPA_AKM_PSK_SHA256 && cc.mfp, "PSK and PSK-SHA256 with PMF required: PSK-SHA256 with PMF");
+	CHECK(wpa_choose(&ap, false, true, &cc, &why) == -1 && strstr(why, "pmf=off"), "PMF required and pmf=off: refused (%s)", why);
+	CHECK(wpa_parse_ap(mixed, sizeof(mixed), NULL, 0, &ap, &why) == 0 && wpa_choose(&ap, false, true, &cc, &why) == 0 &&
+	      cc.akm == WPA_AKM_SAE && !cc.mfp, "PMF capable and pmf=off: without PMF");
 
 	/* --- the keys of AKMs 6 and 8: the SHA-256 KDF, AES-CMAC ------------- */
 	{

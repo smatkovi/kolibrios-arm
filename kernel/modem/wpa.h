@@ -67,7 +67,7 @@ struct wpa_choice {
 int wpa_parse_ap(const u8 *rsn, u32 rsn_len, const u8 *rsnx, u32 rsnx_len, struct wpa_ap *o, const char **why);
 /* wpa_supplicant_set_suites for our profile: 0, or -1 with *why (an AP
  * of SAE hash-to-element only without H2E in its RSNX element: refused) */
-int wpa_choose(const struct wpa_ap *ap, bool h2e_only, struct wpa_choice *c, const char **why);
+int wpa_choose(const struct wpa_ap *ap, bool h2e_only, bool no_pmf, struct wpa_choice *c, const char **why);
 const char *wpa_akm_name(u8 akm);
 /* our RSN element (wpa_gen_wpa_ie_rsn: CCMP, the AKM, MFPC, PMKID count
  * 0 and BIP-CMAC-128 with PMF) and RSNX element (wpa_gen_rsnxe: SAE with

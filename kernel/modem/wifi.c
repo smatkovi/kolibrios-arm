@@ -1248,8 +1248,7 @@ static void wmi_event(const u8 *p, u32 len)
 				/* no SAE with a raw PSK (64 hex digits: no password);
 				 * pmf=off: as ieee80211w=0 */
 				if (mstrlen(conf.psk) == 64) ap.akms &= ~(1u << WPA_AKM_SAE);
-				if (conf.no_pmf) ap.caps &= (u16)~WPA_CAP_MFPC;
-				wpa_choose(&ap, b.h2e_only, &c, &why);
+				wpa_choose(&ap, b.h2e_only, conf.no_pmf, &c, &why);
 			}
 			if (why) {
 				print_mac("wifi: ", b.bssid);

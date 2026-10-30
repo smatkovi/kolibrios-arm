@@ -117,7 +117,7 @@ int wpa_parse_ap(const u8 *ie, u32 len, const u8 *rsnx, u32 rsnx_len, struct wpa
 	return 0;
 }
 
-int wpa_choose(const struct wpa_ap *ap, bool h2e_only, struct wpa_choice *c, const char **why)
+int wpa_choose(const struct wpa_ap *ap, bool h2e_only, bool no_pmf, struct wpa_choice *c, const char **why)
 {
 	mzero(c, sizeof(*c));
 	if (!ap->group_ccmp) {
@@ -139,7 +139,11 @@ int wpa_choose(const struct wpa_ap *ap, bool h2e_only, struct wpa_choice *c, con
 	/* ieee80211w=1: PMF whenever the AP is capable; BIP-CMAC-128 only
 	 * (wpas_set_mgmt_group_cipher: else none, which an AP that requires
 	 * PMF refuses) */
-	c->mfp = (ap->caps & WPA_CAP_MFPC) && ap->bip;
+	c->mfp = (ap->caps & WPA_CAP_MFPC) && ap->bip && !no_pmf;
+	if ((ap->caps & WPA_CAP_MFPR) && no_pmf) {
+		*why = "management frame protection required, but pmf=off";
+		return -1;
+	}
 	if ((ap->caps & WPA_CAP_MFPR) && !c->mfp) {
 		*why = "management frame protection required with a cipher other than BIP-CMAC-128";
 		return -1;

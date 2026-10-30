@@ -85,7 +85,7 @@ image `wifi` (never in the repository).
 | 7a | the regulatory domain: the EEPROM's code from SERVICE_READY as ath's `regd.c` takes it (the Pro1X's 0x406c: a world domain, pair 0x6c), `country=` (AT by default) on top as cfg80211 does with a user's hint, the channel list from it (passive, radar, power, HT40+), `PDEV_SET_REGDOMAIN` | `kernel/modem/regd.c`, `regdb.c` (made by `tools/gen-regdb.py` from Linux's `regd_common.h` and wireless-regdb's `regulatory.db`), `wifi.c` | `tests/wifi` `regd` (28 checks: the phone's EEPROM with AT and without, US, a country EEPROM, 0x8000, 0x68, India, the 5 GHz range, every ath country), `station` (the channel list, the domain pair) |
 | 7b | 802.11n and WMM: HT20/HT40 (short GI, STBC, LDPC as SERVICE_READY has them), the association's HT Capabilities and WMM information element, `PEER_ASSOC` with HT, the AP's WMM parameters (`VDEV_SET_WMM_PARAMS`), the TID of every frame (EAPOL 7, the DSCP's priority, lower under admission control) | `wifi.c`, `wlan.c`, `wmi.c` | `station` (an HT40 WMM AP; `legacy`; `uapsd`: HT20, admission control on VO) |
 | 7c | power save: the firmware's (PS-Poll and null data, U-APSD with `uapsd=on`): `STA_POWERSAVE_MODE` and its parameters as `ath10k_mac_vif_setup_ps` and `ath10k_conf_tx_uapsd`; the host's: slower polling when idle, with `kolibri.wifi=irq` no SoC sleep while frames come | `wifi.c`, `kernel/net/wifi_dev.c`, `kernel/power.c` (`power_hold_awake`), `kernel/arch/arm64/psci.c` | `station` (the parameters and their order, the radio's doze with the AP keeping frames for the TIM, the polling's intervals), `tests/power host` (the held state) |
-| 7d | WPA3-Personal and PMF: SAE (group 19; hunting and pecking or hash-to-element as the AP offers it; the anti-clogging token), the AKM choice (SAE, then PSK-SHA256, then PSK: the transition mode), PMF (MFPC, BIP-CMAC-128 with the IGTK, protected and BIP-checked disconnections, SA Query both ways, the association's comeback) | `kernel/modem/sae.c`, `ecc.c` (P-256), `crypto.c` (SHA-256, the KDF, HKDF, AES-CMAC), `wpa.c`, `wifi.c`, `wlan.c` | `crypto` (55 checks: FIPS 180-2, RFC 4231, 5869, 4493, IEEE 802.11-2020 J.10's SAE vectors both ways, OpenSSL), `station sae`, `h2e`, `mixed`, `psk256` (an AP with its own SAE by OpenSSL) |
+| 7d | WPA3-Personal and PMF: SAE (group 19; hunting and pecking or hash-to-element as the AP offers it; the anti-clogging token), the AKM choice (SAE, then PSK-SHA256, then PSK: the transition mode), PMF (MFPC, BIP-CMAC-128 with the IGTK, protected and BIP-checked disconnections, SA Query both ways, the association's comeback) | `kernel/modem/sae.c`, `ecc.c` (P-256), `crypto.c` (SHA-256, the KDF, HKDF, AES-CMAC), `wpa.c`, `wifi.c`, `wlan.c` | `crypto` (57 checks: FIPS 180-2, RFC 4231, 5869, 4493, IEEE 802.11-2020 J.10's SAE vectors both ways, OpenSSL), `station sae`, `h2e`, `mixed`, `psk256` (an AP with its own SAE by OpenSSL) |
 
 `kolibri.wifi` (with `tools/pro1x-kexec.sh -m -w FILE`: the modem, so
 QRTR, and the network) runs all of it on the phone: once WLFW says the
@@ -248,7 +248,7 @@ association is HT only); one network, no roaming.
   the SHA-256 KDF and CMAC against OpenSSL, P-256 against OpenSSL's
   prime256v1, SAE against IEEE 802.11-2020 J.10 (hunting and pecking: the
   commit, KCK, PMK, PMKID; hash-to-element: PT and the PWE), the RSN
-  choice, BIP. 55 checks.
+  choice (with `pmf=off`), BIP. 57 checks.
 - `regd`: the regulatory domain (stage 7a). 28 checks.
 - `station`: the whole driver against a simulated WCN3990 (the engines'
   registers as `test.c` has them; HTC, WMI-TLV and HTT as above; CCMP with
@@ -589,7 +589,7 @@ Where it can fail, and what the console then says:
 - **The network**: `"<SSID>" not found (N networks seen)` (the channel
   list, a hidden SSID: the scan probes for it, but not on passive
   channels: with AT 12-13 and all of 5 GHz are passive), `skipped: ...`
-  (TKIP, 802.1X, PMF with a cipher other than BIP-CMAC-128), `EAPOL
+  (TKIP, 802.1X, PMF with a cipher other than BIP-CMAC-128, PMF required but `pmf=off`), `EAPOL
   dropped: message 3's MIC is wrong (the PSK?)`, `association refused
   (status N)`.
 - **The regulatory domain**: `PDEV_SET_REGDOMAIN` has no answer; a
