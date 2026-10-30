@@ -5,6 +5,9 @@
     then the files, each at a 16-byte boundary
 
     mkrd.py OUT FILE...   (each file under its own name; NAME=FILE renames)
+
+A name's %20 is a space ("File%20managers/opendial": make's words have
+none), as KolibriOS's image has folders with spaces.
 """
 import os
 import struct
@@ -14,6 +17,7 @@ out, args = sys.argv[1], sys.argv[2:]
 entries = []
 for a in args:
     name, _, path = a.partition('=') if '=' in a else (os.path.basename(a), '', a)
+    name = name.replace('%20', ' ')
     data = open(path, 'rb').read()
     if len(name.encode()) >= 48:
         sys.exit(f'{name}: name too long')

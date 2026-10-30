@@ -176,25 +176,38 @@ class Mouse:
 
 
 def test_t_edit(img):
-    # t_edit with t_edit.ini (Hildon's look: the window from y 56): typed
-    # text, undo, replace all in the replace panel, a word selected,
-    # copied and pasted, saved as /tmp0/1/t.ini through the save dialog;
-    # fstest (autorun.t_edit) looks at the file at 75 s
+    # t_edit with t_edit.ini (Hildon's look: the window from y 56): the
+    # open dialog (opendial, a program of its own) shown and cancelled;
+    # typed text, undo, replace all in the replace panel (its message box,
+    # a thread with a window of its own, closed by Enter), a word
+    # selected, copied and pasted, saved as /tmp0/1/t.ini through the
+    # save dialog (opendial: Tab to the list, Alt+F1 "Select Disk",
+    # /tmp0/1, Tab to the name); then "Save changes?" (msgbox) cancelled,
+    # and again with "Discard", whose function (in the box's thread)
+    # opens the dialog, where Enter opens t.ini; fstest (autorun.t_edit)
+    # looks at the file at 75 s
     make('realview', 'autorun.t_edit')
     m = Mouse()
-    steps = (keys('wait:5', 'ab', 'xyz', 'ctrl-z', 'ctrl-z', 'ctrl-z', 'ctrl-h', 'wait:1') +
+    steps = (keys('wait:5', 'ctrl-o', 'wait:3', 'down', 'down', 'down', 'wait:0.5', 'shot:t_edit-open', 'esc',
+                  'wait:2', 'ab', 'xyz', 'ctrl-z', 'ctrl-z', 'ctrl-z', 'ctrl-h', 'wait:1') +
              m.at(60, 133) + ['click'] + keys('Window') + m.at(60, 226) + ['click'] + keys('Fenster') +
              m.at(11, 188) + ['click'] +          # the option "At first": the cursor is after the undone text
              m.at(40, 275) + ['click', 'wait:2', 'shot:t_edit-replace'] + keys('ret', 'wait:1') +
              m.at(182, 139) + ['click', 'wait:0.5'] +
              keys('shift-right', 'shift-right', 'ctrl-c', 'end', 'ctrl-v', 'wait:1', 'shot:t_edit-pasted',
-                  'ctrl-shift-s', 'wait:2', 'tab', 'ctrl-a', '/tmp0/1', 'ret', 'wait:1', 'tab', 'ctrl-a', 't.ini',
-                  'wait:0.5', 'shot:t_edit-save', 'ret', 'wait:2', 'shot:t_edit-saved', 'wait:40'))
+                  'ctrl-shift-s', 'wait:3', 'tab', 'wait:0.5', 'alt-f1', 'wait:1', 'down', 'ret', 'wait:1.5',
+                  'tab', 'wait:0.5', 'ctrl-a', 't.ini', 'wait:0.5', 'shot:t_edit-save', 'ret', 'wait:2',
+                  'shot:t_edit-saved', 'x', 'ctrl-n', 'wait:1.5', 'shot:t_edit-msgbox', 'ret', 'wait:1',
+                  'ctrl-o', 'wait:1.5', 'left', 'ret', 'wait:3', 'shot:t_edit-reopen', 'ret', 'wait:2',
+                  'shot:t_edit-opened', 'wait:25'))
     log = qemu('realview', f'{OUT}/t_edit', steps)
     check('fstest: expect ok' in log and 'expect FAIL' not in log,
-          't_edit: typing, undo, replace all, copy and paste, save as /tmp0/1/t.ini')
+          't_edit: typing, undo, replace all, copy and paste, save as /tmp0/1/t.ini in opendial')
+    check(log.count('started opendial') == 3, f't_edit: opendial started for open, save and open '
+          f'({log.count("started opendial")} of 3)')
     if img:
-        shutil.copy(f'{OUT}/t_edit/t_edit-replace.png', os.path.join(img, 't_edit-replace.png'))
+        for n in ('t_edit-replace', 't_edit-open', 't_edit-msgbox'):
+            shutil.copy(f'{OUT}/t_edit/{n}.png', os.path.join(img, n + '.png'))
 
 
 args = sys.argv[1:]
