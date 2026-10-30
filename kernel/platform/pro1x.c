@@ -49,6 +49,7 @@
 #include "rng.h"
 #include "power.h"
 #include "powerdt.h"
+#include "blit.h"
 
 void gic3_init(addr_t dist_pa, addr_t redist_pa, void (*irq)(u32 id));
 void gic3_irq(void);
@@ -272,30 +273,18 @@ static int p_display_init(u32 **fb, int *w, int *h, int *stride)
 
 /* lines y0..y1 of the landscape screen, each pixel doubled, turned
  * clockwise: landscape (X, Y) is the panel's (fb_w - 1 - Y, X), so a line
- * of the screen is a pair of the panel's columns. Panel line by panel
- * line, two pixels in a 64-bit store, the alpha opaque. */
+ * of the screen is a pair of the panel's columns (blit.h's rot2x: C or
+ * NEON), the alpha opaque. */
 static bool display_off;               /* the power test's standby: nothing to scan out */
 
 static bool p_display_flush(int y0, int y1)
 {
-	static u64 span[1080];
 	if (display_off) return true;
 	y1 = MIN(y1, lh);
+	y0 = MAX(y0, 0);
 	if (y0 >= y1) return true;
-	int n = MIN(y1 - y0, (int)ARRAY_SIZE(span));
-	y0 = y1 - n;
-	addr_t px0 = (addr_t)(fb_w - 2 * y1) * 4;
-	for (int lx = 0; lx < lw; lx++) {
-		const u32 *src = lfb + lx;
-		for (int k = 0; k < n; k++) {
-			u64 p = src[(addr_t)(y1 - 1 - k) * lw] | 0xff000000u;
-			span[k] = p | p << 32;
-		}
-		for (int r = 0; r < 2; r++) {
-			volatile u64 *dst = (volatile u64 *)(fb_pa + (addr_t)(2 * lx + r) * fb_stride + px0);
-			for (int k = 0; k < n; k++) dst[k] = span[k];
-		}
-	}
+	blit_begin();
+	blit.rot2x((void *)fb_pa, fb_stride, lfb, lw, lw, y0, y1, fb_w);
 	asm volatile("dsb st");
 	return true;
 }

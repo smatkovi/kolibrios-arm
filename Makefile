@@ -8,6 +8,8 @@
 #                              (build/arm64/kernel.bin, an arm64 Image for kexec)
 #   make LOOK=classic          KolibriOS's own panel and menu instead of the
 #                              Hildon shell
+#   make PLATFORM=arm64 SIMD=c the AArch64 kernel without its assembler's
+#                              drawing loops and string functions (docs/asm.md)
 #
 # Needs the Arm GNU toolchain (arm-none-eabi-gcc, its libgcc: the Cortex-A8
 # divides in software) and python3; QEMU's qemu-system-arm to run it.
@@ -26,7 +28,7 @@ ACFLAGS := $(CFLAGS) -Ilib -fno-strict-aliasing
 LDFLAGS := -nostdlib -Wl,--no-warn-rwx-segments
 LIBGCC := $(shell $(CC32) $(ARCH32) -print-libgcc-file-name)
 
-KCOMMON := lib.c mm.c sched.c syscall.c gfx.c wm.c input.c fs.c loader.c main.c \
+KCOMMON := lib.c mm.c sched.c syscall.c gfx.c blit.c wm.c input.c fs.c loader.c main.c \
 	fonts/font8x16.c fonts/font6x10.c rd.S \
 	modem/smem.c modem/glink.c modem/qrtr.c modem/qmi.c modem/rmtfs.c modem/sms.c \
 	modem/phone.c modem/fake.c modem/kmodem.c modem/apr.c modem/callaudio.c modem/wlfw.c modem/ce.c
@@ -43,6 +45,15 @@ KSRC := $(KCOMMON) arch/arm64/start.S arch/arm64/mmu.c arch/arm64/trap.c arch/ar
 	fdt.c platform/virt.c platform/virtio_input.c platform/pro1x.c net/net.c net/virtio_net.c net/virtio_rng.c net/wifi_dev.c rng.c modem/rpm.c modem/rpmsleep.c modem/pmic.c \
 	modem/htc.c modem/wmi.c modem/htt.c modem/wlan.c modem/wpa.c modem/crypto.c modem/wifi.c \
 	linux/lx.c linux/vm.c linux/sys.c linux/file.c linux/sock.c linux/bridge.c linux/fp.S
+# the hot loops in assembler (arch/arm64/blit.S with NEON, string.S);
+# SIMD=c builds the kernel with their C versions only (kernel/blit.c,
+# lib.c); kolibri.simd=c on the command line chooses C at the start
+SIMD ?= neon
+ifeq ($(SIMD),c)
+KCFLAGS += -DSIMD_C
+else
+KSRC += arch/arm64/blit.S arch/arm64/string.S
+endif
 # the network: lwIP (tools/fetch-lwip.sh puts it in third_party/lwip)
 LWIP := third_party/lwip/src
 LWIPSRC := core/init.c core/def.c core/dns.c core/inet_chksum.c core/ip.c core/mem.c core/memp.c \

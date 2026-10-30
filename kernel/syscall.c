@@ -104,13 +104,7 @@ static void read_screen(struct task *t, u32 *r)
 	int w = ECX >> 16, h = ECX & 0xffff, x = EDX >> 16, y = EDX & 0xffff;
 	u8 *buf = uptr(t, EBX, (u32)w * h * 3);
 	if (!buf) return;
-	for (int j = 0; j < h; j++)
-		for (int i = 0; i < w; i++) {
-			u8 *p = buf + (j * w + i) * 3;
-			int xx = x + i, yy = y + j;
-			u32 c = xx < scr.w && yy < scr.h ? scr.fb[yy * scr.stride + xx] : 0;
-			p[0] = c; p[1] = c >> 8; p[2] = c >> 16;
-		}
+	gfx_read(buf, x, y, w, h);
 }
 
 static void put_image(struct task *t, u32 *r)
@@ -121,11 +115,7 @@ static void put_image(struct task *t, u32 *r)
 	int ox, oy;
 	wm_origin(t, &ox, &oy);
 	int x = ox + (s16)(EDX >> 16), y = oy + (s16)(EDX & 0xffff);
-	for (int j = 0; j < h; j++)
-		for (int i = 0; i < w; i++) {
-			const u8 *p = img + (j * w + i) * 3;
-			gfx_pixel(x + i, y + j, p[0] | p[1] << 8 | p[2] << 16, t->slot);
-		}
+	gfx_image(x, y, w, h, img, t->slot);
 }
 
 static void define_button(struct task *t, u32 *r)

@@ -33,6 +33,9 @@ void gfx_pixel(int x, int y, u32 c, int slot);
 void gfx_rect(int x, int y, int w, int h, u32 c, int slot);
 void gfx_hgradient(int x, int y, int w, int h, u32 c, int slot);
 void gfx_line(int x0, int y0, int x1, int y1, u32 c, int slot);
+/* functions 7 and 36: an image of 3 bytes a pixel (B, G, R) */
+void gfx_image(int x, int y, int w, int h, const u8 *bgr, int slot);
+void gfx_read(u8 *bgr, int x, int y, int w, int h);
 /* text: font 0 6x10, font 1 8x16; scale 1..8; returns the width drawn */
 int gfx_text(int x, int y, const char *s, int len, u32 c, int font, int scale,
 	     bool fill, u32 bg, int slot, bool utf8);

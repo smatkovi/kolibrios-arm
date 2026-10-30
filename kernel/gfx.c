@@ -6,6 +6,7 @@
  * covered window cannot paint over the one above it. The mouse pointer
  * is drawn over everything and taken away under each primitive. */
 #include "gui.h"
+#include "blit.h"
 
 struct screen scr;
 extern const unsigned char font8x16[], font6x10[];
@@ -13,6 +14,7 @@ extern const unsigned char font8x16[], font6x10[];
 void gfx_init(void)
 {
 	scr.owner = kmalloc(scr.w * scr.h);
+	blit_init();
 	scr.dirty_y0 = scr.h;
 	scr.dirty_y1 = 0;
 }
@@ -129,18 +131,42 @@ void gfx_rect(int x, int y, int w, int h, u32 c, int slot)
 	int x1 = MIN(x + w, scr.w), y1 = MIN(y + h, scr.h);
 	if (x0 >= x1 || y0 >= y1) return;
 	BEGIN(x0, y0, x1 - x0, y1 - y0);
+	blit_begin();
 	c &= 0xffffff;
-	for (int yy = y0; yy < y1; yy++) {
-		u32 *p = &scr.fb[yy * scr.stride];
-		u8 *o = &scr.owner[yy * scr.w];
-		if (slot < 0)
-			for (int xx = x0; xx < x1; xx++) p[xx] = c;
-		else
-			for (int xx = x0; xx < x1; xx++)
-				if (o[xx] == slot) p[xx] = c;
-	}
+	for (int yy = y0; yy < y1; yy++)
+		blit.fill(&scr.fb[yy * scr.stride + x0], &scr.owner[yy * scr.w + x0], slot, c, x1 - x0);
 	END();
 	gfx_dirty(y0, y1);
+}
+
+/* functions 7 and 36: an image of 3 bytes a pixel (B, G, R) onto the
+ * screen, where the slot owns it, and the screen into one (black off
+ * the screen) */
+void gfx_image(int x, int y, int w, int h, const u8 *bgr, int slot)
+{
+	int x0 = MAX(x, 0), y0 = MAX(y, 0);
+	int x1 = MIN(x + w, scr.w), y1 = MIN(y + h, scr.h);
+	if (x0 >= x1 || y0 >= y1) return;
+	BEGIN(x0, y0, x1 - x0, y1 - y0);
+	blit_begin();
+	for (int yy = y0; yy < y1; yy++)
+		blit.from_bgr(&scr.fb[yy * scr.stride + x0], &scr.owner[yy * scr.w + x0], slot,
+			      bgr + ((u32)(yy - y) * w + (x0 - x)) * 3, x1 - x0);
+	END();
+	gfx_dirty(y0, y1);
+}
+
+void gfx_read(u8 *bgr, int x, int y, int w, int h)
+{
+	int x1 = MIN(x + w, scr.w);
+	blit_begin();
+	for (int j = 0; j < h; j++) {
+		u8 *d = bgr + (u32)j * w * 3;
+		int n = y + j < scr.h && x < x1 ? x1 - x : 0;
+		/* the pointer is in the screen's pixels, as programs see it */
+		if (n) blit.to_bgr(d, &scr.fb[(y + j) * scr.stride + x], n);
+		memset(d + n * 3, 0, (u32)(w - n) * 3);
+	}
 }
 
 /* KolibriOS's gradient: from the color down to darker, by lines */
@@ -216,6 +242,15 @@ int gfx_text(int x, int y, const char *s, int len, u32 c, int font, int scale,
 			continue;
 		}
 		const unsigned char *g = f + ch * fh;
+		int gx = x + width;
+		if (scale == 1 && gx >= 0 && y >= 0 && gx + fw <= scr.w && y + fh <= scr.h) {
+			/* all of it on the screen: the inner loop */
+			blit_begin();
+			blit.glyph(&scr.fb[y * scr.stride + gx], scr.stride, &scr.owner[y * scr.w + gx], scr.w,
+				   slot, g, fw, fh, c & 0xffffff, bg & 0xffffff, fill);
+			width += fw;
+			continue;
+		}
 		for (int row = 0; row < fh; row++) {
 			u8 bits = g[row];
 			for (int col = 0; col < fw; col++) {

@@ -2,6 +2,8 @@
 #include <stdarg.h>
 #include "kernel.h"
 
+/* AArch64: arch/arm64/string.S (unless built with SIMD=c) */
+#if !defined(__aarch64__) || defined(SIMD_C)
 void *memset(void *d, int c, size_t n)
 {
 	u8 *p = d;
@@ -42,6 +44,7 @@ void *memmove(void *d, const void *s, size_t n)
 	while (n--) dp[n] = sp[n];
 	return d;
 }
+#endif
 
 int memcmp(const void *a, const void *b, size_t n)
 {

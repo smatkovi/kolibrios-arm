@@ -1,0 +1,6 @@
+# a profile: programs behind the shell, the clock in front
+/sys/board
+/sys/cpu
+/sys/example
+/sys/clock
+/sys/@hildon

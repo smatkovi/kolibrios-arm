@@ -7,7 +7,17 @@
 extern void lx_fp_save(u8 *area, u64 *fpcr);
 extern void lx_fp_load(const u8 *area, const u64 *fpcr);
 
-static struct lx_thread *fp_owner;      /* whose FP/SIMD registers the CPU holds */
+/* whose FP/SIMD registers the CPU holds: saved only when another Linux
+ * thread runs, or when the kernel draws with NEON (blit.h) */
+struct lx_thread *lx_fp_owner;
+#define fp_owner lx_fp_owner
+
+void lx_fp_release(void)
+{
+	if (!fp_owner) return;
+	lx_fp_save(fp_owner->fp, &fp_owner->fpcr);
+	fp_owner = NULL;
+}
 static u64 freq;
 static u64 hwcap;
 

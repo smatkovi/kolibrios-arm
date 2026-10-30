@@ -3,4 +3,4 @@
 B := ../../build/qemu-prof
 $(B)/prof.so: prof.c
 	@mkdir -p $(B)
-	$(CC) -O2 -Wall -shared -fPIC $(shell pkg-config --cflags glib-2.0) $< -o $@
+	$(CC) -O2 -Wall -shared -fPIC -pthread $(shell pkg-config --cflags glib-2.0) $< -o $@
