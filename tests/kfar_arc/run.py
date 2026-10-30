@@ -103,6 +103,7 @@ if sevenzip:
         ('7z', ['-t7z', '-m0=Deflate'], None, '7z Deflate'),
         ('7z', ['-t7z', '-m0=Deflate64'], None, '7z Deflate64'),
         ('7z', ['-t7z', '-m0=LZMA', '-pkolibri', '-mhe=on'], 'kolibri', '7z AES-256, encrypted header'),
+        ('7z', ['-t7z', '-m0=PPMd', '-pkolibri'], 'kolibri', '7z AES-256 over PPMd, the files only'),
     ]
     for i, (ext, opts, pw, what) in enumerate(cases):
         arc = os.path.join(out, f'case{i}.{ext}')

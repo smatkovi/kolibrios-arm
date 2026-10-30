@@ -1586,11 +1586,3 @@ void close_file_7z(void *p)
 	if (ecx) pgfree(ecx);
 	free_handle(ebx);
 }
-
-/* (until ppmd.inc and the AES are here) */
-__attribute__((weak)) void ppmd_get_buf_size(const u8 *esi, u32 n, u32 *eax, u32 *edx) { return_err(); }
-__attribute__((weak)) void ppmd_init_decoder(streamInfo *ebp, const u8 *esi, u32 n, int ebx) { return_err(); }
-__attribute__((weak)) void init_ppmd(void) {}
-__attribute__((weak)) void aes7z_get_buf_size(const u8 *esi, u32 n, u32 *eax, u32 *edx) { return_err(); }
-__attribute__((weak)) void aes7z_init_decoder(streamInfo *ebp, const u8 *esi, u32 n, int ebx) { return_err(); }
-__attribute__((weak)) void init_aes(void) {}
