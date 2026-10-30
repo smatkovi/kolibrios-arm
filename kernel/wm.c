@@ -391,9 +391,11 @@ static void negate_line(int x, int y, int w, int h, int slot)
 	static u8 px[3 * 4096];
 	if (w <= 0 || h <= 0 || w * h > 4096) return;
 	if (x < 0 || y < 0 || x + w > scr.w || y + h > scr.h) return;
+	cursor_hide();                         /* the pointer is not the frame's */
 	gfx_read(px, x, y, w, h);
 	for (int i = 0; i < 3 * w * h; i++) px[i] ^= 0xff;
 	gfx_image(x, y, w, h, px, slot);
+	cursor_show();
 }
 
 /* a button pressed or let go: its frame inverted, as KolibriOS's kernel

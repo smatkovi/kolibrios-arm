@@ -31,6 +31,8 @@ enum { ERR_PORT_INVALID = 1, ERR_PORT_BUSY = 2, ERR_CONF = 3 };
 static struct port {
 	addr_t pl011;          /* the UART's registers, or 0 */
 	bool console, busy;
+	int owner_slot;        /* the program that opened it */
+	u32 owner_pid;
 	const char *driver, *descr;
 } ports[NPORTS];
 static int nports;
@@ -61,6 +63,15 @@ static void probe(void)
 		ports[0].console = true;
 	}
 #endif
+}
+
+/* open, and by a program still running: one that ended without closing
+ * it (terminal's console closed by its window's button) left it free */
+static bool in_use(struct port *p)
+{
+	if (p->busy && (tasks[p->owner_slot].state == T_FREE || tasks[p->owner_slot].pid != p->owner_pid))
+		p->busy = false;
+	return p->busy;
 }
 
 static void tx(struct port *p, u8 c)
@@ -119,9 +130,11 @@ u32 serial_control(struct task *t, u32 ctl_va)
 		if (!ab || insz < 8 || !o || outsz < 4) return -1;
 		if (a[0] >= (u32)nports) return ERR_PORT_INVALID;
 		struct port *p = &ports[a[0]];
-		if (p->busy) return ERR_PORT_BUSY;
+		if (in_use(p)) return ERR_PORT_BUSY;
 		if (!conf_ok(t, a[1])) return ERR_CONF;
 		p->busy = true;
+		p->owner_slot = t->slot;
+		p->owner_pid = t->pid;
 		while (rx(p) >= 0)                 /* what came before */
 			;
 		put32(o, a[0] + 1);
@@ -131,7 +144,7 @@ u32 serial_control(struct task *t, u32 ctl_va)
 	case SETUP_PORT:
 	case READ:
 	case WRITE: {
-		if (!ab || insz < 4 || !a[0] || a[0] > (u32)nports || !ports[a[0] - 1].busy) return ERR_PORT_INVALID;
+		if (!ab || insz < 4 || !a[0] || a[0] > (u32)nports || !in_use(&ports[a[0] - 1])) return ERR_PORT_INVALID;
 		struct port *p = &ports[a[0] - 1];
 		if (code == CLOSE_PORT) { p->busy = false; return 0; }
 		if (code == SETUP_PORT) {
@@ -159,7 +172,7 @@ u32 serial_control(struct task *t, u32 ctl_va)
 		for (int i = 0; i < nports && e && filled < room; i++, filled++, e += 88) {
 			memset(e, 0, 88);
 			put32(e, i);
-			put32(e + 4, ports[i].busy);
+			put32(e + 4, in_use(&ports[i]));
 			strncpy0((char *)e + 8, ports[i].driver, 16);
 			strncpy0((char *)e + 24, ports[i].descr, 64);
 		}

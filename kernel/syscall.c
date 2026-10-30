@@ -144,6 +144,11 @@ static void define_button(struct task *t, u32 *r)
 	wm_button_draw(t, b, false);
 }
 
+/* a program's buffer need not be aligned: its words stored so the
+ * compiler cannot merge them into strd (which faults on ARMv7) */
+static inline void put32(void *p, u32 v) { struct __attribute__((packed)) w32 { u32 v; } *q = p; q->v = v; }
+static inline void put16(void *p, u16 v) { struct __attribute__((packed)) w16 { u16 v; } *q = p; q->v = v; }
+
 static void thread_info(struct task *t, u32 *r)
 {
 	u8 *b = uptr(t, EBX, 1024);
@@ -154,32 +159,32 @@ static void thread_info(struct task *t, u32 *r)
 		if (tasks[i].state != T_FREE) max = i;
 	EAX = max;
 	memset(b, 0, 76);
-	*(u16 *)(b + 6) = wm_slot_at_pos(slot);
+	put16(b + 6, wm_slot_at_pos(slot));
 	if (slot <= 0 || slot >= MAX_TASKS || tasks[slot].state == T_FREE) {
-		*(u16 *)(b + 50) = 9;
+		put16(b + 50, 9);
 		return;
 	}
 	struct task *o = &tasks[slot];
 	struct window *w = &o->win;
-	*(u16 *)(b + 4) = wm_stack_pos(o);
+	put16(b + 4, wm_stack_pos(o));
 	memcpy(b + 10, o->name, MIN(strlen(o->name), 11));
-	*(u32 *)(b + 22) = 0;
-	*(u32 *)(b + 26) = o->mem_size - 1;
-	*(u32 *)(b + 30) = o->pid;
-	*(u32 *)(b + 34) = w->x;
-	*(u32 *)(b + 38) = w->y;
-	*(u32 *)(b + 42) = w->w - 1;
-	*(u32 *)(b + 46) = w->h - 1;
-	*(u16 *)(b + 50) = o->state == T_WAIT_EVENT || o->state == T_WAIT_TIMEOUT ? 5 :
-			   o->state == T_SLEEP ? 1 : 0;
+	put32(b + 22, 0);
+	put32(b + 26, o->mem_size - 1);
+	put32(b + 30, o->pid);
+	put32(b + 34, w->x);
+	put32(b + 38, w->y);
+	put32(b + 42, w->w - 1);
+	put32(b + 46, w->h - 1);
+	put16(b + 50, o->state == T_WAIT_EVENT || o->state == T_WAIT_TIMEOUT ? 5 :
+			   o->state == T_SLEEP ? 1 : 0);
 	bool skinned = w->style == 3 || w->style == 4;
 	int fw = skinned ? wm_frame_w(w) : 0, sh = skinned ? wm_skin_h(w) : 0;
-	*(u32 *)(b + 54) = fw;
-	*(u32 *)(b + 58) = sh;
-	*(u32 *)(b + 62) = w->w - 2 * fw - 1;
-	*(u32 *)(b + 66) = w->h - sh - fw - 1;
+	put32(b + 54, fw);
+	put32(b + 58, sh);
+	put32(b + 62, w->w - 2 * fw - 1);
+	put32(b + 66, w->h - sh - fw - 1);
 	b[70] = (w->minimized ? 2 : 0) | (w->defined && wm_maximised(w) ? 1 : 0);
-	memcpy(b + 71, &o->event_mask, 4);
+	put32(b + 71, o->event_mask);
 }
 
 static void wait_event(struct task *t, u32 *r, int timeout)
