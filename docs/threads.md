@@ -143,6 +143,7 @@ the programs as before.
 | `lib/console` | `/sys/lib/console.obj` | console.obj 2.9's: `START`, `version`, `con_init`, ... `con_get_input` |
 | `lib/boxlib` | `/sys/lib/box_lib.obj` | box_lib's edit box, check box, option box, scroll bars, tree list and text editor, with their versions |
 | `lib/libini` | `/sys/lib/libini.obj` | libini's `ini_*` functions |
+| `lib/kfar_arc` | `/sys/lib/kfar_arc.obj` | kfar_arc's plugin interface (kfar's `api.txt`) |
 | `lib/kfar_arc` | `/sys/lib/kfar_arc.obj` | kfar_arc's: `version`, `plugin_load`, ... (kfar's plugin, `docs/apps.md`) |
 
 ## The programs that use them
@@ -154,6 +155,17 @@ the programs as before.
   `PID-SHELL`, as in KolibriOS (`docs/apps.md`).
 - The shell, the terminal, kfar and t_edit load console.obj, box_lib.obj
   and libini.obj with 68.19 when they start.
+- kfar loads its plugins with 68.19, as in KolibriOS: kfar_arc
+  (`/sys/lib/kfar_arc.obj`: zip and 7z archives) opens archives as
+  panels (`docs/apps.md`).
+- t_edit's message boxes and its keyword window are threads with windows
+  of their own (msgbox.obj's `mb_create`, `wnd_k_words`); its open and
+  save dialog is the program opendial (`/sys/File managers/opendial`),
+  which answers through the named shared memory proc_lib's
+  `OpenDialog_init` creates. In the Hildon look a window that a thread
+  of a program defines while the program shows another one is a dialog:
+  its own size and place, the classic frame, above its program
+  (`kernel/wm.c`).
 - kfar loads its plugins (`kfar_arc.obj`) with 68.19 from its settings,
   as the original, and calls their `lib_init` (`docs/apps.md`).
 
