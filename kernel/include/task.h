@@ -69,6 +69,7 @@ struct umap {
 	u32 owner_pid;    /* shared memory: the thread that opened it (closed when it ends) */
 	struct shmem *shm;
 	u32 used;         /* libraries: the bytes taken from the front */
+	u32 seq;          /* the order they were made in (68.23 closes the latest) */
 };
 struct pdll {         /* a library loaded into the process (kernel/dll.c) */
 	char path[128];

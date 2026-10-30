@@ -72,6 +72,8 @@ struct umap *proc_map_new(struct proc *p, u32 size, int kind)
 	m->size = size;
 	m->pa = pa;
 	m->kind = kind;
+	static u32 seq;
+	m->seq = ++seq;
 	if (pa) mmu_map_user(p->l1, va, pa, size);
 	return m;
 }
@@ -189,16 +191,24 @@ void sys_shmem_open(struct task *t, u32 *r)
 	r[3] = owner_access ? 0 : s->size;     /* created: 0; opened: its size */
 }
 
-/* 68.23: the thread's mapping of the area of that name */
+/* 68.23: the thread's latest mapping of the area of that name (KolibriOS
+ * finds the newest of the thread's objects first), else one its process
+ * kept from a thread that ended */
 void sys_shmem_close(struct task *t, u32 *r)
 {
 	const char *name = ustr(t, r[2]);
 	struct proc *p = t->proc;
 	if (!name || !p) return;
-	for (int i = 0; i < p->nmap; i++) {
-		struct umap *m = &p->map[i];
-		if (m->kind == UMAP_SHM && m->owner_pid == t->pid && m->shm && !strncmp(m->shm->name, name, 31)) {
-			shm_close_map(p, m);
+	for (int pass = 0; pass < 2; pass++) {
+		struct umap *best = NULL;
+		for (int i = 0; i < p->nmap; i++) {
+			struct umap *m = &p->map[i];
+			if (m->kind == UMAP_SHM && m->owner_pid == (pass ? 0 : t->pid) && m->shm &&
+			    !strncmp(m->shm->name, name, 31) && (!best || m->seq > best->seq))
+				best = m;
+		}
+		if (best) {
+			shm_close_map(p, best);
 			return;
 		}
 	}
@@ -206,15 +216,15 @@ void sys_shmem_close(struct task *t, u32 *r)
 
 /* --- threads (51) ------------------------------------------------------- */
 
-/* task_exit: the thread's shared memory closed; the last thread ends the
- * process: its maps, libraries, image and tables */
+/* task_exit. The thread's shared memory stays mapped, the process's now
+ * (KolibriOS drops the thread's reference and leaves the pages mapped;
+ * here the memory lives while it is mapped). The last thread ends the
+ * process: its maps, libraries, image and tables. */
 void proc_thread_gone(struct task *t)
 {
 	struct proc *p = t->proc;
-	for (int i = p->nmap - 1; i >= 0; i--) {
-		struct umap *m = &p->map[i];
-		if (m->kind == UMAP_SHM && (m->owner_pid == t->pid || p->threads == 1)) shm_close_map(p, m);
-	}
+	for (int i = 0; i < p->nmap; i++)
+		if (p->map[i].owner_pid == t->pid) p->map[i].owner_pid = 0;
 	if (--p->threads > 0) return;
 	while (p->nmap) {
 		struct umap *m = &p->map[p->nmap - 1];
