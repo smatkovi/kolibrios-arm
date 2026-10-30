@@ -305,6 +305,30 @@ static void n9_copy(int y0, int y1)
 	asm volatile("dsb" ::: "memory");             /* the frame in memory before DISPC goes */
 }
 
+#ifndef SIMD_C
+/* kolibri.bench (bench.c): the whole screen copied as the flush did
+ * before blit.rot90, each screen line a panel column, a pixel at a
+ * time: the uncached frame buffer written 4 (2) bytes a store, a panel
+ * line apart */
+void n9_flush_by_columns(void)
+{
+	for (int y = 0; y < SCR_H; y++) {
+		const u32 *src = &shadow[y * SCR_W];
+		int px = PANEL_W - 1 - y;
+		if (px < 0 || px >= lcd_w) continue;
+		for (int x = 0; x < SCR_W && HIDDEN + x < lcd_h; x++) {
+			u32 c = src[x];
+			if (lcd_bpp == 32)
+				lcd[(HIDDEN + x) * lcd_stride + px] = c;
+			else
+				((u16 *)lcd)[(HIDDEN + x) * lcd_stride + px] =
+					((c >> 8) & 0xf800) | ((c >> 5) & 0x7e0) | ((c >> 3) & 0x1f);
+		}
+	}
+	asm volatile("dsb" ::: "memory");
+}
+#endif
+
 static bool n9_display_flush(int y0, int y1)
 {
 	static u32 last;

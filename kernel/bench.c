@@ -28,6 +28,7 @@ struct job {
 	const char *name;
 	void (*run)(const struct blit_ops *b, bool fast);
 	u32 bytes;                     /* written, for the MB/s */
+	bool once;                     /* one way only (not C against assembler) */
 };
 
 static int W, H;
@@ -127,6 +128,14 @@ static void j_flush(const struct blit_ops *b, bool f)
 	blit = keep;
 }
 
+/* the N950's flush as it was (platform/n950.c), for the way the panel
+ * is written: by columns, a pixel a store */
+extern void n9_flush_by_columns(void) __attribute__((weak));
+static void j_flush_cols(const struct blit_ops *b, bool f)
+{
+	n9_flush_by_columns();
+}
+
 static u64 time_of(const struct job *j, const struct blit_ops *b, bool fast)
 {
 	u64 best = ~0ull;
@@ -208,23 +217,24 @@ void bench_run(void)
 	for (u32 i = 0; i < 270 * 136 * 3; i++) img[i] = i * 7;
 	for (u32 i = 0; i < (2u << 20); i++) s_src[i] = i;
 	static const struct job jobs[] = {
-		{ "fill, everywhere", j_fill_all, 0 },
-		{ "fill, a window's 2/3", j_fill_win, 0 },
-		{ "fill, the covered 1/3", j_fill_half, 0 },
-		{ "text 8x16 on its colour", j_text16, 0 },
-		{ "text 6x10, no background", j_text10, 0 },
-		{ "image 9 x 270x136 (fn 7)", j_from_bgr, 9 * 270 * 136 * 4 },
-		{ "read a quarter (fn 36)", j_to_bgr, 0 },
+		{ "fill, everywhere", j_fill_all, 0, false },
+		{ "fill, a window's 2/3", j_fill_win, 0, false },
+		{ "fill, the covered 1/3", j_fill_half, 0, false },
+		{ "text 8x16 on its colour", j_text16, 0, false },
+		{ "text 6x10, no background", j_text10, 0, false },
+		{ "image 9 x 270x136 (fn 7)", j_from_bgr, 9 * 270 * 136 * 4, false },
+		{ "read a quarter (fn 36)", j_to_bgr, 0, false },
 #ifdef __aarch64__
-		{ "turn+double to RAM", j_rot2x, 0 },
+		{ "turn+double to RAM", j_rot2x, 0, false },
 #else
-		{ "turn to RAM, 32 bpp", j_rot90_32, 0 },
-		{ "turn to RAM, 16 bpp", j_rot90_16, 0 },
+		{ "turn to RAM, 32 bpp", j_rot90_32, 0, false },
+		{ "turn to RAM, 16 bpp", j_rot90_16, 0, false },
 #endif
-		{ "memcpy 2 MiB", j_memcpy, 2u << 20 },
-		{ "memcpy 2 MiB, d+4", j_memcpy4, 2u << 20 },
-		{ "memset the owner map", j_memset, 0 },
-		{ "the flush (display)", j_flush, 0 },
+		{ "memcpy 2 MiB", j_memcpy, 2u << 20, false },
+		{ "memcpy 2 MiB, d+4", j_memcpy4, 2u << 20, false },
+		{ "memset the owner map", j_memset, 0, false },
+		{ "the flush (display)", j_flush, 0, false },
+		{ "the flush, by columns (old)", j_flush_cols, 0, true },
 	};
 	/* the screen's hold: the ARMv7 kernel's, kolibri.benchhold=S */
 	const char *hv = boot_arg("kolibri.benchhold");
@@ -251,6 +261,18 @@ void bench_run(void)
 		if (j->run == j_flush && (!plat->display_flush || plat == &platform_realview)) continue;
 #endif
 		if (j->run == j_memset) bytes = W * H;
+#ifdef __aarch64__
+		if (j->run == j_flush_cols) continue;
+#else
+		if (j->run == j_flush_cols && (!n9_flush_by_columns || plat != &platform_n950)) continue;
+#endif
+		if (j->once) {
+			u64 t = time_of(j, &blit_c, false);
+			say("bench: %s: %u us", j->name, us(t));
+			if (t) say(", %u MB/s", (u32)((u64)W * H * 4 * freq / t / 1000000));
+			say_end();
+			continue;
+		}
 		u64 tc = time_of(j, &blit_c, false);
 		u64 tn = time_of(j, &blit_neon, true);
 		u32 x10 = tn ? (u32)(tc * 10 / tn) : 0;

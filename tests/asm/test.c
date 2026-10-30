@@ -381,6 +381,17 @@ void *c_memcpy(void *d, const void *s, unsigned n);
 void *c_memset(void *d, int c, unsigned n);
 
 __attribute__((noinline)) void bench_c(void) { bench(&blit_c, c_memcpy, c_memset); }
+#ifdef __arm__
+/* the N950's flush before rot90 (n950old.c), the whole screen in both
+ * formats, for its count */
+void n950_flush_old(u32 *lcd, int lcd_bpp, int lcd_w, int lcd_h, const u32 *shadow, int y0, int y1);
+__attribute__((noinline)) void bench_old(void)
+{
+	static u32 lcd[N9_PW * N9_PH], sh[N9_SW * N9_SH];
+	n950_flush_old(lcd, 32, N9_PW, N9_PH, sh, 0, N9_SH);
+	n950_flush_old(lcd, 16, N9_PW, N9_PH, sh, 0, N9_SH);
+}
+#endif
 __attribute__((noinline)) void bench_neon(void) { bench(&blit_neon, k_memcpy, k_memset); }
 
 int main(int argc, char **argv)
@@ -389,6 +400,9 @@ int main(int argc, char **argv)
 	neon_free = 1;
 #endif
 	if (argc > 1 && !strcmp(argv[1], "bench")) {
+#ifdef __arm__
+		bench_old();
+#endif
 		bench_c();
 		bench_neon();
 		printf("bench: done\n");

@@ -53,20 +53,21 @@ QEMU32 := qemu-arm -cpu cortex-a8
 test32: $(B)/test32
 	$(QEMU32) $(B)/test32
 
-$(B)/test32: $(SRC) $(ASM32) $(TOP)/kernel/blit.c $(TOP)/kernel/include/blit.h cstring.c Makefile
+$(B)/test32: $(SRC) $(ASM32) $(TOP)/kernel/blit.c $(TOP)/kernel/include/blit.h cstring.c n950old.c Makefile
 	@mkdir -p $(B)
 	$(KCC32) -c $(TOP)/kernel/blit.c -o $(B)/blit_c32.o
 	$(KCC32) -c cstring.c -o $(B)/cstring32.o
+	$(KCC32) -c n950old.c -o $(B)/n950old32.o
 	arm-none-eabi-gcc -march=armv7-a -marm -c $(TOP)/kernel/arch/armv7/blit.S -o $(B)/blit32.o
 	arm-none-eabi-gcc -march=armv7-a -marm -c $(RENAME) $(TOP)/kernel/arch/armv7/string.S -o $(B)/string32.o
 	$(CC32) -O2 -g -Wall -Wno-unused-parameter -Wno-sign-compare -DBLIT_HOST -I$(TOP)/kernel/include -static \
-		$(SRC) $(B)/blit_c32.o $(B)/cstring32.o $(B)/blit32.o $(B)/string32.o -o $@
+		$(SRC) $(B)/blit_c32.o $(B)/cstring32.o $(B)/n950old32.o $(B)/blit32.o $(B)/string32.o -o $@
 
 bench32: $(B)/test32
 	$(MAKE) -C $(TOP)/tools/qemu-prof
 	$(QEMU32) -plugin $(TOP)/build/qemu-prof/prof.so,out=$(B)/bench32.prof $(B)/test32 bench
 	python3 $(TOP)/tools/qemu-prof/report.py $(B)/bench32.prof $(B)/test32 0 60 | \
-		grep -E "_c |_neon |k_mem|c_mem|^instructions"
+		grep -E "_c |_neon |k_mem|c_mem|_old|^instructions"
 
 .PHONY: test test64 test32 bench bench64 bench32
 
