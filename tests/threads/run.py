@@ -52,7 +52,7 @@ def run(platform, what, *extra):
             print('     ' + line)
         n += 'threadtest: ok' in line
     ok = 'threadtest: done 0 failed' in log
-    print(('ok   ' if ok else 'FAIL ') + f'threadtest on {what} ({n} checks)')
+    print(('ok   ' if ok else 'FAIL ') + f'threadtest on {what} ({n} checks){" (DLL=0)" if extra else ""}')
     if not ok:
         failed.append(what)
 
@@ -61,6 +61,6 @@ kernels = sys.argv[1:] or ['realview', 'arm64']
 for k in kernels:
     run(k, k)
 if 'realview' in kernels:
-    run('realview', 'realview, DLL=0', 'DLL=0')
+    run('realview', 'realview-static', 'DLL=0')
     make('realview')      # back to the libraries loaded
 sys.exit(1 if failed else 0)
