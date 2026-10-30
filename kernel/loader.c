@@ -50,15 +50,23 @@ int load_program(const char *path, const char *params, struct task **out)
 	if (h->entry >= size || h->stack > size) return -31;
 	struct task *t = task_alloc();
 	if (!t) return -30;                        /* no slot */
-	addr_t pa = mm_alloc_mb_aligned(size >> 20, USER_ALIGN_MB);
-	if (!pa) return -30;                       /* no memory */
+	struct proc *p = proc_alloc();
+	addr_t pa = p ? mm_alloc_mb_aligned(size >> 20, USER_ALIGN_MB) : 0;
+	if (!pa) {                                 /* no memory */
+		t->state = T_FREE;
+		return -30;
+	}
 	memset((void *)pa, 0, size);
 	if (data) memcpy((void *)pa, f->data, f->size);
 	else kfs_read(node, (void *)pa, f->size, 0);
-	t->mem_pa = pa;
-	t->mem_size = size;
-	t->img_end = h->img_end;
-	t->l1 = mmu_new_user_table();
+	/* the process, its first thread */
+	p->threads = 1;
+	p->pid = t->pid;
+	p->mem_pa = t->mem_pa = pa;
+	p->mem_size = t->mem_size = size;
+	p->img_end = h->img_end;
+	p->l1 = t->l1 = mmu_new_user_table();
+	t->proc = p;
 	mmu_map_user(t->l1, 0, pa, size);
 	cache_sync_code(pa, f->size);
 	if (h->params && params && h->params < size - 256)
@@ -74,8 +82,8 @@ int load_program(const char *path, const char *params, struct task **out)
 	t->tf.pc = h->entry;
 	t->tf.usr_sp = h->stack ? h->stack : size;
 	t->tf.cpsr = PSR_USR | PSR_F;              /* ARM state, interrupts on */
-	t->heap_start = t->heap_brk = ALIGN_UP(h->img_end, 4096);
-	t->heap_end = (t->tf.usr_sp > 65536 ? t->tf.usr_sp - 65536 : t->tf.usr_sp) & ~15u;
+	p->heap_start = p->heap_brk = ALIGN_UP(h->img_end, 4096);
+	p->heap_end = (t->tf.usr_sp > 65536 ? t->tf.usr_sp - 65536 : t->tf.usr_sp) & ~15u;
 	t->events = 1u << (EV_REDRAW - 1);         /* the first event, as in KolibriOS */
 	t->state = T_READY;
 	kprintf("started %s: pid %u, slot %d, %u KiB at %p\n", t->name, t->pid, t->slot, size >> 10, pa);

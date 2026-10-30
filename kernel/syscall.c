@@ -185,6 +185,7 @@ static void thread_info(struct task *t, u32 *r)
 	put32(b + 66, w->h - sh - fw - 1);
 	b[70] = (w->minimized ? 2 : 0) | (w->defined && wm_maximised(w) ? 1 : 0);
 	put32(b + 71, o->event_mask);
+	b[75] = o->kbd_mode;
 }
 
 static void wait_event(struct task *t, u32 *r, int timeout)
@@ -206,13 +207,15 @@ static void wait_event(struct task *t, u32 *r, int timeout)
 void kfs_syscall(struct task *t, u32 *r);
 void kfs_cur_dir(struct task *t, u32 *r);
 
+/* the process's heap, shared by its threads */
 static u32 heap_alloc(struct task *t, u32 size)
 {
+	struct proc *h = t->proc;
 	u32 n = ALIGN_UP(size + 8, 16);
-	if (size > t->heap_end || t->heap_brk + n > t->heap_end) return 0;
-	u32 p = t->heap_brk + 8;
-	*(u32 *)(t->mem_pa + t->heap_brk) = n;
-	t->heap_brk += n;
+	if (!h || size > h->heap_end || h->heap_brk + n > h->heap_end) return 0;
+	u32 p = h->heap_brk + 8;
+	*(u32 *)(h->mem_pa + h->heap_brk) = n;
+	h->heap_brk += n;
 	return p;
 }
 
@@ -225,7 +228,7 @@ static void heap(struct task *t, u32 *r)
 		sched_yield();
 		return;
 	case 11:                               /* init heap */
-		EAX = t->heap_end - t->heap_start;
+		EAX = t->proc ? t->proc->heap_end - t->proc->heap_start : 0;
 		return;
 	case 12:                               /* allocate: a bump allocator */
 		EAX = heap_alloc(t, ECX);
@@ -243,6 +246,19 @@ static void heap(struct task *t, u32 *r)
 		EAX = serial_control(t, ECX);
 		return;
 	}
+	case 18:                               /* a library (the encoding: paths are ASCII here) */
+	case 19:
+		sys_load_dll(t, r);
+		return;
+	case 21:                               /* a driver in PE format: none */
+		EAX = 0;
+		return;
+	case 22:                               /* named shared memory */
+		sys_shmem_open(t, r);
+		return;
+	case 23:
+		sys_shmem_close(t, r);
+		return;
 	default:
 		EAX = -1;
 		return;
@@ -610,6 +626,12 @@ void syscall(struct task *t)
 		return;
 	}
 #endif
+	case 51:                               /* threads */
+		sys_threads(t, r);
+		return;
+	case 60:                               /* IPC */
+		sys_ipc(t, r);
+		return;
 	case 72:                               /* a message to the active window */
 		EAX = EBX == 1 ? wm_message(ECX, EDX) : -1;
 		return;

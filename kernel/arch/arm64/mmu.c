@@ -28,6 +28,7 @@
 #define ATTR_DEV_GRE (3ul << 2)         /* Device-GRE: gathering, no speculation */
 #define AP_EL1 (0ul << 6)
 #define AP_EL0 (1ul << 6)
+#define AP_EL0_RO (3ul << 6)
 #define SH_INNER (3ul << 8)
 #define AF (1ul << 10)
 #define NG (1ul << 11)
@@ -173,6 +174,27 @@ void mmu_free_user_table(void *root)
 		free_roots[nfree++] = root;
 }
 
+/* what the TLB holds for the tree's ASID away now (the tree may be the
+ * running one: another thread of the process changed it) */
+static void asid_flush(const void *root)
+{
+	u64 asid = asid_of(root);
+	asm volatile("dsb ishst" ::: "memory");
+	if (asid_tree[asid] == root) asm volatile("tlbi aside1, %0" :: "r"(asid << 48) : "memory");
+	asm volatile("dsb ish\nisb" ::: "memory");
+}
+
+/* ro: EL0 and EL1 read only (AP 11); the kernel reaches the memory
+ * through its own mapping of the RAM */
+void mmu_map_user_ro(void *root, addr_t va, addr_t pa, u32 size, bool ro)
+{
+	u64 *l2 = (u64 *)(((u64 *)root)[0] & 0xfffffffff000ul);
+	for (u64 o = 0; o < size; o += BLOCK)
+		l2[((va + o) >> 21) & 511] = ((pa + o) & ~(BLOCK - 1)) | ATTR_NORMAL | SH_INNER |
+					     (ro ? AP_EL0_RO : AP_EL0) | PXN | AF | NG | D_BLOCK;
+	asid_flush(root);
+}
+
 void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
 {
 	u64 *l2 = (u64 *)(((u64 *)root)[0] & 0xfffffffff000ul);
@@ -180,6 +202,14 @@ void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
 		l2[((va + o) >> 21) & 511] = ((pa + o) & ~(BLOCK - 1)) | ATTR_NORMAL | SH_INNER |
 					     AP_EL0 | PXN | AF | NG | D_BLOCK;
 	mmu_asid_forget(root);
+}
+
+void mmu_unmap_user(void *root, addr_t va, u32 size)
+{
+	u64 *l2 = (u64 *)(((u64 *)root)[0] & 0xfffffffff000ul);
+	for (u64 o = 0; o < size; o += BLOCK)
+		l2[((va + o) >> 21) & 511] = 0;
+	asid_flush(root);
 }
 
 void mmu_switch(void *root)

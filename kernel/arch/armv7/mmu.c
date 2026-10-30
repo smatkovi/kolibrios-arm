@@ -9,6 +9,7 @@
 #define SECTION 0x2
 #define AP_KERNEL (1u << 10)            /* PL1 read/write, PL0 none */
 #define AP_USER (3u << 10)              /* both read/write */
+#define AP_USER_RO (2u << 10)           /* PL1 read/write, PL0 read only */
 #define XN (1u << 4)
 #define A_NORMAL ((1u << 12) | (1u << 3) | (1u << 2)) /* write-back, write-allocate */
 #define A_UNCACHED (1u << 12)                         /* normal, not cached */
@@ -119,11 +120,28 @@ void mmu_free_user_table(void *l1)
 		free_tables[nfree++] = l1;
 }
 
-void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
+void mmu_map_user_ro(void *root, addr_t va, addr_t pa, u32 size, bool ro)
 {
 	u32 *l1 = root;
 	for (u32 o = 0; o < size; o += 1u << 20)
-		l1[(va + o) >> 20] = ((pa + o) & 0xfff00000) | SECTION | AP_USER | attr_of(MAP_NORMAL);
+		l1[(va + o) >> 20] = ((pa + o) & 0xfff00000) | SECTION | (ro ? AP_USER_RO : AP_USER) |
+				     attr_of(MAP_NORMAL);
+	if (ro) tlb_flush();                   /* it may have been writable */
+}
+
+void mmu_map_user(void *root, addr_t va, addr_t pa, u32 size)
+{
+	mmu_map_user_ro(root, va, pa, size, false);
+}
+
+/* the program's mapping gone (shared memory closed, function 68.23):
+ * the TLB flushed, the tables may be the running ones */
+void mmu_unmap_user(void *root, addr_t va, u32 size)
+{
+	u32 *l1 = root;
+	for (u32 o = 0; o < size; o += 1u << 20)
+		l1[(va + o) >> 20] = 0;
+	tlb_flush();
 }
 
 void mmu_switch(void *l1)
