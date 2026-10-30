@@ -18,6 +18,8 @@
  * shell's panel leaves free; they do not move. */
 #include "gui.h"
 
+#define ABS(v) ((v) < 0 ? -(v) : (v))
+
 static int stack[MAX_TASKS];          /* slots, bottom to top */
 static int nstack;
 static int active_slot;               /* 0: the top normal window */
@@ -440,6 +442,17 @@ void wm_mouse(int x, int y, int buttons, int changed)
 	struct task *t = slot ? &tasks[slot] : NULL;
 
 	if ((changed & 1) && (buttons & 1)) {           /* left button down */
+		/* function 37.3's bit 24: a double click (within 0.5 s, nearby) */
+		static u32 last_click;
+		static int last_cx, last_cy;
+		if (last_click && ticks - last_click < 50 && ABS(mouse_x - last_cx) < 5 && ABS(mouse_y - last_cy) < 5) {
+			mouse_events |= 1 << 24;
+			last_click = 0;
+		} else {
+			last_click = ticks ? ticks : 1;
+			last_cx = mouse_x;
+			last_cy = mouse_y;
+		}
 		if (t) {
 			if (wm_active() != t && t->win.zpos != ZPOS_ALWAYS_TOP) wm_activate(t);
 			int bi = button_at(t, mouse_x, mouse_y);

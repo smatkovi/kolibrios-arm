@@ -70,6 +70,7 @@ struct task {
 	int btn_head, btn_tail;
 	struct window win;
 	u32 heap_start, heap_end, heap_brk; /* function 68 */
+	u8 kbd_mode;      /* function 66.1: 0 ASCII, 1 scan codes */
 	struct lx_thread *lx;   /* a Linux program's thread (AArch64), or NULL */
 };
 

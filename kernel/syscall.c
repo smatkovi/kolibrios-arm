@@ -342,6 +342,16 @@ static void file_system(struct task *t, u32 *r)
 	}
 }
 
+static u32 heap_alloc(struct task *t, u32 size)
+{
+	u32 n = ALIGN_UP(size + 8, 16);
+	if (size > t->heap_end || t->heap_brk + n > t->heap_end) return 0;
+	u32 p = t->heap_brk + 8;
+	*(u32 *)(t->mem_pa + t->heap_brk) = n;
+	t->heap_brk += n;
+	return p;
+}
+
 static void heap(struct task *t, u32 *r)
 {
 	switch (EBX) {
@@ -353,21 +363,120 @@ static void heap(struct task *t, u32 *r)
 	case 11:                               /* init heap */
 		EAX = t->heap_end - t->heap_start;
 		return;
-	case 12: {                             /* allocate: a bump allocator */
-		u32 n = ALIGN_UP(ECX + 8, 16);
-		if (t->heap_brk + n > t->heap_end) { EAX = 0; return; }
-		u32 p = t->heap_brk + 8;
-		*(u32 *)(t->mem_pa + t->heap_brk) = n;
-		t->heap_brk += n;
-		EAX = p;
+	case 12:                               /* allocate: a bump allocator */
+		EAX = heap_alloc(t, ECX);
 		return;
-	}
 	case 13:                               /* free: kept (not reused yet) */
 		EAX = 1;
 		return;
 	default:
 		EAX = -1;
 		return;
+	}
+}
+
+/* function 65: an image of 1, 2, 4, 8 (with a palette), 9 (gray), 15,
+ * 16, 24 or 32 bits a pixel, ebp (r6) bytes more after each row; drawn
+ * a row at a time through function 7's way */
+static void put_image_ext(struct task *t, u32 *r)
+{
+	static u8 row[3 * 4096];
+	int w = ECX >> 16, h = ECX & 0xffff, bpp = ESI;
+	s32 pad = r[6];
+	if (w <= 0 || h <= 0 || w > 4096) return;
+	u32 rowlen;
+	switch (bpp) {
+	case 1: case 2: case 4: rowlen = ((u32)w * bpp + 7) / 8; break;
+	case 8: case 9: rowlen = w; break;
+	case 15: case 16: rowlen = (u32)w * 2; break;
+	case 24: rowlen = (u32)w * 3; break;
+	case 32: rowlen = (u32)w * 4; break;
+	default: return;
+	}
+	s32 stride = (s32)rowlen + pad;
+	if (stride < (s32)rowlen) return;
+	const u8 *img = uptr(t, EBX, (u32)stride * (h - 1) + rowlen);
+	const u32 *pal = NULL;
+	if (bpp <= 8) {
+		pal = uptr(t, EDI, 4u << bpp);
+		if (!pal) return;
+	}
+	if (!img) return;
+	int ox, oy;
+	wm_origin(t, &ox, &oy);
+	int x = ox + (s16)(EDX >> 16), y = oy + (s16)(EDX & 0xffff);
+	for (int j = 0; j < h; j++) {
+		if (y + j < 0) continue;
+		if (y + j >= scr.h) break;
+		const u8 *s = img + (u32)stride * j;
+		u8 *d = row;
+		for (int i = 0; i < w; i++, d += 3) {
+			u32 c;
+			switch (bpp) {
+			case 1: c = pal[(s[i >> 3] >> (7 - (i & 7))) & 1]; break;
+			case 2: c = pal[(s[i >> 2] >> (6 - 2 * (i & 3))) & 3]; break;
+			case 4: c = pal[(s[i >> 1] >> (i & 1 ? 0 : 4)) & 15]; break;
+			case 8: c = pal[s[i]]; break;
+			case 9: c = s[i] * 0x010101u; break;
+			case 15: { u32 v = s[2 * i] | s[2 * i + 1] << 8;
+				c = ((v >> 10) & 31) * 255 / 31 << 16 | ((v >> 5) & 31) * 255 / 31 << 8 | (v & 31) * 255 / 31; break; }
+			case 16: { u32 v = s[2 * i] | s[2 * i + 1] << 8;
+				c = (v >> 11) * 255 / 31 << 16 | ((v >> 5) & 63) * 255 / 63 << 8 | (v & 31) * 255 / 31; break; }
+			case 24: c = s[3 * i] | s[3 * i + 1] << 8 | s[3 * i + 2] << 16; break;
+			default: c = s[4 * i] | s[4 * i + 1] << 8 | s[4 * i + 2] << 16; break;
+			}
+			d[0] = c;
+			d[1] = c >> 8;
+			d[2] = c >> 16;
+		}
+		gfx_image(x, y + j, w, 1, row, t->slot);
+	}
+}
+
+/* function 54: the clipboard, slots kept one after the other in a block
+ * of 1 MiB; each slot is what the program wrote (KolibriOS's format: a
+ * dword of the slot's size, its type, its encoding, the data). 54.1
+ * gives the program a copy in its heap (68.12's memory, freed by 68.13) */
+#define CLIP_SIZE (1u << 20)
+#define CLIP_SLOTS 64
+static u8 *clip;
+static u32 clip_len[CLIP_SLOTS], clip_used;
+static int clip_n;
+
+static u32 heap_alloc(struct task *t, u32 size);
+
+static void clipboard(struct task *t, u32 *r)
+{
+	switch (EBX) {
+	case 0: EAX = clip_n; return;
+	case 1: {
+		if (ECX >= (u32)clip_n) { EAX = 1; return; }
+		u32 off = 0;
+		for (u32 i = 0; i < ECX; i++) off += clip_len[i];
+		u32 p = heap_alloc(t, clip_len[ECX]);
+		u8 *d = p ? uptr(t, p, clip_len[ECX]) : NULL;
+		if (!d) { EAX = 1; return; }
+		memcpy(d, clip + off, clip_len[ECX]);
+		EAX = p;
+		return;
+	}
+	case 2: {
+		const u8 *s = ECX ? uptr(t, EDX, ECX) : NULL;
+		if (!clip) clip = (u8 *)mm_alloc_mb(1);
+		if (!s || !clip || clip_n == CLIP_SLOTS || clip_used + ECX > CLIP_SIZE) { EAX = 1; return; }
+		memcpy(clip + clip_used, s, ECX);
+		clip_used += ECX;
+		clip_len[clip_n++] = ECX;
+		EAX = 0;
+		return;
+	}
+	case 3:
+		if (!clip_n) { EAX = 1; return; }
+		clip_used -= clip_len[--clip_n];
+		EAX = 0;
+		return;
+	case 4: EAX = 0; return;
+	default: EAX = -1; return;
 	}
 }
 
@@ -500,6 +609,13 @@ void syscall(struct task *t)
 		return;
 	case 26:
 		if (EBX == 9) EAX = ticks;
+		else if (EBX == 2 && ECX == 9) EAX = 1;            /* the layout's language: en */
+		else if (EBX == 2) {                               /* the keyboard layout */
+			extern void input_layout(int which, u8 *out);
+			u8 *d = uptr(t, EDX, 128);
+			if (d) input_layout(ECX, d);
+			else EAX = -1;
+		} else if (EBX == 5) EAX = 1;                      /* the system's language: en */
 		else EAX = -1;
 		return;
 	case 29: {
@@ -515,7 +631,13 @@ void syscall(struct task *t)
 			EAX = (u32)(mouse_x - t->win.x) << 16 | (u16)(mouse_y - t->win.y); return;
 		case 2: EAX = mouse_buttons; return;
 		case 3: { extern int wm_mouse_events(void); EAX = mouse_buttons | wm_mouse_events(); return; }
-		case 7: EAX = 0; return;          /* scroll */
+		case 7: {                         /* the wheel, for the active window, read once */
+			extern int input_wheel;
+			if (wm_active() != t) { EAX = 0; return; }
+			EAX = (u16)(s16)MAX(-32768, MIN(input_wheel, 32767));
+			input_wheel = 0;
+			return;
+		}
 		default: EAX = 0; return;
 		}
 	case 38:
@@ -564,8 +686,21 @@ void syscall(struct task *t)
 			EBX = c >= 0;
 		}
 		return;
-	case 66:
-		EAX = 0;                           /* keyboard mode: ASCII only */
+	case 66: {                             /* the keyboard */
+		extern u32 input_modifiers(void);
+		switch (EBX) {
+		case 1: t->kbd_mode = ECX == 1; return;
+		case 2: EAX = t->kbd_mode; return;
+		case 3: EAX = input_modifiers(); return;
+		case 4: case 5: EAX = 0; return;   /* hotkeys: accepted, never sent */
+		default: return;
+		}
+	}
+	case 54:
+		clipboard(t, r);
+		return;
+	case 65:
+		put_image_ext(t, r);
 		return;
 	case 67:
 		wm_move(t, EBX, ECX, EDX, ESI);

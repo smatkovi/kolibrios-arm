@@ -100,6 +100,9 @@ static void event(struct vin *d, const struct event *e)
 		}
 		u8 sc = set1_of(e->code);
 		if (sc && e->value <= 2) input_key(sc, e->value == 0);   /* 2: repeated */
+	} else if (e->type == 2 && e->code == 8) {      /* EV_REL, REL_WHEEL: + away from the user */
+		extern void input_mouse_wheel(int dz);
+		input_mouse_wheel(-(int)e->value);
 	} else if (e->type == EV_ABS && e->code < 2) {
 		u32 max = d->max[e->code] ? d->max[e->code] : 0x7fff;
 		int v = (int)((u64)e->value * (u32)(e->code ? scr.h - 1 : scr.w - 1) / max);

@@ -24,8 +24,36 @@ static const char key_lower[0x3b] =
 static const char key_upper[0x3b] =
 	"\0\x1b" "!@#$%^&*()_+\b\tQWERTYUIOP{}\r\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
 
-static bool shift_l, shift_r, ctrl, alt, caps;
+static bool shift_l, shift_r, ctrl_l, ctrl_r, alt_l, alt_r, caps, num, scroll;
 static bool e0, release;
+
+/* KolibriOS's keyboard layouts (function 26.2), US: its kernel's keymap,
+ * keymap_shift and keymap_alt (kernel/trunk/data32.inc), their first 128
+ * bytes, by set 1 scan code */
+#define K_ROWS(a, b, c, d) a b c d "ABCDEFGHIJKLMNOPQR"
+static const char layout_normal[128] __attribute__((nonstring)) =
+	K_ROWS("6\x1b" "1234567890-=\b\t" "qwertyuiop[]\r" "~asdfghjkl;'`\0\\zxcvbnm,./\0" "45 ",
+	       "@234567890123\xb4\xb2\xb8" "6\xb0" "7", "\xb3" "8\xb5\xb1\xb7\xb9\xb6", "AB<D\xff" "FGHIJKLMNOPQRSTUVWXYZ");
+static const char layout_shift[128] __attribute__((nonstring)) =
+	K_ROWS("6\x1b" "!@#$%^&*()_+\b\t" "QWERTYUIOP{}\r" "~ASDFGHJKL:\"~\0|ZXCVBNM<>?\0" "45 ",
+	       "@234567890123\xb4\xb2\xb8" "6\xb0" "7", "\xb3" "8\xb5\xb1\xb7\xb9\xb6", "AB>D\xff" "FGHIJKLMNOPQRSTUVWXYZ");
+static const char layout_alt[128] __attribute__((nonstring)) =
+	K_ROWS(" \x1b" " @ $  {[]}\\ \b\t" "            \r" "             \0           \0" "4\0 ",
+	       "             \xb4\xb2\xb8" "6\xb0" "7", "\xb3" "8\xb5\xb1\xb7\xb9\xb6", "ABCD\xff" "FGHIJKLMNOPQRSTUVWXYZ");
+static const char *const layouts[3] = { layout_normal, layout_shift, layout_alt };
+
+/* function 26.2: layout 1 normal, 2 with Shift, 3 with Alt */
+void input_layout(int which, u8 *out)
+{
+	memcpy(out, layouts[which >= 1 && which <= 3 ? which - 1 : 0], 128);
+}
+
+/* function 66.3: the control keys */
+u32 input_modifiers(void)
+{
+	return shift_l | shift_r << 1 | ctrl_l << 2 | ctrl_r << 3 | alt_l << 4 | alt_r << 5 |
+	       caps << 6 | num << 7 | scroll << 8;
+}
 
 /* KolibriOS's codes for the keys without ASCII (its default keymap) */
 static u8 special(u8 sc)
@@ -45,26 +73,52 @@ static u8 special(u8 sc)
 	return 0;
 }
 
-void input_key(u8 sc, bool released)
+/* a key with its E0 prefix (the gray keys of a PC keyboard) pressed or
+ * released. A program in scan code mode (function 66.1) gets every
+ * byte: 0xE0, then the code, | 0x80 when released, the control keys
+ * too; in ASCII mode the presses of the other keys, with their ASCII
+ * code (or KolibriOS's code for the arrows and such) and the scan code */
+static void key(u8 sc, bool ex, bool released)
 {
 	switch (sc) {
-	case 0x2a: shift_l = !released; return;
-	case 0x36: shift_r = !released; return;
-	case 0x1d: ctrl = !released; return;
-	case 0x38: alt = !released; return;
-	case 0x3a: if (!released) caps = !caps; return;
+	case 0x2a: shift_l = !released; break;
+	case 0x36: shift_r = !released; break;
+	case 0x1d: if (ex) ctrl_r = !released; else ctrl_l = !released; break;
+	case 0x38: if (ex) alt_r = !released; else alt_l = !released; break;
+	case 0x3a: if (!released) caps = !caps; break;
+	case 0x45: if (!released) num = !num; break;
+	case 0x46: if (!released) scroll = !scroll; break;
+	}
+	struct task *a = wm_active();
+	if (a && a->kbd_mode == 1) {
+		if (ex) wm_key(0xe0 << 8);
+		wm_key((u32)(sc | (released ? 0x80 : 0)) << 8);
+		return;
 	}
 	if (released) return;
+	switch (sc) {
+	case 0x2a: case 0x36: case 0x1d: case 0x38: case 0x3a: case 0x45: case 0x46:
+		return;
+	}
 	u8 ascii = special(sc);
 	if (!ascii && sc < sizeof(key_lower)) {
 		bool sh = shift_l || shift_r;
 		char c = sh ? key_upper[sc] : key_lower[sc];
 		if (caps && c >= 'a' && c <= 'z') c -= 32;
 		else if (caps && c >= 'A' && c <= 'Z' && sh) c += 32;
-		if (ctrl && ((c | 32) >= 'a' && (c | 32) <= 'z')) c = (c | 32) - 'a' + 1;
+		if ((ctrl_l || ctrl_r) && ((c | 32) >= 'a' && (c | 32) <= 'z')) c = (c | 32) - 'a' + 1;
 		ascii = c;
 	}
 	wm_key((u32)sc << 16 | (u32)ascii << 8);
+}
+
+/* a key from a keyboard without E0 prefixes (the phones', virtio): the
+ * cursor block as the gray keys, since these have no numeric keypad */
+void input_key(u8 sc, bool released)
+{
+	bool ex = sc == 0x47 || sc == 0x48 || sc == 0x49 || sc == 0x4b || sc == 0x4d ||
+		  sc == 0x4f || sc == 0x50 || sc == 0x51 || sc == 0x52 || sc == 0x53;
+	key(sc, ex, released);
 }
 
 void input_key_set2(u8 b)
@@ -74,22 +128,34 @@ void input_key_set2(u8 b)
 	if (b == 0xe1 || b == 0xfa || b == 0xaa) return;
 	u8 sc = b < 128 ? set2_to_set1[b] : 0xff;
 	if (b == 0x83) sc = 0x41;            /* F7 */
-	bool rel = release;
+	bool rel = release, ex = e0;
 	e0 = release = false;
 	if (sc == 0xff) return;
-	input_key(sc, rel);
+	if (ex && sc == 0x2a) return;        /* the fake shifts around the gray keys */
+	if (ex && sc == 0x36) return;
+	key(sc, ex, rel);
 }
 
 static int mx, my, mb;
 
+/* the wheel's turns since function 37.7 read them (+: towards the user) */
+int input_wheel;
+
 void input_mouse_rel(int dx, int dy, int buttons, int wheel)
 {
-	(void)wheel;
+	input_wheel += wheel;
 	mx = MAX(0, MIN(mx + dx, scr.w - 1));
 	my = MAX(0, MIN(my + dy, scr.h - 1));
 	int changed = buttons ^ mb;
 	mb = buttons;
 	wm_mouse(mx, my, buttons, changed);
+}
+
+/* a turn of the wheel alone (+: towards the user) */
+void input_mouse_wheel(int dz)
+{
+	input_wheel += dz;
+	wm_mouse(mx, my, mb, 0);
 }
 
 void input_mouse_abs(int x, int y, int buttons)
