@@ -117,6 +117,7 @@ static int find_sms(const char *text_start, struct kos_sms *s)
 static u32 rpm_ram[0x7000 / 4];
 static u32 rpm_got_type, rpm_got_id, rpm_got_uv, rpm_got_swen, rpm_got_lcid, rpm_requests;
 static u32 rpm_got_set, rpm_got_key, rpm_got_value, rpm_sleep_reqs, rpm_refuse_type;
+static u32 rpm_bw_mas, rpm_bw_slv;     /* the interconnect's bandwidth at 0 in the sleep set */
 #define RAM(o) rpm_ram[(o) / 4]
 #define TXF 0x100
 #define RXF 0x600
@@ -137,6 +138,10 @@ static void fake_rpm(void)
 		rpm_got_key = m[7];
 		rpm_got_value = m[9];
 		if (m[3] == RPM_SLEEP) rpm_sleep_reqs++;
+		if (m[3] == RPM_SLEEP && m[7] == 0x00007762u && m[8] == 4 && m[9] == 0) {
+			if (m[4] == 0x73616d62u) rpm_bw_mas++;
+			if (m[4] == 0x766c7362u) rpm_bw_slv++;
+		}
 		for (u32 i = 0; i < m[6] / 12; i++) {
 			if (m[7 + 3 * i] == RPM_KEY_UV) rpm_got_uv = m[9 + 3 * i];
 			if (m[7 + 3 * i] == RPM_KEY_SWEN) rpm_got_swen = m[9 + 3 * i];
@@ -191,16 +196,19 @@ static void test_rpm(void)
 	CHECK(rpm_ldo(99, 0, false) == -2, "RPM: a refusal");
 	CHECK(rpm_got_set == RPM_ACTIVE, "RPM: an LDO in the active set");
 
-	/* the sleep set: 12 resources at 0 (14 with the RF buffers), "mmxi"
-	 * (mmnrt, mmrt) refused here */
+	/* the sleep set: 27 resources at 0 (29 with the RF buffers): 12
+	 * clocks and levels, the bandwidth of 15 interconnect nodes ("bmas"
+	 * and "bslv", key "bw", icc-rpm.c); "mmxi" (mmnrt, mmrt) refused here */
 	rpm_refuse_type = 0x69786d6du;
-	CHECK(rpm_sleep_votes(false) == 10, "RPM: the sleep set without RF: 10 of 12 taken");
-	CHECK(rpm_sleep_reqs == 12 && rpm_got_set == RPM_SLEEP && rpm_got_value == 0,
-	      "RPM: 12 sleep-set requests (%u), at 0", rpm_sleep_reqs);
-	CHECK(rpm_got_type == 0x00707571u && rpm_got_key == 0x007a484bu, "RPM: the last: qup's rate (%x %x)",
-	      rpm_got_type, rpm_got_key);
+	CHECK(rpm_sleep_votes(false) == 25, "RPM: the sleep set without RF: 25 of 27 taken");
+	CHECK(rpm_sleep_reqs == 27 && rpm_got_set == RPM_SLEEP && rpm_got_value == 0,
+	      "RPM: 27 sleep-set requests (%u), at 0", rpm_sleep_reqs);
+	CHECK(rpm_bw_mas == 9 && rpm_bw_slv == 6, "RPM: 9 masters' and 6 slaves' bandwidth at 0 (%u %u)",
+	      rpm_bw_mas, rpm_bw_slv);
+	CHECK(rpm_got_type == 0x766c7362u && rpm_got_id == 30 && rpm_got_key == 0x00007762u,
+	      "RPM: the last: xs_qdss_stm's bandwidth (%x %u %x)", rpm_got_type, rpm_got_id, rpm_got_key);
 	rpm_refuse_type = 0;
-	CHECK(rpm_sleep_votes(true) == 14, "RPM: the sleep set with RF: 14");
+	CHECK(rpm_sleep_votes(true) == 29, "RPM: the sleep set with RF: 29");
 
 	/* the vMPM (irq-qcom-mpm.c's layout, 96 pins: 3 words a register) */
 	u32 vmpm[18];

@@ -15,10 +15,20 @@
  *   the bus clocks   "clk2" 0 bimc, "clk1" 1 cnoc, "clk1" 2 snoc,
  *                    "mmxi" 0 mmnrt, 1 mmrt, "qup" 0 "KHz"
  *                                          clk-smd-rpm.c sm_qnoc_icc_clks
+ *   the interconnect "bmas" 0 3 21 23 33 35 59 166 170,
+ *   bandwidth        "bslv" 0 2 24 25 26 30 "bw"
+ *                                          icc-rpm.c qcom_icc_rpm_set,
+ *                                          smd-rpm.c, sm6115.c's nodes
  *
- * Not voted: the interconnect's per-node bandwidth (icc-rpm.c's master
- * and slave requests), the regulators (Linux votes them in the active
- * set only, which the RPM keeps in sleep). */
+ * The interconnect's nodes are voted by icc-rpm per node with an RPM id
+ * (the master's or the slave's), bytes a second, in both sets; untagged
+ * requests (most of Linux's consumers': the display, UFS, the QUPs)
+ * count in the sleep set too, and kexec leaves them as they were. In
+ * the sleep set they go to 0 as well (the CPUs, the display, the
+ * storage do nothing while the SoC sleeps); the active set stays (the
+ * scan-out and UFS run on it while the phone is awake). Not voted: the
+ * regulators (Linux votes them in the active set only, which the RPM
+ * keeps in sleep). */
 #include "rpmsleep.h"
 
 #define T_MISC 0x306b6c63u      /* clk0 */
@@ -29,10 +39,13 @@
 #define T_QUP 0x00707571u       /* qup */
 #define T_RWCX 0x78637772u      /* rwcx */
 #define T_RWMX 0x786d7772u      /* rwmx */
+#define T_BMAS 0x73616d62u      /* bmas: RPM_BUS_MASTER_REQ */
+#define T_BSLV 0x766c7362u      /* bslv: RPM_BUS_SLAVE_REQ */
 #define K_ENABLE 0x62616e45u    /* Enab */
 #define K_SWEN 0x6e657773u      /* swen */
 #define K_RATE 0x007a484bu      /* KHz */
 #define K_LEVEL 0x6c766c76u     /* vlvl */
+#define K_BW 0x00007762u        /* bw: RPM_KEY_BW */
 
 static const struct { u32 type, id, key; const char *name; bool rf; } votes[] = {
 	{ T_MISC, 0, K_ENABLE, "XO" },
@@ -49,14 +62,33 @@ static const struct { u32 type, id, key; const char *name; bool rf; } votes[] = 
 	{ T_MMAXI, 0, K_RATE, "mmnrt" },
 	{ T_MMAXI, 1, K_RATE, "mmrt" },
 	{ T_QUP, 0, K_RATE, "qup" },
+	/* sm6115.c's nodes with an RPM id: masters apps_proc, mas_snoc_bimc,
+	 * mas_bimc_snoc, crypto_c0, xm_sdc1, xm_sdc2, qxm_ipa, qhm_qup0,
+	 * qup0_core_master; slaves ebi, slv_bimc_snoc, slv_snoc_bimc,
+	 * slv_snoc_cnoc, qxs_imem, xs_qdss_stm */
+	{ T_BMAS, 0, K_BW, "apps" },
+	{ T_BMAS, 3, K_BW, "snoc-bimc" },
+	{ T_BMAS, 21, K_BW, "bimc-snoc" },
+	{ T_BMAS, 23, K_BW, "crypto" },
+	{ T_BMAS, 33, K_BW, "sdc1" },
+	{ T_BMAS, 35, K_BW, "sdc2" },
+	{ T_BMAS, 59, K_BW, "ipa" },
+	{ T_BMAS, 166, K_BW, "qup0" },
+	{ T_BMAS, 170, K_BW, "qup0-core" },
+	{ T_BSLV, 0, K_BW, "ebi" },
+	{ T_BSLV, 2, K_BW, "bimc-snoc" },
+	{ T_BSLV, 24, K_BW, "snoc-bimc" },
+	{ T_BSLV, 25, K_BW, "snoc-cnoc" },
+	{ T_BSLV, 26, K_BW, "imem" },
+	{ T_BSLV, 30, K_BW, "qdss-stm" },
 };
 
 int rpm_sleep_votes(bool with_rf)
 {
 	if (!rpm_ready()) return 0;
 	int ok = 0, n = 0;
-	char refused[96];
-	u32 rl = 0;
+	char refused[192];
+	u32 rl = 0, bw = 0;
 	refused[0] = 0;
 	for (u32 i = 0; i < sizeof(votes) / sizeof(votes[0]); i++) {
 		if (votes[i].rf && !with_rf) continue;
@@ -64,6 +96,7 @@ int rpm_sleep_votes(bool with_rf)
 		n++;
 		if (rpm_write_set(RPM_SLEEP, votes[i].type, votes[i].id, &votes[i].key, &zero, 1) == 0) {
 			ok++;
+			if (votes[i].key == K_BW) bw++;
 			continue;
 		}
 		for (const char *c = votes[i].name; *c && rl + 2 < sizeof(refused); c++) refused[rl++] = *c;
@@ -71,7 +104,8 @@ int rpm_sleep_votes(bool with_rf)
 		refused[rl] = 0;
 	}
 	if (rl) refused[rl - 1] = 0;
-	mlog("rpm: the sleep set: %d of %d resources at 0%s%s\n", ok, n, rl ? "; not: " : "", refused);
+	mlog("rpm: the sleep set: %d of %d resources at 0 (%u interconnect nodes)%s%s\n", ok, n, bw,
+	     rl ? "; not: " : "", refused);
 	return ok;
 }
 
