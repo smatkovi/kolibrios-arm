@@ -17,6 +17,7 @@ timer, through the MPM). The steps:
 | 4 | the display off (DCS, the scan-out stopped, the DSI lanes in ULPS with `kolibri.dsiulps`), the programs' timeouts on whole seconds, the battery's voltage and current in the power test's lines | `kernel/platform/pro1x.c`, `dsi_ulps.c`, `kernel/modem/pmic.c`, `kernel/sched.c` | `make -C tests/power host` (the SPMI arbiter's channels, the gauge, the ADC against an arbiter in RAM; the DSI lanes' ULPS against a model of them); QEMU (`kolibri.standby`; the ULPS run with the controller's registers in RAM) |
 | 5 | the standby by the power key, ended by the power key or a key: the PMIC's interrupts through the SPMI arbiter, the MPM's wake pins with their types, the MPM's wake interrupt | `kernel/platform/pro1x.c`, `kernel/modem/pmic.c`, `rpmsleep.c`, `kernel/arch/arm64/psci.c` | `make -C tests/power host` (Linux's interrupts quieted, the PON's set up, a press latched and taken, against the arbiter in RAM), `make -C tests/modem` (the wake set in the vMPM), QEMU (`kolibri.keytest`: the standby ended by a played press) |
 | 6 | the wake-ups that were left: the shells, the messenger and the phone wait for events (EV_SYSTEM, function 102) instead of polling; lwIP's timers on demand; the modem's network poll once a minute in the standby; the storage idle (the eMMC asleep, UFS's Auto-Hibernate) | `kernel/sched.c`, `kernel/wm.c`, `apps/hildon`, `apps/messenger`, `kernel/net/timers.c`, `kernel/modem/kmodem.c`, `kernel/storage/mmc.c`, `ufs.c` | `make -C tests/power` (QEMU: idle, the standby, the network, an idle TCP connection, the messenger), `make -C tests/net` (lwIP's timers against its own), `make -C tests/storage host ufs mmc`, `make -C tests/apps` |
+| 7 | the programs' wake-ups: console.obj's key wait on a futex (function 77), the clock, the process list and the debug board without timeouts while the display is off, the keys a program left untaken (a busy loop), the menu by EV_SYSTEM, the screen flushed when the CPU idles; the display off after 2 minutes without input (Pro1X), an incoming call ends the standby; no LED, no Bluetooth; the Wi-Fi firmware's ARP offload and keepalive, then no idle look in the standby | `kernel/proc.c`, `kernel/sched.c`, `lib/console`, `apps/clock`, `cpu`, `board`, `menu`, `taskbar`, `kernel/arch/arm64/timer.c`, `kernel/platform/pro1x.c`, `kernel/input.c`, `kernel/modem/kmodem.c`, `kernel/modem/wifi.c`, `wmi.c`, `kernel/net/wifi_dev.c`, `kernel/platform/n950.c`, `tools/pro1x-kexec.sh` | `make -C tests/wifi` (the offloads against the simulated WCN3990), `make -C tests/power` (QEMU, now also `qemu-apps`: the shell, the clock, cpu and board in the standby, the container mounted; the display's timeout and the call), `make -C tests/threads` (the futexes on both kernels), `make -C tests/apps` |
 
 ## Measuring: `kolibri.powertest=N`
 
@@ -533,6 +534,157 @@ minute, a backend's own timers (the fake one's message every 10 s, a
 keepalive every 15 s). On the phone the Wi-Fi's look every second when
 idle (polled, docs/pro1x-network.md) comes on top while it is up.
 
+## Stage 7: the programs' wake-ups, the display's timeout (2026-10-31)
+
+An audit after stage 6 with more scenarios than its table had: the
+display on and off, the network up and down, the messenger, the storage's
+container mounted (a virtio disk like the Pro1X's, `tests/storage/mkdisk.py`,
+`kolibri.home=rw`), and programs left open: the shell at its prompt, the
+clock, the process list (`cpu`), the debug board (`board`), kfar. QEMU's
+virt, `make -C tests/power` (the new runs: `qemu-apps`), wake-ups a
+second in the 10 s lines after the first; before: master at d034fef:
+
+| | before | after | what it was |
+| --- | --- | --- | --- |
+| the shell at its prompt (`shell`) | 9.3-9.5 | @SHELL@ | console.obj's program thread looked for a key every 0.1 s (50 times a second in the first second) |
+| ... the display off (`shell-standby`) | 0.9-1.0 | @SHELLSB@ | the same, on whole seconds |
+| the clock in front, the display on (`clock`) | 2.4-2.5 | @CLOCK@ | its second, and a tick for the flush after each drawing |
+| the clock, the display off (`clock-standby`) | 1.0 | @CLOCKSB@ | its second (on whole seconds) and the flush's tick |
+| the process list, the display off (`cpu-standby`) | 0.4-0.5 | @CPUSB@ | its second |
+| the debug board, the display off (`board-standby`) | 1.1 | @BOARDSB@ | its 250 ms |
+| the container mounted read-write (`storage`) | 0.4-0.5 | @STORAGE@ | nothing of the storage's (stage 6: no periodic work) |
+| kfar open | 0.4-0.5 | | nothing of kfar's: it waits for events (its idle look only during a file search) |
+| a key typed while the clock (cpu, board) is in front | idle 0.0 % | idle 99.8 % | the program never took its keys: the key stayed pending and returned its wait at once, again and again, until it ended |
+
+The instructions QEMU counted in 20 s (15 s to 35 s after the start,
+`tools/qemu-prof`'s plugin, without the power test; all of the system,
+the kernel's share nearly all of it), and the idle loop's entries:
+
+| | before | after |
+| --- | --- | --- |
+| idle, the display on | 46,756 (8 wake-ups) | 46,844 (8) |
+| idle, `kolibri.standby` | 0 | 0 |
+| the shell at its prompt | 510,348 (188) | 47,524 (8) |
+| the clock in front | 17.1 M (48) | 17.1 M (28) |
+| the messenger on the fake backend | 2.83 M (13) | 2.82 M (11) |
+
+**console.obj's key wait** (`lib/console`, function 77): the program's
+thread of a console window (the shell at its prompt, a program asking
+`con_getch`) looked for a key 50 times a second, after a second without
+one 10 times a second, as long as it waited (console.obj itself looks
+every 20 ms, `5 2`). KolibriOS's futexes (77.0-77.3, docs/threads.md) let
+it wait: `con_take` waits on a counter of the keys put in and of the
+window's end, the window's thread wakes it after each; the check and the
+wait are one system call, so no wake-up is lost. The terminal's own loop
+(10 ms, below) is unchanged.
+
+**The display off: no timeouts for what nobody sees.** The clock, the
+process list and the debug board wait for EV_SYSTEM while 102.0 says the
+display is off (as `@hildon` since stage 6), and draw again when it is on;
+the board's lines wait in the kernel's buffer (its last 4 KiB). The
+classic look's menu waited 200 ms at a time to see whether another window
+had become active; EV_SYSTEM says so (the window manager's activation).
+
+**Keys left pending**: the clock, the process list, the debug board and
+`@taskbar` never took their keys (function 2). A key typed while one of
+them was the active window stayed in its buffer, and a key in the buffer
+is a pending event (as in KolibriOS): their wait returned at once, again
+and again, the CPU never idle until the program ended (`idle 0.0 %` in
+the power lines after a `sendkey` through QEMU's monitor). They take them
+now.
+
+**The flush at idle** (`arch_idle`, AArch64): what the programs drew went
+to the screen at the next tick, so each drawing kept the 100 Hz tick for
+one more wake-up (`tick` in the power lines). The idle loop flushes
+first: every program waits then, nothing draws before the next wake-up;
+a flush the platform refuses keeps the tick as before.
+
+**Looked at, nothing to change:**
+
+- The random numbers' reseed (docs/rng.md) is no timer: `maybe_reseed`
+  runs at the first request a minute after the last one; an idle system
+  is not woken for it, the input's events are mixed in as they come.
+- kfar and t_edit wait for events (`kos_wait_event`); kfar's idle look
+  (`idle_interval`) runs only during a file search.
+- The storage, with the container mounted read-write: no periodic work,
+  no write-back (the block cache is never dirty), the eMMC's sleep one
+  wake-up a second after the last request (stage 6).
+- Threads and IPC: a message is event 7, a thread waits for it; the
+  futexes are new (above).
+- The Linux personality's waits: a Linux thread in a blocking system call
+  is called again (`lx_retry`) at every way through the scheduler, so a
+  thread in `epoll_pwait` scans its descriptors at every trap; it adds no
+  wake-up (only a deadline of its own wakes it) and, in the messenger's
+  20 s, `wake_waiters`, `lx_file_syscall`, `sys_epoll_wait` and
+  `lx_syscall` are about 10 % of 2.8 M instructions, some 14,000 a second:
+  left as it is (a narrower retry would have to know every way a
+  descriptor gets ready).
+- During a call, ringing too, the tick runs at 100 Hz (the modem's
+  `kmodem_next`: the call's sound); a call is short.
+
+**The display's timeout** (the Pro1X, `kolibri.displayoff=S`, `pro1x.c`):
+after 120 s (S) without a key or a touch the standby begins as by the
+power key (`pro1x: standby (no input)`): the display off, the programs'
+timeouts on whole seconds, the SoC's sleep; a key, Fn or the power key
+end it as before. It is one deadline of the platform (`p_next_tick`: the
+last input, `input_last`, or the last standby's end, plus S), no poll.
+Not during a call (it is looked at again S s later); `kolibri.displayoff=0`
+or `kolibri.displayon`: never. **An incoming call ends the standby**
+(`pro1x: awake (a call)`): the modem's changes (`kmodem.c`) call
+`power_attention`. QEMU: `displayoff` (5 s, the power key played 10 s
+into each standby) and `ring` (the fake modem rings at 12 s,
+`kolibri.fakering`). The N950 has no display off yet (below).
+
+**No LED, no Bluetooth.** KolibriOS drives no LED on either phone, so
+none blinks for "device on" and none shows anything but what the system
+before left lit, which is switched off: on the Pro1X the PMI632's LPG
+runs its patterns by itself (its PBS from the SDAM), so
+`tools/pro1x-kexec.sh` switches every LED of Linux's off (trigger none,
+brightness 0) before the jump; on the N950 the kernel switches the
+LP5523 (the keyboard's light and the white LED, its own pattern engines)
+off by its enable at the start (`kolibri.leds=keep` leaves it). A
+notification LED for pending events (a missed call, a message) would be
+the next step, off before the standby. KolibriOS has no Bluetooth: on the
+Pro1X Linux's `hci_qca` does nothing for a WCN3990 at a kexec (its
+`qca_serdev_shutdown` only for the QCA6390), so a Bluetooth Leste had up
+ran on through KolibriOS; `pro1x-kexec.sh` blocks it (rfkill, soft) first,
+which powers it off in Linux (`qca_power_off`). The rails `kolibri.wifi`
+switches on (L8, L16, L17, L23) are the WLAN part's; the N950's WL1271
+Bluetooth (UART2, its reset GPIO 26) is not touched.
+
+**Double tap to wake: not done.** It is worth it only with the touch
+controller's own gesture (doze) mode, in which the GT9286 scans slowly
+and raises its INT on a double tap; polling the bit-banged I2C for it
+would cost far more than the standby saves. Mainline's `goodix.c` has no
+gesture mode, and the GT1x generation's gesture registers and whether the
+Pro1X's firmware has the gesture are not known here (Goodix's vendor
+driver has them). In the standby now the touch screen is not polled: its
+TLMM interrupt (not an MPM wake pin) brings one read of a touch, dropped,
+at the next wake-up, and no poll is scheduled.
+
+**The Wi-Fi's offloads** (`wifi.c`, `wmi.c`; docs/pro1x-network.md,
+7c): the host looked at the copy engines once a second while idle, also
+to answer the router's ARP requests in time and to keep the association.
+Now the firmware does both, as ath11k's WoW sets it up for a sleeping
+host: `SET_ARP_NS_OFFLOAD` (ath11k's `ath11k_wmi_arp_ns_offload`: our
+lease's address in the first ARP tuple, no NS) and `STA_KEEPALIVE`
+(ath10k's TLV command: a null data frame after 30 s of silence), each
+only when SERVICE_READY announces it (`ARPNS_OFFLOAD` 16,
+`STA_KEEP_ALIVE` 29); the beacons' loss was the firmware's already (its
+ROAM event, `BMISS`). With both on and the display off the Wi-Fi asks for
+no look of its own: a frame for us waits for the next wake-up by time
+(the watchdog's every 10 s on the phone; every timer interrupt polls the
+engines, `net_tick`). `kolibri.wifilook=MS` gives the standby a look every
+MS ms again (1000: as before), for the device's comparison. Beacon
+filtering (`ADD_BCN_FILTER`) is not sent: neither ath10k nor ath11k
+builds it, so its layout is not known here; whether the firmware passes
+our AP's beacons to the host while up is a device step (they are dropped
+at once in `MGMT_RX` and counted, `bss_seen`). `tests/wifi`: the simulated
+WCN3990 answers ARP for the offloaded address without the host (nothing
+on its RX ring), sends the keepalive's null frames through 65 s of
+silence, and gets both commands again after a reconnection; without the
+services (`legacy`) neither is sent.
+
 ## The device test (prepared, 2026-10-29)
 
 Nothing of this has run on the phone yet (nor has KolibriOS itself: the
@@ -645,18 +797,148 @@ from CMD0 (done): no more sleeps` means the card does not take CMD5's
 awake (it works on, without sleeps); `kolibri.mmcsleep=off` in
 `/boot/cmdline` if anything of the eMMC fails after the first sleep.
 
+### Stage 7 on the devices (prepared, 2026-10-31)
+
+Every step longer than 2 minutes without a key now ends in the standby
+(`pro1x: standby (no input)`), and steps 1-10 above may show it: a key
+brings the display back; `kolibri.displayoff=0` keeps the old behaviour.
+
+11. The display's timeout: `... "kolibri.nomodem kolibri.lifetime=300"`,
+    nothing touched: `pro1x: the display off after 120 s without a key or
+    a touch (kolibri.displayoff)` at the start, `pro1x: standby (no
+    input)` at about 120 s, the display off (`display off: ...` as in
+    step 3); a letter key: `pro1x: awake (a key) after N s`, the picture
+    back; again 120 s later the standby. With `kolibri.displayoff=30` the
+    same after 30 s.
+12. A call in the standby: with the modem (`-m`, no `kolibri.nomodem`),
+    `... "kolibri.displayoff=30 kolibri.lifetime=240"`, a call to the
+    phone after the standby began: `pro1x: awake (a call)`, the display
+    on, the phone ringing; during the call no standby by the timeout.
+13. No LED: `pro1x-kexec.sh` as always; the status LED dark through all
+    of KolibriOS (also when Leste blinked it before: charging, mce's
+    patterns), the Caps Lock LED dark; Leste's Bluetooth blocked before
+    the jump (`rfkill list` in Leste afterwards: a soft block is not kept
+    across its next start).
+14. The Wi-Fi's offloads: step 10 (the network up, the standby,
+    `kolibri.powertest=10`): at the association `wifi: keepalive by the
+    firmware (a null frame after 30 s of silence)`, after the lease `wifi:
+    ARP for <the address> answered by the firmware`; in the standby's
+    power lines no `network` wake-ups (before: 60 a minute); the phone
+    still up after 10 minutes without traffic (the keepalive), still
+    reachable: a ping from the PC answered (after up to 10 s: the next
+    wake-up), `arp -a` on the PC with the phone's MAC. Once more with
+    `kolibri.wifilook=1000` (the look a second as before): the battery's
+    mean current of the two says what the look cost. `wifi: ... N BSSs
+    seen` at the end against the minutes up: beacons the firmware passes
+    to the host while up (a beacon filter would be next). Without the
+    lines: the firmware does not announce the services (the look stays).
+15. The shell open in the standby: the shell started from the launcher,
+    then the power key: `by deadline: tasks 0` (before: 10 a second).
+16. The measurements for what needs drivers (under Leste, read only, as
+    root; `mount -t debugfs none /sys/kernel/debug` if it is not there),
+    once with the display on and once blanked (the power key):
+    `grep -E 'disp_cc|mdss|dsi' /sys/kernel/debug/clk/clk_summary` (the
+    DSI's link clocks and the PHY's: which Linux switches off with the
+    display), `grep -E 'ufs' /sys/kernel/debug/clk/clk_summary` and
+    `cat /sys/bus/platform/devices/4804000.ufshc/clkgate_enable
+    clkgate_delay_ms` (UFS's clock gating: on, after how long),
+    `grep -E 'bimc|snoc|cnoc|qup|ipa|xo' /sys/kernel/debug/clk/clk_summary`
+    and `cat /sys/kernel/debug/interconnect/interconnect_summary` (the
+    bus clocks' and the interconnect's active-set votes, which KolibriOS
+    keeps as Linux left them). Saved, they are what the drivers for those
+    steps need (the clocks to switch, their order, the votes to drop while
+    the display is off and to send again before it comes on: the bus
+    clocks at least `ICC_BUS_CLK_MIN_RATE`, the display's bandwidth; a
+    picture that flickers or stays black after the standby would be a
+    vote missing).
+17. The touch controller asleep in the standby (not in the kernel yet;
+    the next step once the touch works): mainline's `goodix.c`
+    (`goodix_suspend`, `goodix_resume`, `goodix_int_sync`,
+    `goodix_reset_no_int_sync`): in: INT an output, low, 5 ms; 0x05
+    (`GOODIX_CMD_SCREEN_OFF`) to 0x8040 (`GOODIX_REG_COMMAND`); 58 ms
+    before any wake-up. Out: INT high 2-5 ms, then low 50 ms, then an
+    input again; the config's version read (0x8050 on the GT9286); no
+    answer: the reset (its reset GPIO, 71 in the mainline tree, low 20 ms;
+    INT high for the address 0x14, the Pro1X's; reset high, 6 ms; INT
+    low 50 ms, an input). The sign of a wrong
+    sequence: `pro1x: touch:` with no answer after the first standby and
+    a dead touch screen until the next start.
+
+On the N950 (ubiboot's "KolibriOS (test)"): `n950: LEDs off (the
+LP5523's enable, GPIO 41, ...)` on the debug board, the keyboard's light
+and the white LED dark; `kolibri.leds=keep` if anything of the keyboard
+or the display misbehaves after it (the line before it says how far the
+start got).
+
+## The N950: the 100 Hz tick, the display off (the plan)
+
+The ARMv7 kernel ticks at 100 Hz always: GPTIMER1 (32 kHz, overflow
+with auto reload, IRQ 37), and the idle loop is a `wfi` between ticks.
+Tickless idle there alone would save nothing yet: the N950's keyboard
+(the TWL5031's keypad, I2C1) and touch screen (maXTouch, I2C2) are polled
+from the tick, each at 50 Hz, with the I2C transfers busy-waited
+(`i2c_xfer`), so the CPU wakes 100 times a second whatever the idle
+loop does. The order, after the N950's first boot (KolibriOS has not run
+on it yet):
+
+1. Input by interrupt, as Harmattan's kernel has it
+   (`arch/arm/mach-omap2/board-rm680-peripherals.c`): the TWL's interrupt
+   line on the OMAP's `sys_nirq` (INTC 7, `INT_34XX_SYS_NIRQ`; the keypad
+   one of the TWL's PIH sources, its SIH registers as Linux's
+   `twl4030-irq.c` and `twl4030_keypad.c` set them: every other source of
+   the TWL masked first, as on the Pro1X's TLMM and SPMI), the maXTouch's
+   CHG on GPIO 61 (`ATMEL_MXT_IRQ_GPIO`, GPIO bank 2 bit 29, INTC 30,
+   `INT_34XX_GPIO_BANK2`, falling edge). Polled still while keys are held
+   or the screen is touched (as on the Pro1X); without the interrupts
+   the polls as now.
+2. Tickless idle for ARMv7: `trap.c`'s way into the idle loop asks
+   `sched_next_work` (already built for both kernels) and moves the timer
+   (realview: the SP804's load and background load; the N950: GPTIMER1's
+   counter one-shot to the deadline, the 100 Hz reload after it, the
+   posted writes waited for: TWPS; Linux's `dmtimer.c`); `ticks` from a
+   free-running counter (realview's 24 MHz, the N950's 32 kHz SYNC32K)
+   at every interrupt, as AArch64's `timer_sync`; the platform's
+   `next_tick` for the polls. Realview first: its keyboard and mouse
+   (KMI) are interrupt driven already, so `tests/threads`, `tests/apps`
+   and `tests/storage realview` try it in QEMU.
+3. The power test's counters (`kernel/power.c`) on ARMv7, to measure it
+   on the N950 (the debug board, the console on UART3).
+4. The OMAP's own idle (the PRCM: the MPU's and the CORE's power domains
+   in retention when the CPU waits; Linux's `pm34xx.c`): the large step
+   on that SoC, as the PSCI states on the Pro1X; it needs the clocks the
+   kernel uses (GPTIMER1, I2C, MMC2, DISPC) known to the PRCM.
+
+The display off on the N950 (the timeout above, its standby) needs the
+panel's DCS commands, which the kernel cannot send yet: it only starts
+DISPC's frames over the link NOLO set up. Harmattan's kernel has the way:
+`drivers/video/omap2/displays/panel-nokia-dsi.c` (`pnd_dcs_write_0`:
+`DCS_DISPLAY_OFF` 0x28, `DCS_SLEEP_IN` 0x10; the backlight by
+`DCS_BRIGHTNESS` with `use_dsi_bl`) over `drivers/video/omap2/dss/dsi.c`
+(a short packet on a virtual channel switched from the video port to L4
+and back). After the first boot and `tools/n950-dss-dump.sh`'s dump
+(docs/n950.md), which says how NOLO left the virtual channels.
+
 ## Not done
 
-- The Wi-Fi's look every second when idle in its polled mode (with
-  `kolibri.wifi=irq` a look a second as well, for what came while the
-  SoC slept): a longer interval delays what comes after a quiet time.
 - The terminal's loop of 10 ms while a serial connection is open (the
-  original's `con_kbhit` polling), the debug board's 250 ms, the process
-  list's and the clock's second: programs that show what changes; while
-  the display is off their timeouts come on whole seconds.
+  original's `con_kbhit` polling): the ports are polled (no UART
+  interrupts), and on the phones none receives (the N950's UART3 only
+  sends, the Pro1X has a RAM console).
+- The programs that wait in loops of the originals': proc_lib's open
+  dialog's caller every 100 ms while the dialog is open, the shell's
+  console service for a program (`module_program_console`) every 50 ms
+  while one runs; the debug board's 250 ms, the process list's and the
+  clock's second while the display is on.
+- The Wi-Fi's look every second when idle while the display is on (the
+  engines polled by default); a beacon filter (its command's layout not
+  known here; step 14 counts what the firmware passes).
 - The DSI's link clocks and the PHY's power after ULPS, UFS's clock
-  gating, the N950's VEMMC off after the eMMC's sleep: they need clock
-  and regulator drivers (or the card started anew).
-- The active set's bus and bandwidth votes while the display is off
-  (what Linux left: the RPM keeps them while the CPU is awake).
-- The ARMv7 kernel (the N950) has the 100 Hz tick always.
+  gating, the active set's bus and bandwidth votes while the display is
+  off: the clock drivers and the votes they need, measured first under
+  Linux (step 16). The N950's VEMMC off after the eMMC's sleep: the card
+  started anew after it (the driver has that way for a card that does not
+  wake), against what the card draws asleep.
+- The touch controller asleep in the standby, double tap to wake (above,
+  step 17).
+- The N950: tickless idle, input by interrupt, the display off (the plan
+  above).

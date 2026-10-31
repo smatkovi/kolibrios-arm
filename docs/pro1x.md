@@ -23,7 +23,10 @@ the EFS partitions as the initrd, ofono stopped, Linux's IPCRTR channel
 closed before the jump.
 
 `pro1x-kexec.sh` keeps the keyboard's I2C engine clocked (runtime PM
-off), writes out and remounts the filesystems read-only, arms the SoC's
+off), switches Linux's LEDs off (the PMI632's LPG runs a pattern by
+itself; KolibriOS drives no LED) and blocks its Bluetooth (rfkill: Linux's
+`hci_qca` leaves a WCN3990's running through a kexec; KolibriOS has
+none), writes out and remounts the filesystems read-only, arms the SoC's
 watchdog (about 32 s, as the boot menu does for FreeBSD) and jumps. Linux
 ends there.
 
@@ -42,7 +45,10 @@ The command line:
 | `kolibri.powertest=N` | N minutes of power measurement as a standby (after 10 s the display off, the SoC's sleep), a console line a minute with the battery's current and the RPM's sleep counts, then the reset (as a lifetime of N minutes and 30 s); `docs/power.md` |
 | `kolibri.tick=periodic` | the 100 Hz tick also in idle (no tickless idle), the input polled as before |
 | `kolibri.rpmsleep` | the RPM's sleep set at 0 and the MPM handed the next wake-up before the cluster's collapse: the SoC may sleep (vlow, vmin; `docs/power.md`) |
-| `kolibri.displayon` | the power test without the standby: the display stays on, the sleep set as it is |
+| `kolibri.displayon` | the power test without the standby: the display stays on, the sleep set as it is; no display timeout either |
+| `kolibri.displayoff=S` | the display off (the standby) after S s without a key or a touch, 120 by default, 0: never; not during a call, and an incoming call ends the standby (`docs/power.md`, stage 7) |
+| `kolibri.wifilook=MS` | the Wi-Fi's look when idle every MS ms while the display is off (without it: none once the firmware answers ARP and keeps the association, else a second; for the battery's comparison) |
+| `kolibri.fakering=S` | the fake modem rings S s after the start (QEMU: the standby ended by a call) |
 | `kolibri.battery` | the PMIC's battery readings also without a power test |
 | `kolibri.standby` | the programs' timeouts on whole seconds, as while the display is off |
 | `kolibri.psci=off` | the CPU idles with `wfi` only, no PSCI power-down states (`core`: no cluster state; `docs/power.md`) |

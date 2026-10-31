@@ -84,7 +84,7 @@ image `wifi` (never in the repository).
 | 6 | HTT's data path: Ethernet to native Wi-Fi frames in `TX_FRM` (gathered on CE4), `RX_IN_ORD_PADDR_IND`'s buffers from the RX ring to Ethernet, lwIP's interface (DHCP when the link is up) | `wifi.c`, `htt.c`, `wlan.c`, `kernel/net/wifi_dev.c`, `kernel/net/net.c` | `tests/wifi` `station`: lwIP above the driver takes a lease, answers a ping, an ARP broadcast with a new group key |
 | 7a | the regulatory domain: the EEPROM's code from SERVICE_READY as ath's `regd.c` takes it (the Pro1X's 0x406c: a world domain, pair 0x6c), `country=` (AT by default) on top as cfg80211 does with a user's hint, the channel list from it (passive, radar, power, HT40+), `PDEV_SET_REGDOMAIN` | `kernel/modem/regd.c`, `regdb.c` (made by `tools/gen-regdb.py` from Linux's `regd_common.h` and wireless-regdb's `regulatory.db`), `wifi.c` | `tests/wifi` `regd` (28 checks: the phone's EEPROM with AT and without, US, a country EEPROM, 0x8000, 0x68, India, the 5 GHz range, every ath country), `station` (the channel list, the domain pair) |
 | 7b | 802.11n and WMM: HT20/HT40 (short GI, STBC, LDPC as SERVICE_READY has them), the association's HT Capabilities and WMM information element, `PEER_ASSOC` with HT, the AP's WMM parameters (`VDEV_SET_WMM_PARAMS`), the TID of every frame (EAPOL 7, the DSCP's priority, lower under admission control) | `wifi.c`, `wlan.c`, `wmi.c` | `station` (an HT40 WMM AP; `legacy`; `uapsd`: HT20, admission control on VO) |
-| 7c | power save: the firmware's (PS-Poll and null data, U-APSD with `uapsd=on`): `STA_POWERSAVE_MODE` and its parameters as `ath10k_mac_vif_setup_ps` and `ath10k_conf_tx_uapsd`; the host's: slower polling when idle, with `kolibri.wifi=irq` no SoC sleep while frames come | `wifi.c`, `kernel/net/wifi_dev.c`, `kernel/power.c` (`power_hold_awake`), `kernel/arch/arm64/psci.c` | `station` (the parameters and their order, the radio's doze with the AP keeping frames for the TIM, the polling's intervals), `tests/power host` (the held state) |
+| 7c | power save: the firmware's (PS-Poll and null data, U-APSD with `uapsd=on`): `STA_POWERSAVE_MODE` and its parameters as `ath10k_mac_vif_setup_ps` and `ath10k_conf_tx_uapsd`; the host's: slower polling when idle, with `kolibri.wifi=irq` no SoC sleep while frames come; the firmware's offloads (ARP answered, its keepalive), then no idle look in the standby | `wifi.c`, `wmi.c`, `kernel/net/wifi_dev.c`, `kernel/power.c` (`power_hold_awake`), `kernel/arch/arm64/psci.c` | `station` (the parameters and their order, the radio's doze with the AP keeping frames for the TIM, the polling's intervals, ARP answered by the firmware, its null frames), `tests/power host` (the held state) |
 | 7d | WPA3-Personal and PMF: SAE (group 19; hunting and pecking or hash-to-element as the AP offers it; the anti-clogging token), the AKM choice (SAE, then PSK-SHA256, then PSK: the transition mode), PMF (MFPC, BIP-CMAC-128 with the IGTK, protected and BIP-checked disconnections, SA Query both ways, the association's comeback) | `kernel/modem/sae.c`, `ecc.c` (P-256), `crypto.c` (SHA-256, the KDF, HKDF, AES-CMAC), `wpa.c`, `wifi.c`, `wlan.c` | `crypto` (57 checks: FIPS 180-2, RFC 4231, 5869, 4493, IEEE 802.11-2020 J.10's SAE vectors both ways, OpenSSL), `station sae`, `h2e`, `mixed`, `psk256` (an AP with its own SAE by OpenSSL) |
 
 `kolibri.wifi` (with `tools/pro1x-kexec.sh -m -w FILE`: the modem, so
@@ -406,6 +406,23 @@ random locally administered one, as `ath10k_mac_register`'s
   `qcom,mpm-pin-map` has none for them); a level interrupt that comes
   then waits at the engine for the next wake-up by time.
 
+The offloads (2026-10-31, `offload_up`, `offload_arp`): once the port is
+authorized, `STA_KEEPALIVE` (ath10k's `ath10k_wmi_tlv_op_gen_sta_keepalive`:
+vdev, enabled, the method 1 null frame, 30 s, an empty ARP response TLV;
+ath10k itself switches it off, ath11k's WoW on), and with lwIP's lease
+`SET_ARP_NS_OFFLOAD` (ath11k's `ath11k_wmi_arp_ns_offload`: flags 0, the
+vdev, no NS extension tuples; two empty NS tuples, the first of two ARP
+tuples with `WMI_ARPOL_FLAGS_VALID` and our address; the address 0
+switches it off), each only if SERVICE_READY has it (`ARPNS_OFFLOAD` 16,
+`STA_KEEP_ALIVE` 29; the command ids, tags and services from ath10k's
+`wmi-tlv.h`: 0x17001, 0x1c005; 123-125, 127, 128). `wifi_dev.c` gives the
+driver lwIP's address as it changes (`wifi_set_ipv4`). With both on and
+the display off the device asks for no idle look (`wifi_offloaded`): the
+router's ARP is answered and the association kept without the host, and
+a frame for us waits for the next wake-up by time (`kolibri.wifilook=MS`
+for a look every MS ms). No beacon filter (`ADD_BCN_FILTER`'s layout is
+in neither ath10k nor ath11k).
+
 **7d, WPA3-Personal and PMF** (`sae.c`, `ecc.c`, `crypto.c`, `wpa.c`,
 `wifi.c`, `wlan.c`; hostapd/wpa_supplicant 2.11's `src/common/sae.c`,
 `dragonfly.c`, `wpa_common.c`, `src/rsn_supp/wpa.c`, `wpa_ie.c`,
@@ -553,9 +570,11 @@ each step ending with the watchdog's reset into the boot menu, then
    refused`; with PMF the risks below; `pmf=fw`, then `pmf=off` (WPA2
    only for an AP that requires PMF) in the file to tell them apart.
 6. Power: step 2 with `kolibri.powertest=10` (the cable out) and nothing
-   running: the power lines (docs/power.md) with Wi-Fi up, the wake-ups
-   about 1/s more than without (`by deadline: network`: the 1 s polling
-   once idle; lwIP's timers add nothing once the lease is there, 2/s more
+   running: the power lines (docs/power.md) with Wi-Fi up; with the
+   offloads (`wifi: keepalive by the firmware ...`, `wifi: ARP for ...
+   answered by the firmware`) in the standby no `network` wake-ups at all
+   (docs/power.md, step 14), without them about 1/s more than without
+   Wi-Fi (`by deadline: network`: the 1 s polling once idle; lwIP's timers add nothing once the lease is there, 2/s more
    with `kolibri.nettimers=periodic` for comparison); then with
    `kolibri.wifi=irq`: `SoC sleep held N` only right
    after traffic, `vlow`/`vmin` counts moving while idle. A ping from the
