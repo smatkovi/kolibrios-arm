@@ -89,7 +89,7 @@ q.wait()
 if not dtb:
     text = open(log, errors='replace').read()
 
-lines = [l for l in text.splitlines() if l.startswith(('power:', 'psci:', 'timer:', 'rpm', 'mpm', 'net:', 'tcphold:', 'pro1x: DSI', 'pro1x: display', 'pro1x: standby', 'pro1x: awake'))]
+lines = [l for l in text.splitlines() if l.startswith(('power:', 'psci:', 'timer:', 'rpm', 'mpm', 'net:', 'tcphold:', 'home:', 'pro1x: DSI', 'pro1x: display', 'pro1x: standby', 'pro1x: awake'))]
 for l in lines:
     print(f'{name}: {l}')
 rates = [float(r) for r in re.findall(r'^power: \d+ s: \d+ wake-ups \(([\d.]+)/s\)', text, re.M)]

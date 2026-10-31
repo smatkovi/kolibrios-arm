@@ -21,6 +21,11 @@
 #          standby (kolibri.standby). Needs aarch64-linux-gnu-gcc (static
 #          glibc: tcphold) and Go (the fake backend); it leaves
 #          build/arm64 with those programs on the ramdisk
+#   qemu-apps  the wake-ups with programs open: the shell at its prompt
+#          (console.obj's key waits on a futex, function 77), the clock,
+#          the process list and the debug board with the display off (no
+#          timeouts then), the storage's container mounted read-write on a
+#          virtio disk like the Pro1X's (tests/storage/mkdisk.py)
 TOP := ../..
 K := $(TOP)/build/arm64/kernel.bin
 B := $(TOP)/build/power
@@ -30,12 +35,16 @@ ARGS := kolibri.powertest=1 kolibri.powerline=10
 # left is the fake modem's, the power test's own line, a live message of
 # the fake messenger backend every 10 s, a keepalive every 15 s
 IDLE ?= 1.2
+# the clock's second besides that; with the display off (kolibri.standby)
+# only the power test's line every 10 s
+CLOCK ?= 1.8
+STANDBY ?= 0.3
 CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -fsanitize=address,undefined \
 	-fno-omit-frame-pointer
 KINC := -Wno-builtin-declaration-mismatch -I$(TOP)/kernel/include -I$(TOP)/kernel/arch/arm64
 PRO1X_DTB ?=
 
-test: host qemu qemu-net
+test: host qemu qemu-net qemu-apps
 
 host: $(B)/host $(B)/pmic $(B)/dsi $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb
 	$(B)/host $(B)/sm6115-power.dtb $(B)/qemu-psci.dtb $(PRO1X_DTB)
@@ -105,6 +114,27 @@ qemu-net: $(KL)
 	python3 qemu.py $(KL) messenger-standby 43 skip-first max-rate=$(IDLE) \
 		-- -append "$(ARGS) kolibri.run=/sys/messenger kolibri.args=whatsapp kolibri.standby"
 
+# the programs (KolibriOS's, on any ramdisk: $(KL)'s); the disk like the
+# Pro1X's, its container read-write
+DISK := $(B)/disk.img
+DISK_ARGS := -global virtio-mmio.force-legacy=false -drive if=none,id=d0,file=$(DISK),format=raw \
+	-device virtio-blk-device,drive=d0,logical_block_size=4096,physical_block_size=4096
+$(DISK): $(TOP)/tests/storage/mkdisk.py
+	@mkdir -p $(B)
+	python3 $(TOP)/tests/storage/mkdisk.py pro1x $@
+qemu-apps: $(KL) $(DISK)
+	python3 qemu.py $(KL) shell 43 skip-first max-rate=$(IDLE) -- -append "$(ARGS) kolibri.run=/sys/shell"
+	python3 qemu.py $(KL) shell-standby 33 skip-first max-rate=$(IDLE) \
+		-- -append "$(ARGS) kolibri.run=/sys/shell kolibri.standby"
+	python3 qemu.py $(KL) clock 33 skip-first max-rate=$(CLOCK) -- -append "$(ARGS) kolibri.run=/sys/clock"
+	python3 qemu.py $(KL) clock-standby 33 skip-first max-rate=$(STANDBY) \
+		-- -append "$(ARGS) kolibri.run=/sys/clock kolibri.standby"
+	python3 qemu.py $(KL) cpu-standby 33 skip-first max-rate=$(STANDBY) -- -append "$(ARGS) kolibri.run=/sys/cpu kolibri.standby"
+	python3 qemu.py $(KL) board-standby 33 skip-first max-rate=$(STANDBY) \
+		-- -append "$(ARGS) kolibri.run=/sys/board kolibri.standby"
+	python3 qemu.py $(KL) storage 43 skip-first max-rate=$(IDLE) "has=hd0/1 read-write" \
+		-- $(DISK_ARGS) -append "$(ARGS) kolibri.home=rw"
+
 kernel:
 	$(MAKE) -C $(TOP) PLATFORM=arm64
 
@@ -131,4 +161,4 @@ $(B)/qemu-psci.dtb: mkdtb.py
 	@mkdir -p $(B)
 	python3 mkdtb.py $@ --psci --virt
 
-.PHONY: test host qemu qemu-net kernel
+.PHONY: test host qemu qemu-net qemu-apps kernel

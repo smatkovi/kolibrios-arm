@@ -6,7 +6,10 @@
  * engines are polled from the tick (every 10 ms while the station is not
  * up, then by wifi_poll_ms: 20 ms while frames come, 200 ms and 1 s when
  * idle), or by their interrupts with kolibri.wifi=irq (then no SoC sleep
- * while frames come, a look once a second when idle). */
+ * while frames come, a look once a second when idle). kolibri.wifilook=MS:
+ * that second's look (polled or not) every MS ms while the display is off
+ * (the standby; for the device's measurements: 1 s without it, a frame
+ * that comes after a quiet time waits so much longer). */
 #include "net.h"
 #include "rng.h"
 #include "power.h"
@@ -20,6 +23,7 @@ static u32 dma_used, dma_size;
 static struct netif *nif;
 static bool started, irqs;
 static u32 polls, irq_count;
+static u32 standby_look = 100;          /* ticks: kolibri.wifilook */
 
 static u32 rd(u32 off) { return *(volatile u32 *)(membase + off); }
 static void wr(u32 off, u32 v) { *(volatile u32 *)(membase + off) = v; }
@@ -92,9 +96,9 @@ static u32 next_ticks(void)
 	 * the radio asleep, the AP keeps the frames); with them a look once a
 	 * second when idle, for what came while the SoC slept (its GIC off),
 	 * and no SoC sleep while frames come */
-	u32 p = (wifi_poll_ms() + 9) / 10;
-	if (!irqs) t = MIN(t, p);
-	else if (s == WIFI_UP && !wifi_busy()) t = MIN(t, 100u);
+	u32 p = (wifi_poll_ms() + 9) / 10, look = power_standby ? standby_look : 100u;
+	if (!irqs) t = MIN(t, p >= 100 ? look : p);
+	else if (s == WIFI_UP && !wifi_busy()) t = MIN(t, look);
 	if (irqs && wifi_busy()) power_hold_awake(ticks + 100);
 	return t;
 }
@@ -136,6 +140,13 @@ bool wifi_dev_start(addr_t membase_va, u32 dma_mb, bool use_irqs, const char *co
 	dma_size = dma_mb << 20;
 	membase = membase_va;
 	irqs = use_irqs;
+	const char *lk = boot_arg("kolibri.wifilook");
+	if (lk) {
+		u32 ms = 0;
+		while (*lk >= '0' && *lk <= '9') ms = ms * 10 + *lk++ - '0';
+		standby_look = MAX(10u, MIN(60000u, ms) / 10);
+		kprintf("wifi: the idle look every %u ms while the display is off (kolibri.wifilook)\n", standby_look * 10);
+	}
 	struct wifi_hw hw = { { rd, wr, dalloc }, dalloc32, enable, now_ms, rnd, rx, link };
 	kprintf("wifi: DMA %p (%u MiB), engines by %s, network \"%s\"\n", pa, dma_mb, irqs ? "interrupt" : "polling",
 		(const char *)conf.ssid);

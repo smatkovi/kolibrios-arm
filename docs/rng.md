@@ -57,7 +57,10 @@ with a warning that stays on the console.
   the source is not used any more (`rng: ... gives the same word again and
   again: not used`).
 - Once a minute, while a hardware source works, 64 new bytes of each go
-  into the pool and the key is made anew.
+  into the pool and the key is made anew: at the first request a minute
+  after the last reseed (`maybe_reseed`, from `rng_bytes` and its kin),
+  not by a timer, so an idle system is not woken for it (docs/power.md,
+  stage 7); the input's events (`rng_event`) are mixed in as they come.
 - The kernel runs on one CPU with the interrupts masked, so nothing here
   needs a lock.
 
