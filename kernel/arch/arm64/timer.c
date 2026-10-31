@@ -189,6 +189,12 @@ bool timer_irq(u32 id)
  * loop opens them again. */
 void arch_idle(void)
 {
+	extern void gfx_flush(void);
+	/* what the programs drew, to the screen now rather than at the next
+	 * tick: all of them wait, nothing draws before the next wake-up (a
+	 * wake-up less after each drawing; a flush the platform refuses now
+	 * keeps the tick, sched_next_work) */
+	gfx_flush();
 	timer_sync();
 	u64 now = timer_count();
 	u64 dl = next_grid(now);
