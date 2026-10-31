@@ -78,6 +78,11 @@ int wifi_send(const u8 *eth, u32 len); /* an Ethernet frame out: 0, or -1 (not u
 enum wifi_state wifi_state(void);
 const char *wifi_state_name(enum wifi_state s);
 const u8 *wifi_mac(void);
+/* our IPv4 address (network order; 0.0.0.0: none): the firmware answers
+ * ARP for it (SET_ARP_NS_OFFLOAD) while up; whether the firmware has that
+ * and its keepalive, so the host need not look while nothing comes */
+void wifi_set_ipv4(const u8 addr[4]);
+bool wifi_offloaded(void);
 
 /* what happened, for the console and the tests */
 struct wifi_stats {

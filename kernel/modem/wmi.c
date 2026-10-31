@@ -558,6 +558,48 @@ u32 wmi_sta_ps_param(u8 *o, u32 vdev, u32 id, u32 value)
 	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_STA_PS_PARAM_LEN;
 }
 
+u32 wmi_sta_keepalive(u8 *o, u32 vdev, u32 method, u32 interval)
+{
+	u8 *c = cmd_start(o, WMI_TLV_STA_KEEPALIVE_CMDID, WMI_TLV_TAG_STRUCT_STA_KEEPALIVE_CMD, WMI_STA_KEEPALIVE_LEN);
+	put32(c, vdev);
+	put32(c + 4, 1);                        /* enabled; the interval 0 is off (ath10k: firmware ignores enabled) */
+	put32(c + 8, method);
+	put32(c + 12, interval);
+	u8 *t = c + WMI_STA_KEEPALIVE_LEN;
+	wmi_put_tlv(t, WMI_TLV_TAG_STRUCT_STA_KEEPALVE_ARP_RESPONSE, WMI_KEEPALIVE_ARP_LEN);
+	mzero(t + WMI_TLV_HDR, WMI_KEEPALIVE_ARP_LEN);
+	return WMI_HDR_LEN + WMI_TLV_HDR + WMI_STA_KEEPALIVE_LEN + WMI_TLV_HDR + WMI_KEEPALIVE_ARP_LEN;
+}
+
+u32 wmi_arp_ns_offload(u8 *o, u32 vdev, const u8 ip[4])
+{
+	u8 *c = cmd_start(o, WMI_TLV_SET_ARP_NS_OFFLOAD_CMDID, WMI_TLV_TAG_STRUCT_SET_ARP_NS_OFFLOAD_CMD,
+			  WMI_ARP_NS_OFFLOAD_LEN);
+	put32(c, 0);                            /* flags */
+	put32(c + 4, vdev);
+	put32(c + 8, 0);                        /* num_ns_ext_tuples */
+	u8 *t = c + WMI_ARP_NS_OFFLOAD_LEN;
+	/* the NS tuples, then the ARP tuples: arrays of structures */
+	wmi_put_tlv(t, WMI_TLV_TAG_ARRAY_STRUCT, WMI_MAX_NS_OFFLOADS * (WMI_TLV_HDR + WMI_NS_TUPLE_LEN));
+	t += WMI_TLV_HDR;
+	for (int i = 0; i < WMI_MAX_NS_OFFLOADS; i++, t += WMI_TLV_HDR + WMI_NS_TUPLE_LEN) {
+		wmi_put_tlv(t, WMI_TLV_TAG_STRUCT_NS_OFFLOAD_TUPLE, WMI_NS_TUPLE_LEN);
+		mzero(t + WMI_TLV_HDR, WMI_NS_TUPLE_LEN);
+	}
+	wmi_put_tlv(t, WMI_TLV_TAG_ARRAY_STRUCT, WMI_MAX_ARP_OFFLOADS * (WMI_TLV_HDR + WMI_ARP_TUPLE_LEN));
+	t += WMI_TLV_HDR;
+	bool on = ip[0] | ip[1] | ip[2] | ip[3];
+	for (int i = 0; i < WMI_MAX_ARP_OFFLOADS; i++, t += WMI_TLV_HDR + WMI_ARP_TUPLE_LEN) {
+		wmi_put_tlv(t, WMI_TLV_TAG_STRUCT_ARP_OFFLOAD_TUPLE, WMI_ARP_TUPLE_LEN);
+		mzero(t + WMI_TLV_HDR, WMI_ARP_TUPLE_LEN);
+		if (i == 0 && on) {
+			put32(t + WMI_TLV_HDR, WMI_ARPOL_FLAGS_VALID);
+			mcopy(t + WMI_TLV_HDR + 4, ip, 4);       /* target_ipaddr, as it is on the wire */
+		}
+	}
+	return (u32)(t - o);
+}
+
 u32 wmi_mgmt_tx(u8 *o, u32 vdev, u32 desc_id, u64 pa, const u8 *frame, u32 len)
 {
 	u8 *c = cmd_start(o, WMI_TLV_MGMT_TX_SEND_CMD, WMI_TLV_TAG_STRUCT_MGMT_TX_CMD, WMI_MGMT_TX_LEN);

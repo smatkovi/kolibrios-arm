@@ -6,10 +6,12 @@
  * engines are polled from the tick (every 10 ms while the station is not
  * up, then by wifi_poll_ms: 20 ms while frames come, 200 ms and 1 s when
  * idle), or by their interrupts with kolibri.wifi=irq (then no SoC sleep
- * while frames come, a look once a second when idle). kolibri.wifilook=MS:
- * that second's look (polled or not) every MS ms while the display is off
- * (the standby; for the device's measurements: 1 s without it, a frame
- * that comes after a quiet time waits so much longer). */
+ * while frames come, a look once a second when idle). While the display is
+ * off and the firmware answers ARP and keeps the association itself
+ * (wifi_offloaded) that look goes: what comes for us waits for the next
+ * wake-up by time (the watchdog's, 10 s, or any other; each one polls the
+ * engines, net_tick). kolibri.wifilook=MS: a look every MS ms in the
+ * standby instead (for the device's measurements). */
 #include "net.h"
 #include "rng.h"
 #include "power.h"
@@ -23,7 +25,8 @@ static u32 dma_used, dma_size;
 static struct netif *nif;
 static bool started, irqs;
 static u32 polls, irq_count;
-static u32 standby_look = 100;          /* ticks: kolibri.wifilook */
+static u32 standby_look;                /* ticks: kolibri.wifilook, 0: none with the offloads */
+static u32 ip_seen;
 
 static u32 rd(u32 off) { return *(volatile u32 *)(membase + off); }
 static void wr(u32 off, u32 v) { *(volatile u32 *)(membase + off) = v; }
@@ -82,6 +85,13 @@ static void poll(void)
 	if (!started) return;
 	polls++;
 	wifi_poll();
+	/* lwIP's address (its lease) to the firmware's ARP offload */
+	u32 a = net_addr();
+	if (a != ip_seen) {
+		ip_seen = a;
+		u8 ip[4] = { (u8)a, (u8)(a >> 8), (u8)(a >> 16), (u8)(a >> 24) };
+		wifi_set_ipv4(ip);
+	}
 }
 
 static u32 next_ticks(void)
@@ -96,7 +106,8 @@ static u32 next_ticks(void)
 	 * the radio asleep, the AP keeps the frames); with them a look once a
 	 * second when idle, for what came while the SoC slept (its GIC off),
 	 * and no SoC sleep while frames come */
-	u32 p = (wifi_poll_ms() + 9) / 10, look = power_standby ? standby_look : 100u;
+	u32 p = (wifi_poll_ms() + 9) / 10, look = 100u;
+	if (power_standby) look = standby_look ? standby_look : wifi_offloaded() ? 0xffffffffu : 100u;
 	if (!irqs) t = MIN(t, p >= 100 ? look : p);
 	else if (s == WIFI_UP && !wifi_busy()) t = MIN(t, look);
 	if (irqs && wifi_busy()) power_hold_awake(ticks + 100);

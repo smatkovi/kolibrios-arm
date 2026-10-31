@@ -40,6 +40,8 @@
 #define WMI_TLV_STA_POWERSAVE_PARAM_CMDID 0x9002
 #define WMI_TLV_VDEV_SET_WMM_PARAMS_CMDID 0x500d
 #define WMI_TLV_STA_UAPSD_AUTO_TRIG_CMDID 0x1c004
+#define WMI_TLV_STA_KEEPALIVE_CMDID 0x1c005
+#define WMI_TLV_SET_ARP_NS_OFFLOAD_CMDID 0x17001
 #define WMI_TLV_SERVICE_READY_EVENTID 0x0001
 #define WMI_TLV_READY_EVENTID 0x0002
 #define WMI_TLV_SERVICE_AVAILABLE_EVENTID 0x0003
@@ -90,6 +92,11 @@
 #define WMI_TLV_TAG_STRUCT_WMM_PARAMS 84
 #define WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_CMD 121
 #define WMI_TLV_TAG_STRUCT_STA_UAPSD_AUTO_TRIG_PARAM 122
+#define WMI_TLV_TAG_STRUCT_SET_ARP_NS_OFFLOAD_CMD 123
+#define WMI_TLV_TAG_STRUCT_ARP_OFFLOAD_TUPLE 124
+#define WMI_TLV_TAG_STRUCT_NS_OFFLOAD_TUPLE 125
+#define WMI_TLV_TAG_STRUCT_STA_KEEPALIVE_CMD 127
+#define WMI_TLV_TAG_STRUCT_STA_KEEPALVE_ARP_RESPONSE 128
 #define WMI_TLV_TAG_STRUCT_VDEV_SET_WMM_PARAMS_CMD 199
 #define WMI_TLV_TAG_STRUCT_MGMT_TX_CMD 422
 #define WMI_TLV_TAG_STRUCT_MGMT_TX_COMPL_EVENT 423
@@ -121,6 +128,11 @@
 #define WMI_MGMT_TX_LEN 28              /* wmi_tlv_mgmt_tx_cmd */
 #define WMI_MGMT_TX_FRAME_MAX 64        /* WMI_TLV_MGMT_TX_FRAME_MAX_LEN: the frame's start in the command */
 #define WMI_STA_PS_MODE_LEN 8
+#define WMI_STA_KEEPALIVE_LEN 16        /* wmi_tlv_sta_keepalive_cmd */
+#define WMI_KEEPALIVE_ARP_LEN 16        /* wmi_sta_keepalive_arp_resp: two IPv4 addresses, a MAC (8) */
+#define WMI_ARP_NS_OFFLOAD_LEN 12       /* wmi_set_arp_ns_offload_cmd: flags, vdev, NS ext tuples */
+#define WMI_ARP_TUPLE_LEN 20            /* wmi_arp_offload_tuple after its header */
+#define WMI_NS_TUPLE_LEN 76             /* wmi_ns_offload_tuple after its header */
 #define WMI_STA_PS_PARAM_LEN 12
 #define WMI_VDEV_WMM_LEN 116            /* wmi_tlv_vdev_set_wmm_cmd: vdev, 4 x (a dummy word, wmi_wmm_params 24) */
 #define WMI_UAPSD_TRIG_LEN 16           /* wmi_sta_uapsd_auto_trig_cmd_fixed_param: vdev, mac, num_ac */
@@ -200,6 +212,13 @@
 #define WMI_STA_PS_UAPSD_AC0_TRIGGER_EN 0x02
 #define WMI_STA_UAPSD_MAX_INTERVAL_MSEC 0xffffffffu
 #define WMI_TLV_SERVICE_STA_UAPSD_BASIC_AUTO_TRIG 27
+#define WMI_TLV_SERVICE_ARPNS_OFFLOAD 16 /* enum wmi_tlv_service */
+#define WMI_TLV_SERVICE_STA_KEEP_ALIVE 29
+#define WMI_STA_KEEPALIVE_METHOD_NULL_FRAME 1
+#define WMI_STA_KEEPALIVE_INTERVAL_DEFAULT 30   /* s (ath11k's wmi.h) */
+#define WMI_MAX_NS_OFFLOADS 2
+#define WMI_MAX_ARP_OFFLOADS 2
+#define WMI_ARPOL_FLAGS_VALID 0x1
 #define WMI_TLV_SERVICE_STA_UAPSD_VAR_AUTO_TRIG 28
 #define MODE_11A 0                      /* enum wmi_phy_mode */
 #define MODE_11G 1
@@ -372,6 +391,14 @@ u32 wmi_vdev_wmm(u8 *o, u32 vdev, const struct wmi_wmm_ac ac[4]);
 u32 wmi_uapsd_auto_trig(u8 *o, u32 vdev, const u8 peer[6], u32 ac, u32 prio);
 u32 wmi_sta_ps_mode(u8 *o, u32 vdev, u32 mode);
 u32 wmi_sta_ps_param(u8 *o, u32 vdev, u32 id, u32 value);
+/* STA_KEEPALIVE (ath10k_wmi_tlv_op_gen_sta_keepalive): the firmware keeps
+ * the association alive by itself, a null data frame every interval
+ * seconds of silence (0: off), its ARP response TLV empty */
+u32 wmi_sta_keepalive(u8 *o, u32 vdev, u32 method, u32 interval);
+/* SET_ARP_NS_OFFLOAD (ath11k_wmi_arp_ns_offload): the firmware answers
+ * ARP requests for ip (network order, 0: offload off) itself; the two NS
+ * tuples empty (no IPv6 here) */
+u32 wmi_arp_ns_offload(u8 *o, u32 vdev, const u8 ip[4]);
 /* MGMT_TX_SEND (ATH10K_FW_FEATURE_MGMT_TX_BY_REF): the frame by its
  * address, its first 64 bytes in the command */
 u32 wmi_mgmt_tx(u8 *o, u32 vdev, u32 desc_id, u64 pa, const u8 *frame, u32 len);

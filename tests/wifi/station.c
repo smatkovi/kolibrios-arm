@@ -21,6 +21,11 @@
  * router at 192.168.77.1: DHCP, ARP, ICMP echo. lwIP (the kernel's
  * options) runs above the driver and takes the lease.
  *
+ * The firmware's offloads: ARP requests for the address the host gave
+ * (SET_ARP_NS_OFFLOAD) answered by the firmware itself, a null data frame
+ * after 30 s of silence (STA_KEEPALIVE); both services in SERVICE_READY
+ * (not in "legacy", which then sees neither command).
+ *
  * Scenarios: the normal one (WMI management frames, a lease, a ping both
  * ways, a GTK rekeying, a deauthentication and the reconnection),
  * "wrongpsk" (management frames by HTT; the AP drops message 2: never up),
@@ -377,6 +382,7 @@ static struct {
 	u8 saq_id[2];
 	bool comeback_armed;
 	u32 arp_requests, bad_mic, m2, m4, group2, dhcp_discover, dhcp_request, arp_replies, echo_replies, decrypt_fail, frames;
+	u32 nulls;                          /* null data frames from the station (the firmware's keepalive) */
 	bool rekey_sent, rekey_done, arp_after_rekey, deauth_sent;
 	u32 eapol_at;
 } ap;
@@ -1132,6 +1138,11 @@ static void ap_rx(const u8 *f, u32 len)
 		return;
 	}
 	if ((fc & 0x000c) != 0x0008 || len < 24) return;
+	if ((fc & 0x00fc) == 0x0048) {          /* a null data frame */
+		CHECK((fc & 0x0300) == 0x0100 && !memcmp(f + 4, ap_mac, 6), "a null frame to the DS, to the BSSID");
+		ap.nulls++;
+		return;
+	}
 	u8 plain[2048];
 	const u8 *d = f;
 	u32 n = len;
@@ -1194,6 +1205,12 @@ static struct {
 	 * inactivity time it dozes; the AP keeps unicast frames for it, they
 	 * come with the next beacon's TIM (every 100 TU here) */
 	u32 last_tx, tim_held, tim_delivered, protected_mgmt;
+	/* the offloads: the keepalive's command, the ARP offload's; ARP
+	 * requests the firmware answered, null frames it sent */
+	u8 sta_mac[6];
+	u32 ka_cmds, ka_method, ka_interval, arp_cmds, arp_answered, nulls_sent;
+	bool ka_ok, arp_valid, ns_empty;
+	u8 arp_ip[4];
 	struct { u8 f[2048]; u32 len; } tim_q[8];
 	u32 ntim;
 } fw;
@@ -1256,6 +1273,10 @@ static void fw_service_ready(void)
 	put32(p + 4 + 4 * 16, 1u << 1);         /* RX_FULL_REORDER (65) */
 	if (fw.mgmt_wmi) put32(p + 4 + 4 * 19, 1u << 0);   /* MGMT_TX_WMI (76) */
 	put32(p + 4 + 4 * 6, 1u << 3);          /* STA_UAPSD_BASIC_AUTO_TRIG (27) */
+	if (!IS("legacy")) {
+		put32(p + 4 + 4 * 4, 1u << 0);      /* ARPNS_OFFLOAD (16) */
+		put32(p + 4 + 4 * 7, 1u << 1);      /* STA_KEEP_ALIVE (29) */
+	}
 	p += 4 + 128;
 	wmi_put_tlv(p, WMI_TLV_TAG_ARRAY_STRUCT, 2 * (4 + WMI_MEM_REQ_LEN));
 	p += 4;
@@ -1352,6 +1373,8 @@ static void fw_mgmt_rx(const u8 *f, u32 n)
 
 /* a data frame from the air: decrypted with the installed key, decapped
  * to native Wi-Fi into the next host RX buffer, RX_IN_ORD_PADDR_IND */
+static void fw_to_air(const u8 *f, u32 len);
+
 static void fw_data_rx(const u8 *f, u32 len)
 {
 	u8 plain[2048];
@@ -1372,6 +1395,28 @@ static void fw_data_rx(const u8 *f, u32 len)
 		n = len - 16;
 	} else if (get16(f + 30) != 0x8e88) {
 		return;                         /* only EAPOL in the clear */
+	}
+	/* an ARP request for the offloaded address: the firmware's answer,
+	 * the host not woken */
+	if (fw.arp_valid && n >= 32 + 28 && d[30] == 0x08 && d[31] == 0x06 && get16(d + 32 + 6) == 0x0100 &&
+	    !memcmp(d + 32 + 24, fw.arp_ip, 4)) {
+		u8 r[24 + 8 + 28];
+		put16(r, 0x4108);                   /* data, to the DS, protected (the firmware's CCMP) */
+		put16(r + 2, 0);
+		memcpy(r + 4, ap_mac, 6);
+		memcpy(r + 10, fw.sta_mac, 6);
+		memcpy(r + 16, d + 32 + 8, 6);      /* the requester */
+		put16(r + 22, 0);
+		memcpy(r + 24, d + 24, 8);          /* LLC/SNAP, ARP */
+		u8 *a = r + 32;
+		memcpy(a, d + 32, 6);
+		a[6] = 0, a[7] = 2;                 /* a reply */
+		memcpy(a + 8, fw.sta_mac, 6);
+		memcpy(a + 14, fw.arp_ip, 4);
+		memcpy(a + 18, d + 32 + 8, 10);     /* the requester's MAC and address */
+		fw.arp_answered++;
+		fw_to_air(r, sizeof(r));
+		return;
 	}
 	if (!fw.rx_ring || fw.fw_idx == *(u32 *)va(fw.idx_pa, 4)) {
 		fw.rx_no_buffer++;
@@ -1532,7 +1577,40 @@ static void fw_wmi(const u8 *c, u32 len)
 		      (IS("normal") ? (v[12] & 3) == 2 : !memcmp(v + 12, fw_mac, 6)),
 		      "VDEV_CREATE: a station, our MAC (READY's, or a random local one when it has none)");
 		fw.vdev = true;
+		memcpy(fw.sta_mac, v + 12, 6);
 		break;
+	case WMI_TLV_STA_KEEPALIVE_CMDID:
+		/* ath10k_wmi_tlv_op_gen_sta_keepalive: the command, then the
+		 * ARP response's TLV */
+		fw.ka_cmds++;
+		fw.ka_ok = tag == WMI_TLV_TAG_STRUCT_STA_KEEPALIVE_CMD && tl == 16 && get32(v) == 0 && get32(v + 4) == 1 &&
+			   get16(v + 16 + 2) == WMI_TLV_TAG_STRUCT_STA_KEEPALVE_ARP_RESPONSE && get16(v + 16) == 16 &&
+			   len == WMI_HDR_LEN + 4 + 16 + 4 + 16;
+		fw.ka_method = get32(v + 8);
+		fw.ka_interval = get32(v + 12);
+		break;
+	case WMI_TLV_SET_ARP_NS_OFFLOAD_CMDID: {
+		/* ath11k_wmi_arp_ns_offload: flags, vdev, NS ext tuples; two NS
+		 * tuples, two ARP tuples, each an array of structures */
+		const u8 *t = v + 12;
+		bool ok = tag == WMI_TLV_TAG_STRUCT_SET_ARP_NS_OFFLOAD_CMD && tl == 12 && get32(v + 4) == 0 && get32(v + 8) == 0 &&
+			  get16(t + 2) == WMI_TLV_TAG_ARRAY_STRUCT && get16(t) == 2 * 80;
+		fw.ns_empty = true;
+		for (int i = 0; i < 2 && ok; i++) {
+			const u8 *u = t + 4 + 80 * i;
+			ok = get16(u + 2) == WMI_TLV_TAG_STRUCT_NS_OFFLOAD_TUPLE && get16(u) == 76;
+			fw.ns_empty &= get32(u + 4) == 0;
+		}
+		t += 4 + 160;
+		ok = ok && get16(t + 2) == WMI_TLV_TAG_ARRAY_STRUCT && get16(t) == 2 * 24 && len == WMI_HDR_LEN + 4 + 12 + 4 + 160 + 4 + 48;
+		for (int i = 0; i < 2 && ok; i++) ok = get16(t + 4 + 24 * i + 2) == WMI_TLV_TAG_STRUCT_ARP_OFFLOAD_TUPLE &&
+						  get16(t + 4 + 24 * i) == 20;
+		CHECK(ok, "SET_ARP_NS_OFFLOAD: its layout (ath11k's)");
+		fw.arp_cmds++;
+		fw.arp_valid = ok && (get32(t + 8) & 1) && get32(t + 4 + 24 + 4) == 0;
+		memcpy(fw.arp_ip, t + 4 + 8, 4);
+		break;
+	}
 	case WMI_TLV_STA_POWERSAVE_PARAM_CMDID:
 		CHECK(tag == WMI_TLV_TAG_STRUCT_STA_POWERSAVE_PARAM_CMD && get32(v) == 0 && get32(v + 4) < 5, "STA_POWERSAVE_PARAM");
 		if (get32(v + 4) < 5) fw.ps_param[get32(v + 4)] = get32(v + 8);
@@ -1812,6 +1890,16 @@ static void fw_poll(void)
 		}
 		fw_scan_event(WMI_SCAN_EVENT_COMPLETED);
 	}
+	/* the keepalive: a null frame after its interval without a frame out */
+	if (fw.up && fw.ka_cmds && fw.ka_interval && now - fw.last_tx >= fw.ka_interval * 1000) {
+		u8 nf[24] = { 0x48, 0x01 };         /* null data, to the DS */
+		memcpy(nf + 4, ap_mac, 6);
+		memcpy(nf + 10, fw.sta_mac, 6);
+		memcpy(nf + 16, ap_mac, 6);
+		fw.last_tx = now;
+		fw.nulls_sent++;
+		ap_rx(nf, 24);
+	}
 	/* the beacon's TIM: what the AP kept, fetched (PS-Poll or a null
 	 * frame: the firmware's) */
 	if (fw.ntim && now % 100 == 0) {
@@ -1897,6 +1985,14 @@ static void run_until(u32 end, bool (*done)(void))
 		fw_poll();
 		wifi_poll();
 		sys_check_timeouts();
+		/* lwIP's address to the firmware's ARP offload (wifi_dev.c's poll) */
+		static u32 seen;
+		u32 a = nif_added ? ip4_addr_get_u32(netif_ip4_addr(&nif)) : 0;
+		if (a != seen) {
+			seen = a;
+			u8 ip[4] = { (u8)a, (u8)(a >> 8), (u8)(a >> 16), (u8)(a >> 24) };
+			wifi_set_ipv4(ip);
+		}
 		/* the AP's own doings: message 1 again if message 2 does not come
 		 * (hostapd: 4 tries a second apart) */
 		if (ap.msg == 2 && now - ap.eapol_at > 1000 && ap.m1_tries < 4) ap_msg1();
@@ -2083,6 +2179,17 @@ int main(int argc, char **argv)
 	CHECK(a == (100u << 24 | 77 << 16 | 168 << 8 | 192), "192.168.77.100 (%x)", a);
 	CHECK(ap.dhcp_discover >= 1 && ap.dhcp_request >= 1 && fw.decrypt_fail == 0 && ap.decrypt_fail == 0,
 	      "DISCOVER and REQUEST at the AP (CCMP with the installed key), the broadcast replies decrypted (GTK)");
+	run_until(now + 100, NULL);
+	if (IS("legacy")) {
+		CHECK(fw.ka_cmds == 0 && fw.arp_cmds == 0 && !wifi_offloaded(),
+		      "without the services: no keepalive, no ARP offload asked for");
+	} else {
+		CHECK(fw.ka_cmds == 1 && fw.ka_ok && fw.ka_method == WMI_STA_KEEPALIVE_METHOD_NULL_FRAME && fw.ka_interval == 30,
+		      "STA_KEEPALIVE: vdev 0, on, null frames, 30 s, the ARP response's TLV (%u %u %u)", fw.ka_cmds,
+		      fw.ka_method, fw.ka_interval);
+		CHECK(fw.arp_cmds == 1 && fw.arp_valid && !memcmp(fw.arp_ip, sta_ip, 4) && fw.ns_empty && wifi_offloaded(),
+		      "SET_ARP_NS_OFFLOAD: 192.168.77.100 in the first ARP tuple, no NS; offloaded (%u)", fw.arp_cmds);
+	}
 
 	ping_out(0);
 	run_until(now + 3000, echoed);
@@ -2108,6 +2215,23 @@ int main(int argc, char **argv)
 		CHECK(ap.echo_replies == 1 && fw.tim_held > held && fw.tim_delivered >= fw.tim_held - fw.ntim,
 		      "a ping to the dozing station: kept by the AP, fetched at the beacon, answered (%u kept)", fw.tim_held - held);
 		CHECK(wifi_busy() && wifi_poll_ms() == 20, "busy again after it");
+		/* the router asks for us: the firmware answers, the host sees
+		 * nothing of it */
+		u32 rx = fw.rx_delivered, req = ap.arp_replies, ans = fw.arp_answered;
+		run_until(now + 2000, NULL);
+		rx = fw.rx_delivered;
+		arp_out(1, (const u8 *)"\0\0\0\0\0\0", sta_ip, bcast);
+		run_until(now + 300, NULL);
+		CHECK(ap.arp_replies == req + 1 && fw.arp_answered == ans + 1 && fw.rx_delivered == rx,
+		      "an ARP request for our address answered by the firmware, nothing to the host (%u %u)",
+		      fw.arp_answered - ans, fw.rx_delivered - rx);
+		/* a minute of silence: the firmware's null frames keep the
+		 * association, the host gets nothing */
+		u32 nulls = ap.nulls;
+		rx = fw.rx_delivered;
+		run_until(now + 65000, NULL);
+		CHECK(ap.nulls >= nulls + 2 && fw.rx_delivered == rx && is_up(),
+		      "65 s of silence: the firmware's keepalive (%u null frames), nothing to the host, still up", ap.nulls - nulls);
 	}
 	if (wpa3) {
 		/* PMF: the AP's SA Query answered (protected, our PN); an
@@ -2202,6 +2326,8 @@ int main(int argc, char **argv)
 		CHECK(fw.nps_modes == 5 && fw.ps_modes[2] == WMI_STA_PS_MODE_DISABLED && fw.ps_modes[3] == WMI_STA_PS_MODE_DISABLED &&
 		      fw.ps_modes[4] == WMI_STA_PS_MODE_ENABLED, "power save: off when disconnected, off at the new start, on again (%u)",
 		      fw.nps_modes);
+		CHECK(fw.ka_cmds == 2 && fw.arp_cmds >= 2 && fw.arp_valid && wifi_offloaded(),
+		      "the keepalive and the ARP offload again for the new association (%u %u)", fw.ka_cmds, fw.arp_cmds);
 	}
 
 	const struct wifi_stats *s = wifi_stats();

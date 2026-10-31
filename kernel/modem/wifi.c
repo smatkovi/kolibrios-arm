@@ -574,6 +574,48 @@ static void setup_ps(void)
 	stats.ps = mode == WMI_STA_PS_MODE_ENABLED;
 }
 
+/* --- the firmware's offloads (the host asleep: ath11k's WoW does the same,
+ * ath11k_wow_protocol_offload and its keepalive): ARP requests for our
+ * address answered by the firmware (SET_ARP_NS_OFFLOAD), the association
+ * kept by its own null data frames (STA_KEEPALIVE); the beacons' loss is
+ * the firmware's already (its ROAM event, BMISS). Then nothing but frames
+ * for us needs the host while the station is up. */
+static u8 ip4[4];                       /* our IPv4 address (lwIP's lease), network order */
+static bool ka_sent, arp_sent;
+
+static void offload_arp(void)
+{
+	arp_sent = false;
+	if (st != WIFI_UP || !wmi_service(&svc, WMI_TLV_SERVICE_ARPNS_OFFLOAD)) return;
+	SEND(wmi_arp_ns_offload, VDEV, ip4);
+	arp_sent = ip4[0] | ip4[1] | ip4[2] | ip4[3];
+	mlog("wifi: ARP for %u.%u.%u.%u answered by the firmware%s\n", ip4[0], ip4[1], ip4[2], ip4[3],
+	     arp_sent ? "" : " (off)");
+}
+
+static void offload_up(void)
+{
+	ka_sent = false;
+	if (wmi_service(&svc, WMI_TLV_SERVICE_STA_KEEP_ALIVE)) {
+		SEND(wmi_sta_keepalive, VDEV, WMI_STA_KEEPALIVE_METHOD_NULL_FRAME, WMI_STA_KEEPALIVE_INTERVAL_DEFAULT);
+		ka_sent = true;
+		mlog("wifi: keepalive by the firmware (a null frame after %u s of silence)\n", WMI_STA_KEEPALIVE_INTERVAL_DEFAULT);
+	}
+	if (ip4[0] | ip4[1] | ip4[2] | ip4[3]) offload_arp();
+}
+
+void wifi_set_ipv4(const u8 addr[4])
+{
+	if (!crypto_memcmp(addr, ip4, 4)) return;
+	mcopy(ip4, addr, 4);
+	offload_arp();
+}
+
+bool wifi_offloaded(void)
+{
+	return st == WIFI_UP && ka_sent && arp_sent;
+}
+
 static void join(void)
 {
 	bss = best;
@@ -904,6 +946,7 @@ static void install_next(void)
 			mlog("wifi: power save on (inactivity %u ms, %s)\n", bss.beacon_int * 1024 / 1000,
 			     uapsd_bits ? "U-APSD" : "PS-Poll/null data");
 		}
+		offload_up();
 		if (hw.link) hw.link(true, mac);
 	}
 	install_step++;
