@@ -546,13 +546,13 @@ second in the 10 s lines after the first; before: master at d034fef:
 
 | | before | after | what it was |
 | --- | --- | --- | --- |
-| the shell at its prompt (`shell`) | 9.3-9.5 | @SHELL@ | console.obj's program thread looked for a key every 0.1 s (50 times a second in the first second) |
-| ... the display off (`shell-standby`) | 0.9-1.0 | @SHELLSB@ | the same, on whole seconds |
-| the clock in front, the display on (`clock`) | 2.4-2.5 | @CLOCK@ | its second, and a tick for the flush after each drawing |
-| the clock, the display off (`clock-standby`) | 1.0 | @CLOCKSB@ | its second (on whole seconds) and the flush's tick |
-| the process list, the display off (`cpu-standby`) | 0.4-0.5 | @CPUSB@ | its second |
-| the debug board, the display off (`board-standby`) | 1.1 | @BOARDSB@ | its 250 ms |
-| the container mounted read-write (`storage`) | 0.4-0.5 | @STORAGE@ | nothing of the storage's (stage 6: no periodic work) |
+| the shell at its prompt (`shell`) | 9.3-9.5 | 0.4-0.5 | console.obj's program thread looked for a key every 0.1 s (50 times a second in the first second) |
+| ... the display off (`shell-standby`) | 0.9-1.0 | 0.0-0.1 | the same, on whole seconds |
+| the clock in front, the display on (`clock`) | 2.4-2.5 | 1.5 | its second, and a tick for the flush after each drawing |
+| the clock, the display off (`clock-standby`) | 1.0 | 0.0-0.1 | its second (on whole seconds) and the flush's tick |
+| the process list, the display off (`cpu-standby`) | 0.4-0.5 | 0.0 | its second |
+| the debug board, the display off (`board-standby`) | 1.1 | 0.0-0.1 | its 250 ms |
+| the container mounted read-write (`storage`) | 0.4-0.5 | 0.4-0.5 | nothing of the storage's (stage 6: no periodic work) |
 | kfar open | 0.4-0.5 | | nothing of kfar's: it waits for events (its idle look only during a file search) |
 | a key typed while the clock (cpu, board) is in front | idle 0.0 % | idle 99.8 % | the program never took its keys: the key stayed pending and returned its wait at once, again and again, until it ended |
 
