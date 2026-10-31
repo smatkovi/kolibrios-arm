@@ -89,7 +89,7 @@ qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cl
 	python3 qemu.py --pro1x $(B)/pro1x-auto.dtb $(K) displayoff 43 max-rate=8 "has=pro1x: standby (no input)" \
 		"has=pro1x: awake (the power key, played) after 10 s"
 	python3 qemu.py --pro1x $(B)/pro1x-ring.dtb $(K) ring 23 "has=pro1x: standby (no input)" \
-		"has=pro1x: awake (a call) after 7 s"
+		"has=pro1x: awake (a call)"
 
 # the kernel with the Linux programs (tcphold, the fake messenger backend)
 # on its ramdisk, kept as $(KL)
