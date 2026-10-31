@@ -30,6 +30,7 @@ enum task_state {
 	T_SLEEP,          /* function 5 */
 	T_ZOMBIE,
 	T_LX_WAIT,        /* a Linux thread in a system call (kernel/linux) */
+	T_FUTEX,          /* function 77.2: on a futex, until 77.3 (or its timeout) */
 };
 
 struct lx_thread;
@@ -104,7 +105,9 @@ struct task {
 	void *l1;         /* the page table (TTBR0) */
 	addr_t mem_pa;    /* the address space: VA 0.. mem_size at mem_pa */
 	u32 mem_size;
-	u32 wake_tick;    /* T_SLEEP, T_WAIT_TIMEOUT */
+	u32 wake_tick;    /* T_SLEEP, T_WAIT_TIMEOUT, T_FUTEX with a timeout */
+	u32 futex;        /* T_FUTEX: the handle waited on */
+	bool futex_timed; /* ... with a timeout (wake_tick) */
 	u32 events;       /* pending events, bit (n - 1) for event n */
 	u32 event_mask;   /* function 40 */
 	u32 keys[KEYBUF]; /* function 2's values */
@@ -142,12 +145,13 @@ const char *ustr(struct task *t, u32 va); /* a terminated string or NULL */
 void syscall(struct task *t);
 
 /* proc.c: processes, threads (51), IPC (60), named shared memory
- * (68.22, 68.23) */
+ * (68.22, 68.23), futexes (77.0-77.3) */
 struct proc *proc_alloc(void);
 void proc_thread_gone(struct task *t);  /* from task_exit */
 struct task *task_by_pid(u32 pid);
 void sys_threads(struct task *t, u32 *r);
 void sys_ipc(struct task *t, u32 *r);
+void sys_posix(struct task *t, u32 *r);
 void sys_shmem_open(struct task *t, u32 *r);
 void sys_shmem_close(struct task *t, u32 *r);
 /* a region of the process's map area (blocks of USER_ALIGN_MB MiB),

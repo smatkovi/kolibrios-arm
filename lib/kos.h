@@ -209,7 +209,7 @@ enum { KOS_EV_SYSTEM = 11 };
 static inline u32 kos_system_state(void) { return kos_call(102, 0, 0, 0, 0, 0); }
 
 /* threads (51), IPC (60), named shared memory (68.22, 68.23), libraries
- * (68.19): KolibriOS's functions (docs/threads.md) */
+ * (68.19), futexes (77): KolibriOS's functions (docs/threads.md) */
 enum { KOS_EV_IPC = 7 };
 #define EVM_IPC 0x40
 /* a thread in this program's address space: entry with the stack
@@ -247,6 +247,14 @@ static inline void *kos_shm_open(const char *name, u32 size, u32 flags, u32 *edx
 static inline void kos_shm_close(const char *name) { kos_call(68, 23, (u32)name, 0, 0, 0); }
 /* a library's export table ({ name, value } pairs, 0-terminated) or NULL */
 static inline void *kos_load_dll(const char *path) { return (void *)kos_call(68, 19, (u32)path, 0, 0, 0); }
+/* futexes (77.0-77.3, KolibriOS's): a dword of the program's to wait on.
+ * kos_futex_wait blocks while *p still holds val (else -2 at once) until
+ * kos_futex_wake (0) or the timeout in 1/100 s (0: none) passes (-1);
+ * kos_futex_wake answers how many it woke. Create: the handle, 0 */
+static inline u32 kos_futex_create(volatile void *p) { return kos_call(77, 0, (u32)p, 0, 0, 0); }
+static inline int kos_futex_destroy(u32 h) { return kos_call(77, 1, h, 0, 0, 0); }
+static inline int kos_futex_wait(u32 h, u32 val, u32 timeout) { return kos_call(77, 2, h, val, timeout, 0); }
+static inline int kos_futex_wake(u32 h, u32 n) { return kos_call(77, 3, h, n, 0, 0); }
 /* KolibriOS for ARM, function 102.1: len (at most 4096) bytes from the
  * kernel's random number generator (docs/rng.md); 0, or -1 while it has
  * no seed */

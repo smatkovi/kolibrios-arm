@@ -4,7 +4,7 @@
  * threads of one program (function 51) share its process, the address
  * space (kernel/proc.c), which ends with its last thread. The kernel
  * keeps no stack per task: a task's state is its saved trap frame, and a task
- * that waits (functions 5, 10, 23) gets its return value written into
+ * that waits (functions 5, 10, 23, 77.2) gets its return value written into
  * that frame when it wakes. Round robin, preempted by the 100 Hz tick;
  * when nothing is ready, sched_next_work says when the next timeout is
  * (tickless idle, AArch64). */
@@ -123,6 +123,13 @@ void wake_waiters(void)
 		case T_SLEEP:
 			if ((s32)(ticks - t->wake_tick) >= 0) t->state = T_READY;
 			break;
+		case T_FUTEX:                  /* 77.2's timeout: -1 */
+			if (t->futex_timed && (s32)(ticks - t->wake_tick) >= 0) {
+				t->tf.r[0] = -1;
+				t->futex = 0;
+				t->state = T_READY;
+			}
+			break;
 #ifdef __aarch64__
 		case T_LX_WAIT:
 			lx_retry(t);
@@ -215,6 +222,9 @@ u32 sched_next_work(void)
 		case T_READY:
 			v = 0;
 			break;
+		case T_FUTEX:                  /* without a timeout: only by 77.3 */
+			if (!t->futex_timed) break;
+			/* fall through */
 		case T_SLEEP:
 		case T_WAIT_TIMEOUT:
 			v = until(t->wake_tick);

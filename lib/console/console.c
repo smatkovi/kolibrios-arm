@@ -118,6 +118,11 @@ static volatile u8 con_thread_op;
 static volatile u8 con_ipc_buf[0x14] __attribute__((aligned(4))) = { 0, 0, 0, 0, 8 };
 static volatile u32 con_console_tid, con_parent_tid;
 static u32 con_stack[4096] __attribute__((aligned(16)));
+/* the program's thread waits for a key on a futex (77): con_seq counts
+ * the keys put in and the window's end, the window's thread wakes it
+ * (console.obj looks every 20 ms instead) */
+static volatile u32 con_seq __attribute__((aligned(4)));
+static u32 con_futex;
 static void con_wake(void);
 static void con_thread(void);
 
@@ -588,6 +593,10 @@ int con_init_opt(dword wnd_width, dword wnd_height, dword scr_width, dword scr_h
 		exit(1);
 	}
 	con_console_tid = tid;
+	if (!con_futex) {
+		u32 f = kos_futex_create(&con_seq);
+		con_futex = f == (u32)-1 ? 0 : f;
+	}
 	return 0;
 }
 
@@ -733,6 +742,8 @@ static void con_put_input(u16 code)
 	if (n == con.input_start) return;        /* full: KolibriOS beeps */
 	con.input[con.input_end] = code;
 	con.input_end = n;
+	con_seq++;
+	if (con_futex) kos_futex_wake(con_futex, 1);
 }
 
 /* a scan code from function 2 into KolibriOS's 16-bit key code, ASCII
@@ -851,6 +862,8 @@ static void con_thread_exit(void)
 {
 	con_flags |= CON_WINDOW_CLOSED;
 	con_console_tid = 0;
+	con_seq++;
+	if (con_futex) kos_futex_wake(con_futex, 1);
 	kos_exit();
 }
 
@@ -911,13 +924,17 @@ int con_kbhit(void)
 }
 
 /* con.force_entered_char: a key from the input buffer, waiting for one
- * as console.obj does (5 2), after a second without one every 0.1 s (the
- * tickless kernel idles longer); 0 when the window was closed */
+ * on the futex until the window's thread puts one in or the window is
+ * closed (console.obj looks every 20 ms; without the futex: so for a
+ * second, then every 0.1 s); 0 when the window was closed */
 static u16 con_take(void)
 {
-	for (int n = 0; con.input_start == *(volatile int *)&con.input_end; n++) {
+	for (int n = 0;; n++) {
+		u32 seq = con_seq;
+		if (con.input_start != *(volatile int *)&con.input_end) break;
 		if (con_flags & CON_WINDOW_CLOSED) return 0;
-		kos_delay(n < 50 ? 2 : 10);
+		if (con_futex) kos_futex_wait(con_futex, seq, 0);
+		else kos_delay(n < 50 ? 2 : 10);
 	}
 	u16 c = con.input[con.input_start];
 	con.input_start = (con.input_start + 1) % 128;

@@ -1,8 +1,9 @@
 /* KolibriOS for ARM: processes and their threads (function 51), IPC
- * (function 60) and named shared memory (68.22, 68.23), as KolibriOS's
- * kernel has them (core/taskman.inc's new_sys_threads, core/sys32.inc's
- * terminate, core/memory.inc's sys_IPC, core/heap.inc's shmem_open and
- * shmem_close).
+ * (function 60), named shared memory (68.22, 68.23) and futexes (77.0-
+ * 77.3), as KolibriOS's kernel has them (core/taskman.inc's
+ * new_sys_threads, core/sys32.inc's terminate, core/memory.inc's sys_IPC,
+ * core/heap.inc's shmem_open and shmem_close; the futexes as
+ * docs/sysfuncs.txt describes them).
  *
  * A process is an address space: the program's image from VA 0 (its
  * memory, one piece of physical memory), its heap (68.11, 68.12), and
@@ -77,6 +78,8 @@ struct umap *proc_map_new(struct proc *p, u32 size, int kind)
 	if (pa) mmu_map_user(p->l1, va, pa, size);
 	return m;
 }
+
+static void futex_proc_gone(struct proc *p);
 
 /* the mapping gone (its memory too, unless it is shared memory's) */
 void proc_map_free(struct proc *p, struct umap *m)
@@ -226,6 +229,7 @@ void proc_thread_gone(struct task *t)
 	for (int i = 0; i < p->nmap; i++)
 		if (p->map[i].owner_pid == t->pid) p->map[i].owner_pid = 0;
 	if (--p->threads > 0) return;
+	futex_proc_gone(p);
 	while (p->nmap) {
 		struct umap *m = &p->map[p->nmap - 1];
 		if (m->kind == UMAP_SHM) shm_close_map(p, m);
@@ -324,6 +328,97 @@ void sys_ipc(struct task *t, u32 *r)
 		return;
 	default:
 		r[0] = -1;
+		return;
+	}
+}
+
+/* --- futexes (77.0-77.3) ------------------------------------------------
+ * A futex is a dword of the program's (its control value) by which its
+ * threads wait for each other: 77.2 waits while the dword still holds the
+ * value given (else -2 at once), until 77.3 wakes it or its timeout (in
+ * hundredths of a second, 0: none) passes (-1); 77.3 wakes that many
+ * waiters (their 77.2 answers 0) and answers how many. The check and the
+ * wait are one system call (the kernel runs with interrupts off), so a
+ * 77.3 that comes after the program changed the dword cannot be missed:
+ * a thread that waits for something another thread does needs no polling
+ * (console.obj's program thread waits so for a key, lib/console). The
+ * handles are the process's; they go with its last thread. */
+#define MAX_FUTEX 128
+static struct futex {
+	struct proc *p;                    /* its process, NULL: free */
+	u32 va;                            /* the control value's address */
+} futexes[MAX_FUTEX];
+
+static struct futex *futex_of(struct task *t, u32 h)
+{
+	if (!h || h > MAX_FUTEX || !t->proc || futexes[h - 1].p != t->proc) return NULL;
+	return &futexes[h - 1];
+}
+
+/* up to n of its waiters woken with the answer r; how many */
+static u32 futex_wake(u32 h, u32 n, u32 r)
+{
+	u32 woken = 0;
+	for (int i = 1; i < MAX_TASKS && woken < n; i++) {
+		struct task *w = &tasks[i];
+		if (w->state != T_FUTEX || w->futex != h) continue;
+		w->tf.r[0] = r;
+		w->futex = 0;
+		w->state = T_READY;
+		woken++;
+	}
+	return woken;
+}
+
+static void futex_proc_gone(struct proc *p)
+{
+	for (int i = 0; i < MAX_FUTEX; i++)
+		if (futexes[i].p == p) futexes[i].p = NULL;
+}
+
+void sys_posix(struct task *t, u32 *r)
+{
+	switch (r[1]) {
+	case 0: {                                  /* create: ECX the control value's address */
+		r[0] = 0;
+		if (!t->proc || (r[2] & 3) || !uptr(t, r[2], 4)) return;
+		for (int i = 0; i < MAX_FUTEX; i++)
+			if (!futexes[i].p) {
+				futexes[i].p = t->proc;
+				futexes[i].va = r[2];
+				r[0] = i + 1;
+				return;
+			}
+		return;
+	}
+	case 1: {                                  /* destroy: its waiters as by a timeout */
+		struct futex *f = futex_of(t, r[2]);
+		if (!f) { r[0] = -1; return; }
+		futex_wake(r[2], MAX_TASKS, -1);
+		f->p = NULL;
+		r[0] = 0;
+		return;
+	}
+	case 2: {                                  /* wait: EDX the value, ESI the timeout */
+		struct futex *f = futex_of(t, r[2]);
+		const u32 *v = f ? uptr(t, f->va, 4) : NULL;
+		if (!v) { r[0] = -1; return; }
+		if (get32(v) != r[3]) { r[0] = -2; return; }
+		t->futex = r[2];
+		t->futex_timed = r[4] != 0;
+		t->wake_tick = ticks + r[4];
+		t->state = T_FUTEX;
+		return;
+	}
+	case 3: {                                  /* wake: EDX waiters at most */
+		r[0] = futex_of(t, r[2]) ? futex_wake(r[2], r[3], 0) : 0;
+		return;
+	}
+	case 4: case 5: case 6: case 7:            /* reserved */
+		r[0] = -1;
+		return;
+	default:                                   /* the pipes (10, 11, 13) are not here */
+		r[0] = -9;                         /* -EBADF */
 		return;
 	}
 }

@@ -176,7 +176,7 @@ static void thread_info(struct task *t, u32 *r)
 	put32(b + 38, w->y);
 	put32(b + 42, w->w - 1);
 	put32(b + 46, w->h - 1);
-	put16(b + 50, o->state == T_WAIT_EVENT || o->state == T_WAIT_TIMEOUT ? 5 :
+	put16(b + 50, o->state == T_WAIT_EVENT || o->state == T_WAIT_TIMEOUT || o->state == T_FUTEX ? 5 :
 			   o->state == T_SLEEP ? 1 : 0);
 	bool skinned = w->style == 3 || w->style == 4;
 	int fw = skinned ? wm_frame_w(w) : 0, sh = skinned ? wm_skin_h(w) : 0;
@@ -649,6 +649,9 @@ void syscall(struct task *t)
 		return;
 	case 60:                               /* IPC */
 		sys_ipc(t, r);
+		return;
+	case 77:                               /* futexes */
+		sys_posix(t, r);
 		return;
 	case 72:                               /* a message to the active window */
 		EAX = EBX == 1 ? wm_message(ECX, EDX) : -1;

@@ -13,6 +13,7 @@ followed: `core/taskman.inc`, `core/sys32.inc`, `core/memory.inc`,
 | 60.1, 60.2 | IPC: the receiving buffer; send a message (event 7) | `kernel/proc.c` |
 | 68.22, 68.23 | named shared memory: open/create, close | `kernel/proc.c` |
 | 68.19, 68.18 | load a library: its export table | `kernel/dll.c` |
+| 77.0-77.3 | futexes: create, destroy, wait, wake | `kernel/proc.c` |
 | 9, 18.2, 18.18, 18.21 | a thread's information, ending a thread by slot or TID, the slot of a TID | as before, now per thread |
 
 ## Processes and threads
@@ -56,6 +57,23 @@ it at 8), then the messages, each the sender's TID, its length and the
 data; 60.2 appends one and sends event 7. It answers 0 (sent), 1 (no
 buffer), 2 (locked), 3 (no room), 4 (no such TID), and works between
 threads of one program and between programs.
+
+## Futexes
+
+As `docs/sysfuncs.txt` describes them: 77.0 makes a futex of a dword of
+the program's (ECX its address, 4-aligned; the handle, 0 on an error),
+77.1 destroys it (0, -1 for a handle not the process's; its waiters
+answer -1), 77.2 waits on it while the dword still holds EDX (else -2 at
+once) until 77.3 wakes it (0) or ESI hundredths of a second pass (-1; 0:
+no timeout), 77.3 wakes EDX waiters at most and answers how many. The
+check and the wait are one system call, and the kernel runs with the
+interrupts off, so a wake that comes after the program changed the dword
+is never lost: a thread that waits for another one needs no polling.
+The handles are the process's (another process's answer -1, as a
+destroyed one) and go with its last thread; a waiter is "waiting" (5) in
+function 9. 77.4-77.7 answer -1, the rest (the original's pipes) -9
+(EBADF). The console library's program thread waits so for a key
+(below; docs/power.md, stage 7).
 
 ## Named shared memory
 
@@ -150,7 +168,9 @@ the programs as before.
 
 - The console library (`lib/console`, `/sys/lib/console.obj`) runs its
   window in a thread of its own, woken by IPC, as console.obj does
-  (`docs/apps.md`): the shell and the terminal.
+  (`docs/apps.md`): the shell and the terminal. The program's thread
+  waits for a key on a futex the window's thread wakes (console.obj
+  looks every 20 ms).
 - The shell serves a program's console through its named shared memory
   `PID-SHELL`, as in KolibriOS (`docs/apps.md`).
 - The shell, the terminal, kfar and t_edit load console.obj, box_lib.obj
@@ -193,7 +213,10 @@ processes (it starts itself again) IPC and shared memory, the access
 rules, a process whose main thread ended while another runs on; 68.19
 of libini.obj, the same table again (also from another thread), a
 function called through it and through the program's own import stub,
-`dll_load` on lists of its own (a name not exported fails). The
+`dll_load` on lists of its own (a name not exported fails); futexes: a
+value that differs (-2), a timeout (-1), a thread woken (0, one woken,
+function 9's state), 500 rounds of ping-pong between two threads, a
+destroyed handle, an address outside the program. The
 shell's test (`tests/apps`) runs `threadtest shellapi` in its console.
 `tests/threads` runs it on both kernels:
 

@@ -86,8 +86,10 @@ The console works as `console.obj` does: `con_init` starts a thread
 of its own (function 51) for the window, which draws (at most every
 20 ms), reads the keys into the input buffer and handles the scroll
 bar; the program's calls write into the buffer and wake the thread by
-IPC (function 60, a byte: redraw, title, exit), and wait for keys as
-console.obj's do. Its close button ends the thread that called
+IPC (function 60, a byte: redraw, title, exit), and wait for keys on a
+futex (function 77, docs/threads.md) that the window's thread wakes when
+it puts a key in or the window is closed (console.obj's look every
+20 ms instead: docs/power.md, stage 7). Its close button ends the thread that called
 `con_init` (18.18) and then itself; after `con_exit(0)` the window
 stays, "[Finished]" in its title, until it is closed. Its look is
 console.obj's: 80 x 25 characters of its

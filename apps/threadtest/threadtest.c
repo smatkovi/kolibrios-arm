@@ -1,5 +1,6 @@
 /* KolibriOS for ARM: a test of threads (function 51), IPC (60), named
- * shared memory (68.22, 68.23) and libraries (68.19) from a program.
+ * shared memory (68.22, 68.23), libraries (68.19) and futexes (77) from
+ * a program.
  * Each check writes "threadtest: ok ..." or "threadtest: FAIL ..." to the
  * debug board, "threadtest: done N failed" at the end (tests/threads
  * runs it in QEMU on both kernels). It starts itself again as a second
@@ -327,6 +328,89 @@ static void test_ipc(void)
 	kos_event_mask(old);
 }
 
+/* --- futexes (77.0-77.3) ------------------------------------------------ */
+
+static volatile u32 fx_word __attribute__((aligned(4))), fx_turn __attribute__((aligned(4)));
+static volatile u32 fx_handle, fx_turn_h, fx_rounds, fx_woke, fx_answer;
+
+/* waits on fx_word until it changes from 0 (77.3), then says what 77.2 answered */
+static void t_futex_wait(void)
+{
+	int r = 0;
+	while (!fx_word) r = kos_futex_wait(fx_handle, 0, 0);
+	fx_answer = r;
+	fx_woke = 1;
+	kos_exit();
+}
+
+/* the other half of a ping-pong: waits for its turn (odd), gives it back (even) */
+static void t_futex_pong(void)
+{
+	for (;;) {
+		u32 v = fx_turn;
+		if (v == 0xffffffffu) kos_exit();
+		if (!(v & 1)) {
+			kos_futex_wait(fx_turn_h, v, 0);
+			continue;
+		}
+		fx_rounds++;
+		fx_turn = v + 1;
+		kos_futex_wake(fx_turn_h, 1);
+	}
+}
+
+static void test_futex(void)
+{
+	fx_word = 0;
+	u32 h = kos_futex_create(&fx_word);
+	fx_handle = h;
+	check(h && h != 0xffffffffu, "77.0 creates a futex", h, 0);
+	check(kos_futex_wait(h, 1, 0) == -2, "77.2 with another value than the dword's: -2 at once", 0, 0);
+	u32 t0 = kos_uptime();
+	int r = kos_futex_wait(h, 0, 5);
+	u32 dt = kos_uptime() - t0;
+	check(r == -1 && dt >= 4 && dt < 100, "77.2 with a timeout of 5: -1 after it", r, dt);
+	check(kos_futex_wake(h, 1) == 0, "77.3 without waiters: 0", 0, 0);
+	/* a thread waits without a timeout; the dword changed, then woken */
+	fx_woke = 0;
+	int tid = kos_thread_create(t_futex_wait, STACK(1));
+	kos_delay(5);
+	int slot = kos_slot_of_pid(tid);
+	check(!fx_woke && slot && slot_state(slot) == 5, "a thread waits on it (function 9: waiting)", fx_woke,
+	      slot ? slot_state(slot) : -1);
+	fx_word = 1;
+	int n = kos_futex_wake(h, 5);
+	check(wait_gone(tid) && fx_woke && fx_answer == 0 && n == 1, "77.3 wakes it: 1 woken, its 77.2 answers 0",
+	      n, fx_answer);
+	/* ping-pong: each side waits for its turn, 500 rounds without a
+	 * wake-up lost (the check and the wait in one call) */
+	fx_turn = 0;
+	fx_rounds = 0;
+	u32 ht = kos_futex_create(&fx_turn);
+	fx_turn_h = ht;
+	tid = kos_thread_create(t_futex_pong, STACK(2));
+	int mine = 0;
+	t0 = kos_uptime();
+	while (mine < 500 && kos_uptime() - t0 < 1000) {
+		u32 v = fx_turn;
+		if (v & 1) {
+			kos_futex_wait(ht, v, 100);
+			continue;
+		}
+		mine++;
+		fx_turn = v + 1;
+		kos_futex_wake(ht, 1);
+	}
+	while (fx_turn & 1 && kos_uptime() - t0 < 1000) kos_futex_wait(ht, fx_turn, 100);
+	fx_turn = 0xffffffffu;
+	kos_futex_wake(ht, 1);
+	check(mine == 500 && fx_rounds == 500 && wait_gone(tid), "futex ping-pong between threads, 500 rounds", mine,
+	      fx_rounds);
+	check(kos_futex_destroy(ht) == 0 && kos_futex_destroy(h) == 0, "77.1 destroys them", 0, 0);
+	check(kos_futex_wait(h, 0, 0) == -1 && kos_futex_wake(h, 1) == 0, "a destroyed handle: 77.2 -1, 77.3 0", 0, 0);
+	check(kos_futex_create((volatile void *)0x7ffffff0) == 0, "77.0 on an address outside the program: 0", 0, 0);
+}
+
 /* --- between processes: IPC and shared memory -------------------------- */
 
 #define SHM_NAME "threadtest-area"
@@ -593,6 +677,7 @@ int main(int argc, char **argv)
 	test_fp();
 	test_window();
 	test_ipc();
+	test_futex();
 	test_processes();
 	test_dll();
 	printf("threadtest: done %d failed\n", failed);
