@@ -2058,6 +2058,8 @@ int main(int argc, char **argv)
 	CHECK(wifi_conf_parse("ssid=a\npsk=12345678\ncountry=de\n", 32, &c, &why) == -1 &&
 	      wifi_conf_parse("ssid=a\npsk=12345678\ncountry=00\nuapsd=on\npowersave=off\n", 54, &c, &why) == 0 &&
 	      !strcmp(c.country, "00") && c.no_ps && c.uapsd_queues == 0x0f, "country=de refused; 00, uapsd=on, powersave=off");
+	CHECK(wifi_conf_parse("ssid=a\npsk=12345678\noffload=off\n", 31, &c, &why) == 0 && c.no_offload &&
+	      wifi_conf_parse("ssid=a\npsk=12345678\noffload=no\n", 30, &c, &why) == -1, "offload=off; offload=no refused");
 	wifi_conf_parse(text, strlen(text), &c, &why);
 	struct wifi_hw h = { { rd, wr, dma_alloc }, dma_alloc32, wlan_enable, now_ms, rnd, rx_eth, on_link };
 	wifi_start(&h, &c);

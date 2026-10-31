@@ -420,7 +420,8 @@ driver lwIP's address as it changes (`wifi_set_ipv4`). With both on and
 the display off the device asks for no idle look (`wifi_offloaded`): the
 router's ARP is answered and the association kept without the host, and
 a frame for us waits for the next wake-up by time (`kolibri.wifilook=MS`
-for a look every MS ms). No beacon filter (`ADD_BCN_FILTER`'s layout is
+for a look every MS ms). `offload=off` in the network's file sends
+neither command (the look a second as before). No beacon filter (`ADD_BCN_FILTER`'s layout is
 in neither ath10k nor ath11k).
 
 **7d, WPA3-Personal and PMF** (`sae.c`, `ecc.c`, `crypto.c`, `wpa.c`,

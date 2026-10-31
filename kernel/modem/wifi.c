@@ -586,7 +586,7 @@ static bool ka_sent, arp_sent;
 static void offload_arp(void)
 {
 	arp_sent = false;
-	if (st != WIFI_UP || !wmi_service(&svc, WMI_TLV_SERVICE_ARPNS_OFFLOAD)) return;
+	if (st != WIFI_UP || conf.no_offload || !wmi_service(&svc, WMI_TLV_SERVICE_ARPNS_OFFLOAD)) return;
 	SEND(wmi_arp_ns_offload, VDEV, ip4);
 	arp_sent = ip4[0] | ip4[1] | ip4[2] | ip4[3];
 	mlog("wifi: ARP for %u.%u.%u.%u answered by the firmware%s\n", ip4[0], ip4[1], ip4[2], ip4[3],
@@ -596,6 +596,7 @@ static void offload_arp(void)
 static void offload_up(void)
 {
 	ka_sent = false;
+	if (conf.no_offload) return;
 	if (wmi_service(&svc, WMI_TLV_SERVICE_STA_KEEP_ALIVE)) {
 		SEND(wmi_sta_keepalive, VDEV, WMI_STA_KEEPALIVE_METHOD_NULL_FRAME, WMI_STA_KEEPALIVE_INTERVAL_DEFAULT);
 		ka_sent = true;
@@ -1807,6 +1808,10 @@ int wifi_conf_parse(const char *t, u32 len, struct wifi_conf *c, const char **wh
 			bool ok = vl == 2 && ((v[0] >= 'A' && v[0] <= 'Z' && v[1] >= 'A' && v[1] <= 'Z') || (v[0] == '0' && v[1] == '0'));
 			if (!ok) { *why = "country=XX: two capital letters (ISO 3166), or 00"; return -1; }
 			c->country[0] = v[0], c->country[1] = v[1], c->country[2] = 0;
+		} else if (kl == 7 && !crypto_memcmp(k, "offload", 7)) {
+			bool on = vl == 2 && !crypto_memcmp(v, "on", 2), off = vl == 3 && !crypto_memcmp(v, "off", 3);
+			if (!on && !off) { *why = "offload=on or off"; return -1; }
+			c->no_offload = off;
 		} else if ((kl == 9 && !crypto_memcmp(k, "powersave", 9)) || (kl == 5 && !crypto_memcmp(k, "uapsd", 5))) {
 			bool on = vl == 2 && !crypto_memcmp(v, "on", 2), off = vl == 3 && !crypto_memcmp(v, "off", 3);
 			if (!on && !off) { *why = kl == 5 ? "uapsd=on or off" : "powersave=on or off"; return -1; }

@@ -832,6 +832,8 @@ brings the display back; `kolibri.displayoff=0` keeps the old behaviour.
     seen` at the end against the minutes up: beacons the firmware passes
     to the host while up (a beacon filter would be next). Without the
     lines: the firmware does not announce the services (the look stays).
+    If the Wi-Fi fails after the lease (`wifi: ... disconnected`, the
+    firmware restarting) with them: `offload=off` in the network's file.
 15. The shell open in the standby: the shell started from the launcher,
     then the power key: `by deadline: tasks 0` (before: 10 a second).
 16. The measurements for what needs drivers (under Leste, read only, as

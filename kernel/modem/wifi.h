@@ -36,6 +36,7 @@ struct wifi_conf {
 	u8 uapsd_queues;                    /* uapsd=on: all four ACs (mac80211's default: none) */
 	bool no_pmf;                        /* pmf=off (ieee80211w=0); on: whenever the AP is capable */
 	bool pmf_fw;                        /* pmf=fw: also the firmware's peer PMF flag (WMI_PEER_PMF) */
+	bool no_offload;                    /* offload=off: no ARP offload, no keepalive by the firmware */
 };
 
 struct wifi_hw {
@@ -57,7 +58,8 @@ enum wifi_state {
 /* "ssid=NAME" and "psk=PASSPHRASE" (or 64 hex digits: WPA2 only) lines,
  * "bssid=aa:bb:cc:dd:ee:ff", "country=XX" (ISO 3166 alpha-2, 00: none; AT
  * by default), "powersave=on|off" (on), "uapsd=on|off" (off, as mac80211's
- * IEEE80211_DEFAULT_UAPSD_QUEUES), "pmf=on|off|fw" (on) optional, '#'
+ * IEEE80211_DEFAULT_UAPSD_QUEUES), "pmf=on|off|fw" (on), "offload=on|off"
+ * (on: the firmware answers ARP and keeps the association) optional, '#'
  * comments: 0, or -1 (*why). The passphrase serves WPA2 and WPA3 (SAE's
  * password) alike. */
 int wifi_conf_parse(const char *text, u32 len, struct wifi_conf *c, const char **why);
