@@ -63,10 +63,15 @@ static void draw(void)
 
 int main(void)
 {
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	draw();
 	for (;;) {
-		int ev = kos_wait_event_timeout(100);
+		/* a second's look only while the display is on (EV_SYSTEM
+		 * when it goes off or on: docs/power.md) */
+		int ev = kos_system_state() & KOS_SYS_DISPLAY_OFF ? kos_wait_event() : kos_wait_event_timeout(100);
 		if (ev == KOS_EV_BUTTON && (kos_get_button() >> 8) == 1) kos_exit();
-		if (ev == 0 || ev == KOS_EV_REDRAW) draw();
+		if (ev == KOS_EV_KEY) kos_get_key();   /* taken, else the event stays */
+		if (ev == 0 || ev == KOS_EV_REDRAW || (ev == KOS_EV_SYSTEM && !(kos_system_state() & KOS_SYS_DISPLAY_OFF)))
+			draw();
 	}
 }

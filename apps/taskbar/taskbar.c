@@ -104,6 +104,9 @@ int main(void)
 				kos_activate_slot(id - BTN_SLOT);
 			break;
 		}
+		case KOS_EV_KEY:
+			kos_get_key();                 /* taken, else the event stays */
+			break;
 		case KOS_EV_SYSTEM:
 		case 0:
 			scan();

@@ -45,8 +45,11 @@ int main(void)
 	int y = sh - 30 - h;
 	if (y < 0) y = 0;
 	int seen_active = 0;
+	/* EV_SYSTEM when another window becomes active (instead of a look
+	 * every 200 ms) */
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	for (;;) {
-		int ev = kos_wait_event_timeout(20);
+		int ev = kos_wait_event();
 		if (ev == KOS_EV_REDRAW) {
 			kos_begin_draw();
 			kos_window(0, y, W, h, KOS_WIN_FIXED | 0xe8ecf0, "Programs");

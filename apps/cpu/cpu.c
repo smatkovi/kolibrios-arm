@@ -50,13 +50,18 @@ int main(void)
 {
 	scan();
 	draw();
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	for (;;) {
-		int ev = kos_wait_event_timeout(100);
-		if (ev == KOS_EV_BUTTON) {
+		/* a second's look only while the display is on (EV_SYSTEM
+		 * when it goes off or on, or a window comes or goes) */
+		int ev = kos_system_state() & KOS_SYS_DISPLAY_OFF ? kos_wait_event() : kos_wait_event_timeout(100);
+		if (ev == KOS_EV_KEY) {
+			kos_get_key();                 /* taken, else the event stays */
+		} else if (ev == KOS_EV_BUTTON) {
 			u32 id = kos_get_button() >> 8;
 			if (id == 1) kos_exit();
 			if (id >= BTN_KILL) { kos_kill_slot(id - BTN_KILL); scan(); draw(); }
-		} else if (ev == KOS_EV_REDRAW || ev == 0) {
+		} else if (ev == KOS_EV_REDRAW || ev == 0 || ev == KOS_EV_SYSTEM) {
 			int old = n;
 			scan();
 			if (ev == KOS_EV_REDRAW || old != n) draw();

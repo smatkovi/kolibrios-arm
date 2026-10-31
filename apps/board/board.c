@@ -60,9 +60,14 @@ int main(void)
 	win_y = MAX(0, MIN(60, sh - (ROWS * 11 + 36) - 8));
 	poll();
 	draw();
+	kos_event_mask(EVM_REDRAW | EVM_KEY | EVM_BUTTON | EVM_SYSTEM);
 	for (;;) {
-		int ev = kos_wait_event_timeout(25);
+		/* the kernel's messages every 250 ms while the display is on;
+		 * while it is off they wait for it (the kernel keeps the last
+		 * 4 KiB, more than the board shows) */
+		int ev = kos_system_state() & KOS_SYS_DISPLAY_OFF ? kos_wait_event() : kos_wait_event_timeout(25);
 		if (ev == KOS_EV_BUTTON && (kos_get_button() >> 8) == 1) kos_exit();
-		if (ev == KOS_EV_REDRAW || (ev == 0 && poll())) draw();
+		if (ev == KOS_EV_KEY) kos_get_key();   /* taken, else the event stays */
+		if (ev == KOS_EV_REDRAW || ((ev == 0 || ev == KOS_EV_SYSTEM) && poll())) draw();
 	}
 }
