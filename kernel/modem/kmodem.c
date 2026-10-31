@@ -6,6 +6,7 @@
 #include "phone.h"
 #include "fake.h"
 #include "callaudio.h"
+#include "power.h"
 
 static struct modem_hw hw;
 static bool fake;
@@ -48,6 +49,14 @@ void kmodem_fake(void)
 	fake = true;
 	kprintf("modem: a fake one in RAM (QEMU)\n");
 	modem_start(&hw);
+	/* kolibri.fakering=S: it rings S s after the start */
+	extern const char *boot_arg(const char *name);
+	const char *r = boot_arg("kolibri.fakering");
+	if (r) {
+		u32 s = 0;
+		while (*r >= '0' && *r <= '9') s = s * 10 + *r++ - '0';
+		fake_ring_later(s * 1000, "+43664123456");
+	}
 	struct callaudio_hw ah = {
 		.i2c_write = fake_i2c_write, .i2c_read = fake_i2c_read, .gpio_set = fake_gpio,
 		.delay_us = fake_delay, .prepared = true,
@@ -82,6 +91,14 @@ static void notify_changes(void)
 	static struct kos_modem m;
 	modem_status(&m);
 	if (m.call_seq == shown_call && m.sms_seq == shown_sms && m.state == shown_state) return;
+#ifdef __aarch64__
+	/* a call comes: the display on (the Pro1X's standby ended) */
+	if (m.call_seq != shown_call) {
+		struct kos_call c;
+		modem_call(&c);
+		if (c.state == KOS_CALL_INCOMING) power_attention("a call");
+	}
+#endif
 	shown_call = m.call_seq;
 	shown_sms = m.sms_seq;
 	shown_state = m.state;

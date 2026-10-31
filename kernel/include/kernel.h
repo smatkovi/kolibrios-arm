@@ -171,6 +171,7 @@ void input_key_set2(u8 byte);  /* PS/2 scan code set 2 byte */
 void input_key(u8 set1, bool released); /* a key, XT (set 1) scan code */
 void input_mouse_rel(int dx, int dy, int buttons, int wheel);
 void input_mouse_abs(int x, int y, int buttons); /* touch screens */
+extern u32 input_last;         /* ticks at the last key or touch (the display's timeout) */
 
 /* sched.c: an exception, the arch's entry made the trap frame (the
  * AArch32 view); returns the task to go on with, or NULL: the idle loop */

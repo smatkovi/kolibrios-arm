@@ -37,6 +37,13 @@ void power_set_standby(bool on)
 	notify_system();
 }
 
+void (*plat_attention)(const char *why);
+
+void power_attention(const char *why)
+{
+	if (plat_attention) plat_attention(why);
+}
+
 u32 power_test_minutes(void)
 {
 	return minutes;

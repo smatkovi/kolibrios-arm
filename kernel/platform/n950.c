@@ -20,6 +20,7 @@
  *     mmc.c); its partitions read only, the container (docs/storage.md)
  *   - random numbers: the secure ROM's RNG through the PPA (below), the
  *     timing jitter of the cycle counter against the 32 kHz clock (rng.c)
+ *   - the LEDs off (the LP5523's enable): no blink left from before
  * Not yet: the RTC (TWL4030), the battery. */
 #include "kernel.h"
 #include "blit.h"
@@ -235,6 +236,29 @@ static void rom_rng_init(void)
 	rng_register("the secure ROM's RNG", rom_rng_read, 900);
 }
 
+/* --- the LEDs off --------------------------------------------------------
+ * The LP5523 (I2C2, 0x32; omap3-n950.dts: its channels 0-5 the keyboard's
+ * light, 8 the white notification LED) runs its patterns by itself: a
+ * blink the system before left there would go on. KolibriOS shows nothing
+ * with it, so the chip is switched off by its enable, GPIO 41 (gpio2's
+ * 9th, enable-gpios), low; Linux sets it up anew at its next start.
+ * kolibri.leds=keep leaves it as it was. NOT TRIED ON THE DEVICE. */
+#define GPIO2 0x49050000u
+#define LP5523_EN 9
+#define EN_GPIO2 (1u << 13)                     /* CM_*CLKEN_PER */
+
+static void leds_off(void)
+{
+	const char *a = boot_arg("kolibri.leds");
+	if (a && !strncmp(a, "keep", 4)) return;
+	wr32(CM_ICLKEN_PER, rd32(CM_ICLKEN_PER) | EN_GPIO2);
+	wr32(CM_FCLKEN_PER, rd32(CM_FCLKEN_PER) | EN_GPIO2);
+	bool was = !(rd32(GPIO2 + 0x034) & 1u << LP5523_EN) && (rd32(GPIO2 + 0x03c) & 1u << LP5523_EN);
+	wr32(GPIO2 + 0x090, 1u << LP5523_EN);                              /* CLEARDATAOUT */
+	wr32(GPIO2 + 0x034, rd32(GPIO2 + 0x034) & ~(1u << LP5523_EN));     /* OE: an output */
+	kprintf("n950: LEDs off (the LP5523's enable, GPIO 41, %s)\n", was ? "was on" : "was off already");
+}
+
 static void n9_init(void)
 {
 	/* the INTC: GPTIMER1 only, for now */
@@ -248,6 +272,7 @@ static void n9_init(void)
 	wr32(GPT1 + 0x18, 7);                         /* TISR: clear */
 	wr32(GPT1 + 0x1c, 2);                         /* TIER: overflow */
 	wr32(GPT1 + 0x24, 3);                         /* TCLR: start, reload */
+	leds_off();
 	touch_init();
 	if (!storage_off()) emmc_init();
 	rom_rng_init();

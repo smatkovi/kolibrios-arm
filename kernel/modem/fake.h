@@ -23,5 +23,6 @@ extern bool fake_preopened;
 extern bool fake_adopted;
 /* a call from number, now */
 void fake_ring(const char *number);
+void fake_ring_later(u32 ms, const char *number);
 
 #endif

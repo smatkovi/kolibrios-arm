@@ -115,8 +115,11 @@ static void key(u8 sc, bool ex, bool released)
 
 /* a key from a keyboard without E0 prefixes (the phones', virtio): the
  * cursor block as the gray keys, since these have no numeric keypad */
+u32 input_last;
+
 void input_key(u8 sc, bool released)
 {
+	input_last = ticks;
 	rng_event(sc | (u32)released << 8);     /* its time into the random numbers' pool, credited nothing */
 	bool ex = sc == 0x47 || sc == 0x48 || sc == 0x49 || sc == 0x4b || sc == 0x4d ||
 		  sc == 0x4f || sc == 0x50 || sc == 0x51 || sc == 0x52 || sc == 0x53;
@@ -128,6 +131,7 @@ void input_key_set2(u8 b)
 	if (b == 0xe0) { e0 = true; return; }
 	if (b == 0xf0) { release = true; return; }
 	if (b == 0xe1 || b == 0xfa || b == 0xaa) return;
+	input_last = ticks;
 	u8 sc = b < 128 ? set2_to_set1[b] : 0xff;
 	if (b == 0x83) sc = 0x41;            /* F7 */
 	bool rel = release, ex = e0;
@@ -145,6 +149,7 @@ int input_wheel;
 
 void input_mouse_rel(int dx, int dy, int buttons, int wheel)
 {
+	input_last = ticks;
 	rng_event((u32)(dx & 0xfff) | (u32)(dy & 0xfff) << 12 | (u32)buttons << 24);
 	input_wheel += wheel;
 	mx = MAX(0, MIN(mx + dx, scr.w - 1));
@@ -157,12 +162,14 @@ void input_mouse_rel(int dx, int dy, int buttons, int wheel)
 /* a turn of the wheel alone (+: towards the user) */
 void input_mouse_wheel(int dz)
 {
+	input_last = ticks;
 	input_wheel += dz;
 	wm_mouse(mx, my, mb, 0);
 }
 
 void input_mouse_abs(int x, int y, int buttons)
 {
+	input_last = ticks;
 	rng_event((u32)(x & 0xfff) | (u32)(y & 0xfff) << 12 | (u32)buttons << 24);
 	mx = x;
 	my = y;

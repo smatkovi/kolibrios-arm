@@ -67,6 +67,10 @@ bool power_soc_sleep_ok(void);
 void power_hold_display(bool on);
 extern bool power_standby;             /* the display off: timer slack */
 void power_set_standby(bool on);       /* ... and EV_SYSTEM to the shells */
+/* something the user should see (an incoming call): the platform ends
+ * its standby (plat_attention) */
+void power_attention(const char *why);
+extern void (*plat_attention)(const char *why);
 
 /* kernel/arch/arm64/psci.c: the CPU's idle states */
 void psci_probe(void);                 /* powerdt.c's findings, MMU off */

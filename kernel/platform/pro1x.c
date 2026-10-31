@@ -96,6 +96,10 @@ static u32 reserved[8][2];             /* the TLMM's gpio-reserved-ranges: not o
 static int nreserved;
 static bool noinput;
 static bool standby;                   /* the display off, the SoC asleep: a key ends it */
+/* kolibri.displayoff=S: the standby after S s without a key or a touch
+ * (120; 0: never, as with kolibri.displayon), from the last input or the
+ * last standby's end */
+static u32 idle_off = 120, idle_from;
 /* the modem (docs/pro1x-modem.md): SMEM, the rmtfs buffer, the APCS IPC
  * register and the bit that kicks its GLINK edge, the EFS images (initrd) */
 static addr_t smem_pa, rmtfs_pa, apcs_pa, efs_pa;
@@ -1573,6 +1577,7 @@ static void standby_leave(const char *why)
 {
 	if (!standby) return;
 	standby = false;
+	idle_from = ticks;
 	power_set_standby(false);
 	/* the sleep set stays at 0 (Linux's votes are not known to put them
 	 * back): the scan-out needs the XO and the buses, so no SoC sleep
@@ -1597,6 +1602,38 @@ static bool standby_key(int pos, bool pressed)
 		return true;
 	}
 	return false;
+}
+
+/* the display's timeout: the tick from which it goes off */
+static u32 idle_due(void)
+{
+	u32 from = (s32)(input_last - idle_from) > 0 ? input_last : idle_from;
+	return from + idle_off * 100;
+}
+
+/* during a call (being set up, ringing, talking) the display stays on */
+static bool in_call(void)
+{
+	if (!modem_present()) return false;
+	struct kos_call c;
+	modem_call(&c);
+	return c.state != KOS_CALL_NONE && c.state != KOS_CALL_ENDED;
+}
+
+static void idle_check(void)
+{
+	if (!idle_off || standby || (s32)(ticks - idle_due()) < 0) return;
+	if (in_call()) {
+		idle_from = ticks;               /* again a timeout's time later */
+		return;
+	}
+	standby_enter("no input");
+}
+
+/* an incoming call (power_attention): the standby ends */
+static void p_attention(const char *why)
+{
+	if (standby) standby_leave(why);
 }
 
 static void powerkey_press(const char *how)
@@ -1797,6 +1834,9 @@ static void p_init(void)
 	extern void (*plat_power_report)(int when);
 	if (!stats_pa) stats_pa = pdt.stats_pa, stats_size = pdt.stats_size;
 	plat_power_report = p_power_report;
+	plat_attention = p_attention;
+	idle_from = ticks;
+	if (idle_off) kprintf("pro1x: the display off after %u s without a key or a touch (kolibri.displayoff)\n", idle_off);
 	/* the battery before the power test's first line (timer_start) */
 	if (powertest || battery_arg) pmic_up();
 	gic3_init(gicd, gicr, p_other_irq);
@@ -1851,6 +1891,7 @@ static void p_tick(void)
 		if (due(ts_sched, ts_due)) ts_poll();
 	}
 	if (powertest && !standby_done && (s32)(ticks - standby_at) >= 0) standby_start();
+	idle_check();
 	/* kolibri.keytest=S: a press of the power key played S s into each
 	 * standby (the way back without hands; QEMU) */
 	if (keytest && standby && (s32)(ticks - keytest_at) >= 0) powerkey_press("the power key, played");
@@ -1861,6 +1902,7 @@ static u32 p_next_tick(void)
 {
 	u32 n = wdt_feeding ? until(wdt_next) : 0xffffffffu;
 	if (powertest && !standby_done) n = MIN(n, until(standby_at));
+	if (idle_off && !standby) n = MIN(n, until(idle_due()));
 	if (keytest && standby) n = MIN(n, until(keytest_at));
 	if (!noinput) {
 		if (kbd_sched) n = MIN(n, until(kbd_due));
@@ -2367,6 +2409,8 @@ bool pro1x_probe(const void *fdt)
 		wifi_irq = word(args, len, "kolibri.wifi=irq", NULL);
 		rpmsleep = word(args, len, "kolibri.rpmsleep", NULL);
 		displayon = word(args, len, "kolibri.displayon", NULL);
+		word(args, len, "kolibri.displayoff=", &idle_off);
+		if (displayon) idle_off = 0;
 		dsiulps = word(args, len, "kolibri.dsiulps", NULL);
 		battery_arg = word(args, len, "kolibri.battery", NULL);
 		nopowerkey = word(args, len, "kolibri.nopowerkey", NULL);

@@ -36,8 +36,9 @@
 # added to the command line) takes over Linux's APR channel and starts the
 # voice session for each call.
 #
-# Linux ends here: its filesystems are synced and remounted read-only, then
-# the watchdog is armed and kexec jumps. After the next boot,
+# Linux's LEDs are switched off and its Bluetooth blocked (rfkill): KolibriOS
+# drives neither. Linux ends here: its filesystems are synced and remounted
+# read-only, then the watchdog is armed and kexec jumps. After the next boot,
 # pro1x-read.py shows what KolibriOS left in memory.
 set -eu
 
@@ -205,6 +206,22 @@ if [ -n "$audio" ]; then
 	done
 	echo "pro1x-kexec: the call's sound prepared (earpiece, microphone)"
 fi
+
+# No LED in KolibriOS, which drives none: the PMI632's LPG runs its
+# patterns by itself (its PBS, from the SDAM), so a blink Linux left (mce's
+# "device on", a charging pattern) would go on through KolibriOS; every
+# LED of Linux's off. Bluetooth off too (KolibriOS has none): hci_qca does
+# nothing for a WCN3990 at a kexec, so its Bluetooth would stay up
+for l in /sys/class/leds/*; do
+	[ -e "$l/brightness" ] || continue
+	echo none > "$l/trigger" 2> /dev/null || true
+	echo 0 > "$l/brightness" 2> /dev/null || true
+done
+for r in /sys/class/rfkill/rfkill*; do
+	if [ "$(cat "$r/type" 2> /dev/null)" = bluetooth ]; then
+		echo 1 > "$r/soft" 2> /dev/null || true
+	fi
+done
 
 sync
 # The APSS watchdog (0x0f017000, kpss layout, 32 kHz) armed for its

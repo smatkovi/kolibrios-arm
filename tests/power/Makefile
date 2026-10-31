@@ -11,7 +11,9 @@
 #          the core's state and the cluster's, and the power-down played
 #          (kolibri.psci=simulate: the way back through cpu_resume); the
 #          standby ended by a played press of the power key (kolibri.keytest),
-#          with the DSI lanes' ULPS asked for (kolibri.dsiulps)
+#          with the DSI lanes' ULPS asked for (kolibri.dsiulps); the display
+#          off after a time without input (kolibri.displayoff), on again by
+#          the power key and by a call (the fake modem's, kolibri.fakering)
 #   qemu-net  the wake-ups with programs and the network: virtio-net and
 #          DHCP (lwIP's timers on demand, kernel/net/timers.c, and lwIP's own
 #          with kolibri.nettimers=periodic), an idle TCP connection to the
@@ -71,7 +73,7 @@ $(B)/sm6115-power.dtb: sm6115-power.dts
 	dtc -q -I dts -O dtb -o $@ $<
 
 qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cluster.dtb $(B)/pro1x-key.dtb \
-		$(B)/pro1x-ulps.dtb
+		$(B)/pro1x-ulps.dtb $(B)/pro1x-auto.dtb $(B)/pro1x-ring.dtb
 	python3 qemu.py $(K) periodic 23 min-rate=90 -- -append "$(ARGS) kolibri.tick=periodic"
 	python3 qemu.py $(K) tickless 33 max-rate=8 skip-first max-rate=$(IDLE) has="tickless idle" -- -append "$(ARGS)"
 	python3 qemu.py --pro1x $(B)/pro1x.dtb $(K) pro1x 33 max-rate=8 skip-first max-rate=$(IDLE) has="pro1x: lifetime 90 s"
@@ -84,6 +86,10 @@ qemu: kernel $(B)/pro1x.dtb $(B)/pro1x-psci.dtb $(B)/pro1x-sim.dtb $(B)/pro1x-cl
 	python3 qemu.py --pro1x $(B)/pro1x-ulps.dtb $(K) ulps 33 max-rate=8 "has=pro1x: DSI lanes to ULPS (lanes 1f, LANE_CTRL 0): done" \
 		"has=pro1x: awake (the power key, played) after 10 s" "has=pro1x: DSI lanes out of ULPS: a lane stuck" \
 		"has=pro1x: display on: sleep out" -- $(ULPS_REGS)
+	python3 qemu.py --pro1x $(B)/pro1x-auto.dtb $(K) displayoff 43 max-rate=8 "has=pro1x: standby (no input)" \
+		"has=pro1x: awake (the power key, played) after 10 s"
+	python3 qemu.py --pro1x $(B)/pro1x-ring.dtb $(K) ring 23 "has=pro1x: standby (no input)" \
+		"has=pro1x: awake (a call) after 7 s"
 
 # the kernel with the Linux programs (tcphold, the fake messenger backend)
 # on its ramdisk, kept as $(KL)
@@ -157,6 +163,12 @@ $(B)/pro1x-ulps.dtb: mkdtb.py
 # the way out finds them still in ULPS ("stuck") and goes on
 ULPS_REGS := -device loader,addr=0x5110000c,data=0x11111000,data-len=4 \
 	-device loader,addr=0x511000a8,data=0x1f,data-len=4
+# the display off after 5 s without input, on again by the power key
+# (played 10 s into each standby), by a call (the fake modem rings at 12 s)
+$(B)/pro1x-auto.dtb: mkdtb.py
+	python3 mkdtb.py $@ --psci --bootargs "$(ARGS) kolibri.fakemodem kolibri.displayoff=5 kolibri.keytest=10"
+$(B)/pro1x-ring.dtb: mkdtb.py
+	python3 mkdtb.py $@ --psci --bootargs "$(ARGS) kolibri.fakemodem kolibri.displayoff=5 kolibri.fakering=12"
 $(B)/qemu-psci.dtb: mkdtb.py
 	@mkdir -p $(B)
 	python3 mkdtb.py $@ --psci --virt

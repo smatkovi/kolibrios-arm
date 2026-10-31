@@ -630,6 +630,12 @@ static void glink_in(void)
 	}
 }
 
+/* a call from number ms from now (kolibri.fakering: the standby's end by a call) */
+void fake_ring_later(u32 ms, const char *number)
+{
+	later(ms, 2, number, 0);
+}
+
 void fake_ring(const char *number)
 {
 	fcall.id = 2;
